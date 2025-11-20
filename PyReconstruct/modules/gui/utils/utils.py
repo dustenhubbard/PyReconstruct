@@ -40,7 +40,8 @@ def get_screen_info(screen: QScreen) -> dict:
     screen_info = {
         "width"  : screen_rect.width(),
         "height" : screen_rect.height(),
-        "dpi"    : round(screen.physicalDotsPerInch())
+        "dpi"    : round(screen.physicalDotsPerInch()),
+        "pixel_ratio" : screen.devicePixelRatio()
     }
 
     return screen_info
