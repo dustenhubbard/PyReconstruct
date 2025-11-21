@@ -784,7 +784,7 @@ class CustomPlotter(QVTKRenderWindowInteractor):
         ## Create vedo renderer
         self.plt = VPlotter(self, qt_widget=self)
 
-        ## Apply device pixel ratio for macOS Retina displays
+        ## Apply device pixel ratio for high-DPI displays (e.g., MacBook Retina Displays)
         if "pixel_ratio" in self.screen_info and self.screen_info["pixel_ratio"] > 1.0:
             render_window = self.GetRenderWindow()
             if render_window:
