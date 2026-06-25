@@ -4,7 +4,7 @@ gitpython==3.1.50
 lxml==6.1.0
 numcodecs==0.15.0
 numpy==1.24.1
-opencv-python==4.8.1.78
+opencv-python-headless==4.8.1.78
 qdarkstyle==3.2.3
 scikit-image==0.23.2
 scipy==1.14.1
