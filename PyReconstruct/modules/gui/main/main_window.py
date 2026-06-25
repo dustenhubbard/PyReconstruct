@@ -398,8 +398,8 @@ class MainWindow(QMainWindow):
             )
             if not zarr_fp: return
 
-        python_bin = sys.executable
         zarr_converter = Path(assets_dir) / "scripts/start_process.py"
+        launch_prefix = script_launch_prefix()
 
         cores = determine_cpus(  # determine number of cores to use
             self.series.getOption("cpu_max")
@@ -407,8 +407,7 @@ class MainWindow(QMainWindow):
         
         if create_new:
             
-            convert_cmd = [
-                python_bin,
+            convert_cmd = launch_prefix + [
                 str(zarr_converter.absolute()),
                 "convert_zarr",
                 str(cores),
@@ -418,8 +417,7 @@ class MainWindow(QMainWindow):
             
         else:
             
-            convert_cmd = [
-                python_bin,
+            convert_cmd = launch_prefix + [
                 str(zarr_converter.absolute()),
                 "convert_zarr",
                 str(cores),
@@ -1993,11 +1991,10 @@ class MainWindow(QMainWindow):
                 
             }
 
-        python_bin = sys.executable
         zarr_converter = Path(assets_dir) / "scripts/start_process.py"
+        launch_prefix = script_launch_prefix()
         
-        convert_cmd = [
-            python_bin,
+        convert_cmd = launch_prefix + [
             str(zarr_converter.absolute()),
             "create_ng_zarr",
             f"\"{self.series.jser_fp}\""

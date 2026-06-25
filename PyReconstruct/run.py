@@ -18,11 +18,14 @@ import PyReconstruct.modules.gui.main as main
 
 def runPyReconstruct(filename=None):
 
-    # Stopgap for Wayland Qt issue
+    # Stopgap for Wayland Qt issue (only needed from source; in a frozen bundle
+    # PyInstaller's PySide6 hook wires the plugin path, and this PySide6.__file__
+    # location would be wrong).
     # stackoverflow.com/questions/68417682/qt-and-opencv-app-not-working-in-virtual-environment
-    ps6_dir = Path(PySide6.__file__).parent
-    qt_plugins = ps6_dir / "Qt/plugins"
-    os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(qt_plugins)
+    if not getattr(sys, "frozen", False):
+        ps6_dir = Path(PySide6.__file__).parent
+        qt_plugins = ps6_dir / "Qt/plugins"
+        os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(qt_plugins)
 
     # create the Qt Application
     app = QApplication(sys.argv)
@@ -54,12 +57,17 @@ def runPyReconstruct(filename=None):
 
 if __name__ == "__main__":
 
-    if len(sys.argv) > 1:  # get filename from argv
+    # Frozen-build script dispatcher: a PyInstaller exe can't execute an
+    # arbitrary .py via sys.executable, so bundled helper scripts are relaunched
+    # as `<exe> __run_script__ <script.py> [args...]` and run here via runpy.
+    if len(sys.argv) > 2 and sys.argv[1] == "__run_script__":
 
-        filename = sys.argv[1]
+        import runpy
+        script = sys.argv[2]
+        sys.argv = [script] + sys.argv[3:]
+        runpy.run_path(script, run_name="__main__")
 
     else:
-        
-        filename = None
-        
-    runPyReconstruct(filename)
+
+        filename = sys.argv[1] if len(sys.argv) > 1 else None
+        runPyReconstruct(filename)
