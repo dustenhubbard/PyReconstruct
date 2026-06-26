@@ -1,6 +1,17 @@
 import os, sys, importlib
 from pathlib import Path
 
+# In a frozen build, multiprocessing (spawn -- the default on macOS and Windows)
+# re-runs THIS executable for every worker process. Intercept that re-launch
+# here, before the heavy GUI/VTK imports below, so a worker runs its task
+# instead of importing the GUI and opening a window. Otherwise each worker
+# launches its own main window (fork-bombing the Dock with one window per
+# worker) and the actual job stalls because no real workers ever start. This is
+# a no-op for the normal launch and for the "__run_script__" dispatch.
+if getattr(sys, "frozen", False):
+    import multiprocessing
+    multiprocessing.freeze_support()
+
 import PySide6
 from PySide6.QtWidgets import QApplication
 
