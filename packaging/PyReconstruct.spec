@@ -10,11 +10,10 @@ Output:
     Windows : dist/PyReconstruct/PyReconstruct.exe
     macOS   : dist/PyReconstruct.app   (needs packaging/PyReconstruct.icns first)
 
-NOTE on VTK: vtk is pinned to 9.3.1, which predates pyinstaller-hooks-contrib's
-vtkmodules coverage (>=9.4.2). The explicit hiddenimports below force the OpenGL
-render stack so the 3D viewport is not a blank window. If the viewport still
-renders blank in the frozen build, the fallbacks (in priority order) are:
-bump vtk to 9.4.x (gets the official hook), or build via conda constructor.
+NOTE on VTK: vtk is on 9.4.2, which pyinstaller-hooks-contrib covers. The explicit
+hiddenimports below are kept as belt-and-suspenders to guarantee the OpenGL render
+stack is bundled. If the 3D viewport ever renders blank in a frozen build, the
+fallback is to build that platform via conda constructor.
 """
 
 import sys
@@ -45,8 +44,8 @@ _version_file = PKG_DIR / "_version.py"
 if _version_file.exists():
     datas.append((str(_version_file), "PyReconstruct"))
 
-# --- VTK 9.3.1: collect everything, then force the render/interaction modules
-#     that the import graph misses (cause of the classic blank 3D viewport).
+# --- VTK 9.4.2: hooks-contrib covers it; we still collect everything and force
+#     the render/interaction modules as belt-and-suspenders vs a blank viewport.
 _vd, _vb, _vh = collect_all("vtkmodules")
 datas += _vd
 binaries += _vb

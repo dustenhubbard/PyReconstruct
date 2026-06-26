@@ -71,9 +71,9 @@ this mainly affects browser downloads from the Releases page.)
 
 ## VTK 3D viewport — the main risk
 
-vtk is pinned to **9.3.1**, which predates `pyinstaller-hooks-contrib`'s
-vtkmodules coverage (>=9.4.2). The spec forces the OpenGL render modules via
-`hiddenimports`. If the 3D viewport still renders **blank** in the frozen app:
+vtk is on **9.4.2**, which `pyinstaller-hooks-contrib` covers; the spec also
+forces the OpenGL render modules via `hiddenimports` as belt-and-suspenders. If
+the 3D viewport still renders **blank** in the frozen app:
 
 1. Confirm `smoke_test.py` passes inside the frozen env.
 2. Add any missing `vtkmodules.*` reported by the failure to the spec's
