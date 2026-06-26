@@ -3283,6 +3283,9 @@ class MainWindow(QMainWindow):
         if self._pending_installer:
             try:
                 launch_installer(self._pending_installer)
+                # closing no longer quits on macOS, so exit explicitly here so the
+                # installer can replace the app
+                QApplication.quit()
             except Exception as e:
                 notify(f"Could not launch the installer:\n{e}\n\nFind it at: {self._pending_installer}")
         event.accept()

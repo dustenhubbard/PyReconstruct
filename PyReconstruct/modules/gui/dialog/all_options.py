@@ -1,3 +1,5 @@
+import sys
+
 from PySide6.QtWidgets import (
     QDialog,
     QWidget,
@@ -114,6 +116,9 @@ class AllOptionsDialog(QDialog):
                 ["flag_columns"],
             ]
         }
+
+        if sys.platform == "darwin":
+            tab_structure["User/Series"].append(["macos_close"])
 
         for tab_name, structure, in tab_structure.items():
             widget = QWidget(self)
@@ -457,6 +462,16 @@ class AllOptionsDialog(QDialog):
             def setOption(response):
                 self.series.setOption("update_branch", response[0])
         self.addOptionWidget("updates", structure, setOption)
+
+        # macOS: window-close behavior
+        if sys.platform == "darwin":
+            structure = [
+                [("check", ("Keep the app running in the Dock after closing the window",
+                            self.series.getOption("macos_keep_running_on_close", use_defaults)))]
+            ]
+            def setOption(response):
+                self.series.setOption("macos_keep_running_on_close", response[0][0][1])
+            self.addOptionWidget("macos_close", structure, setOption)
 
         # backup
         backup_widget = BackupDialog(self, self.series, include_confirm=False)

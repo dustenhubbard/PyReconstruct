@@ -145,6 +145,9 @@ default_settings = {
     "update_channel": "stable",   # "stable" | "edge"            # MFO
     "update_branch": "main",      # source/dev installs only     # MFO
 
+    # macOS window behavior
+    "macos_keep_running_on_close": True,   # MFO (macOS only): close keeps app in Dock
+
     # 3D
     "translate_step_3D": 0.1,  # MFO
     "rotate_step_3D": 10,  # MFO

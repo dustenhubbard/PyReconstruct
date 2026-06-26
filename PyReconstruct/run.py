@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QApplication
 
 
 if __name__ == "__main__":
-    
+
     # set up imports for run.py location
     run_script = Path(__file__)
     pypath = str(run_script.parents[1])
@@ -30,29 +30,63 @@ def runPyReconstruct(filename=None):
     # create the Qt Application
     app = QApplication(sys.argv)
 
-    # run program until user closes without restart
+    if sys.platform == "darwin" and _macos_keep_running():
+        _run_macos(app, filename)
+    else:
+        _run_with_restart_loop(app, filename)
+
+
+def _macos_keep_running():
+    """User setting (macOS): keep the app alive in the Dock after the window is
+    closed, instead of quitting. Read straight from QSettings so it applies at
+    launch; default True (the Mac-native behavior)."""
+    from PySide6.QtCore import QSettings
+    return QSettings("KHLab", "PyReconstruct").value(
+        "macos_keep_running_on_close", True, type=bool
+    )
+
+
+def _run_with_restart_loop(app, filename):
+    """Windows/Linux: closing the (last) window quits the app; the in-app
+    Restart reloads PyReconstruct modules and recreates the window."""
     run = True
-
     while run:
-
         main_window = main.MainWindow(filename)
         app.exec()
-
-        # user has closed the main window
         if main_window.restart_mainwindow:  # restart requested
-
             if not main_window.series.isWelcomeSeries():
                 filename = main_window.series.jser_fp
-
-            # reload PyReconstruct modules
             loaded_modules = list(sys.modules.items())
             for module_name, module in loaded_modules:
                 if module_name.startswith("PyReconstruct.modules"):
                     importlib.reload(module)
-                    
-        else:  # no restart requested
-
+        else:
             run = False
+
+
+def _run_macos(app, filename):
+    """macOS: closing the window keeps the app running (in the Dock); activating
+    the app with no open window reopens a fresh welcome window. Quit is Cmd+Q.
+
+    (The in-app Restart action is a known rough edge here -- since closing no
+    longer quits, it drops to the welcome window rather than reloading the same
+    series; to be refined after testing the core behavior.)"""
+    from PySide6.QtCore import Qt
+    app.setQuitOnLastWindowClosed(False)
+    holder = {"win": None}
+
+    def open_window(fn):
+        holder["win"] = main.MainWindow(fn)
+
+    def on_state_changed(state):
+        if state == Qt.ApplicationActive:
+            win = holder["win"]
+            if win is None or not win.isVisible():
+                open_window(None)  # fresh welcome series
+
+    open_window(filename)  # create the first window before connecting the handler
+    app.applicationStateChanged.connect(on_state_changed)
+    app.exec()
 
 
 if __name__ == "__main__":
