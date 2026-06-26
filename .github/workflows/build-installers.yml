@@ -90,7 +90,6 @@ jobs:
       - name: Build macOS dmg
         if: runner.os == 'macOS'
         run: |
-          brew install create-dmg
           mkdir -p dist-assets
           ARCH="${{ matrix.arch }}" bash packaging/macos/make_dmg.sh
           mv PyReconstruct-*.dmg dist-assets/
