@@ -86,6 +86,8 @@ def _run_macos(app, filename):
     def on_state_changed(state):
         if state != Qt.ApplicationActive:
             return
+        if app.closingDown():  # app is quitting -- don't spawn a stray window
+            return
         existing = open_main_windows()
         if existing:  # focus an already-open window instead of spawning one
             w = existing[-1]

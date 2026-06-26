@@ -466,7 +466,7 @@ class AllOptionsDialog(QDialog):
         # macOS: window-close behavior
         if sys.platform == "darwin":
             structure = [
-                [("check", ("Keep the app running in the Dock after closing the window",
+                [("check", ("Keep the app running in the Dock after closing the window (experimental)",
                             self.series.getOption("macos_keep_running_on_close", use_defaults)))]
             ]
             def setOption(response):
