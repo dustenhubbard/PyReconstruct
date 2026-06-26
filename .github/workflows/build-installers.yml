@@ -7,7 +7,9 @@ name: build-installers
 
 on:
   push:
-    branches: [main]
+    # POC: also build on the packaging dev branch so CI can verify it pre-merge
+    # (remove the feat/ entry once this lands on main, where workflow_dispatch works too).
+    branches: [main, "feat/packaging-installers-updater"]
     tags: ["v*.*.*"]
   workflow_dispatch:
 
