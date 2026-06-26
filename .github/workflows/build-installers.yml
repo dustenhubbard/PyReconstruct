@@ -67,6 +67,19 @@ jobs:
       - name: PyInstaller freeze
         run: pyinstaller --noconfirm packaging/PyReconstruct.spec
 
+      - name: Frozen self-test (Windows) — catches windowed-only import bugs
+        if: runner.os == 'Windows'
+        run: |
+          $p = Start-Process -FilePath "dist\PyReconstruct\PyReconstruct.exe" -ArgumentList "--selftest" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Write-Error "frozen self-test failed (exit $($p.ExitCode))"; exit 1 }
+          Write-Host "frozen self-test OK"
+
+      - name: Frozen self-test (macOS) — catches windowed-only import bugs
+        if: runner.os == 'macOS'
+        run: |
+          dist/PyReconstruct.app/Contents/MacOS/PyReconstruct --selftest
+          echo "frozen self-test OK"
+
       - name: Build Windows installer (Inno Setup)
         if: runner.os == 'Windows'
         run: |

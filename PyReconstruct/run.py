@@ -67,6 +67,14 @@ if __name__ == "__main__":
         sys.argv = [script] + sys.argv[3:]
         runpy.run_path(script, run_name="__main__")
 
+    elif "--selftest" in sys.argv[1:]:
+
+        # Reaching here means the full GUI/vedo import chain (imported at module
+        # load, above) succeeded. CI runs the frozen exe with this flag to catch
+        # windowed-only import failures (e.g. None stdout) without launching the UI.
+        print("selftest ok")
+        sys.exit(0)
+
     else:
 
         filename = sys.argv[1] if len(sys.argv) > 1 else None

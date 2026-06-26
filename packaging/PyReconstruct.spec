@@ -113,7 +113,10 @@ a = Analysis(
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
-    runtime_hooks=[str(REPO_ROOT / "packaging" / "rthook_qt.py")],
+    runtime_hooks=[
+        str(REPO_ROOT / "packaging" / "rthook_stdio.py"),  # must run first
+        str(REPO_ROOT / "packaging" / "rthook_qt.py"),
+    ],
     excludes=[
         "PyQt5", "PyQt6", "PySide2",   # forbid clashing Qt bindings
         "tkinter",
