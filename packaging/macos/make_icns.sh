@@ -3,8 +3,8 @@
 # system `sips` + `iconutil`). Run from the repo root before PyInstaller.
 set -euo pipefail
 
-SRC="PyReconstruct/assets/img/logo.png"
-[ -f "$SRC" ] || SRC="PyReconstruct/assets/img/PyReconstruct.ico"
+SRC="PyReconstruct/assets/img/PyReconstruct.png"
+[ -f "$SRC" ] || SRC="PyReconstruct/assets/img/logo.png"
 
 WORK="$(mktemp -d)"
 ICONSET="$WORK/PyReconstruct.iconset"
