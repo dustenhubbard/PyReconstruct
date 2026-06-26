@@ -110,6 +110,28 @@ datas += collect_data_files("trimesh")
 hiddenimports += ["certifi"]
 datas += collect_data_files("certifi")
 
+# --- Software OpenGL fallback (Windows): VTK 9's renderer needs OpenGL >= 3.2.
+#     Over RDP or in a GPU-less VM the system opengl32.dll exposes only OpenGL
+#     1.1, so VTK calls a null GL function pointer when the 3D viewport opens and
+#     the whole app crashes (access violation at offset 0, "unknown" module).
+#     Bundle Qt's software GL (Mesa llvmpipe, shipped with PySide6 as
+#     opengl32sw.dll) renamed to mesa/opengl32.dll. rthook_gl.py preloads it ONLY
+#     when hardware GL is inadequate (RDP session, or PYRECON_SOFTWARE_GL set), so
+#     GPU machines keep fast hardware rendering.
+if sys.platform.startswith("win"):
+    import glob as _glob, shutil as _shutil, PySide6 as _ps6mod
+    _ps6 = Path(_ps6mod.__file__).parent
+    _sw = _glob.glob(str(_ps6 / "**" / "opengl32sw.dll"), recursive=True)
+    if _sw:
+        _mesa_dir = REPO_ROOT / "build" / "mesa_gl"
+        _mesa_dir.mkdir(parents=True, exist_ok=True)
+        _dst = _mesa_dir / "opengl32.dll"
+        _shutil.copy(_sw[0], str(_dst))
+        binaries += [(str(_dst), "mesa")]
+        print(f"[spec] software-GL fallback: bundling {_sw[0]} -> mesa/opengl32.dll")
+    else:
+        print("[spec] WARNING: opengl32sw.dll not found under PySide6; no software-GL fallback bundled")
+
 block_cipher = None
 
 a = Analysis(
@@ -123,6 +145,7 @@ a = Analysis(
         str(REPO_ROOT / "packaging" / "rthook_stdio.py"),  # must run first
         str(REPO_ROOT / "packaging" / "rthook_qt.py"),
         str(REPO_ROOT / "packaging" / "rthook_ssl.py"),
+        str(REPO_ROOT / "packaging" / "rthook_gl.py"),
     ],
     excludes=[
         "PyQt5", "PyQt6", "PySide2",   # forbid clashing Qt bindings
