@@ -65,24 +65,35 @@ def _run_with_restart_loop(app, filename):
 
 
 def _run_macos(app, filename):
-    """macOS: closing the window keeps the app running (in the Dock); activating
-    the app with no open window reopens a fresh welcome window. Quit is Cmd+Q.
+    """macOS: closing the window keeps the app running in the Dock. Activating
+    the app (e.g. clicking the Dock icon) focuses an existing main window if one
+    is open, and only opens a fresh welcome window when none are. Quit is Cmd+Q.
 
     (The in-app Restart action is a known rough edge here -- since closing no
     longer quits, it drops to the welcome window rather than reloading the same
     series; to be refined after testing the core behavior.)"""
     from PySide6.QtCore import Qt
     app.setQuitOnLastWindowClosed(False)
-    holder = {"win": None}
+    windows = []  # keep refs so created windows aren't garbage-collected
 
     def open_window(fn):
-        holder["win"] = main.MainWindow(fn)
+        windows.append(main.MainWindow(fn))
+
+    def open_main_windows():
+        return [w for w in app.topLevelWidgets()
+                if isinstance(w, main.MainWindow) and w.isVisible()]
 
     def on_state_changed(state):
-        if state == Qt.ApplicationActive:
-            win = holder["win"]
-            if win is None or not win.isVisible():
-                open_window(None)  # fresh welcome series
+        if state != Qt.ApplicationActive:
+            return
+        existing = open_main_windows()
+        if existing:  # focus an already-open window instead of spawning one
+            w = existing[-1]
+            w.showNormal()
+            w.raise_()
+            w.activateWindow()
+        else:  # nothing open -> fresh welcome series
+            open_window(None)
 
     open_window(filename)  # create the first window before connecting the handler
     app.applicationStateChanged.connect(on_state_changed)
