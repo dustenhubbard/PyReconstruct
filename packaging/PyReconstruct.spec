@@ -104,6 +104,12 @@ for _pkg in (
 # --- trimesh data ---
 datas += collect_data_files("trimesh")
 
+# --- certifi CA bundle: a frozen app has no OS trust store, so urllib/ssl can't
+#     verify TLS certificates (the in-app updater calls api.github.com). Bundle
+#     certifi's cacert.pem; rthook_ssl.py points SSL_CERT_FILE at it at launch.
+hiddenimports += ["certifi"]
+datas += collect_data_files("certifi")
+
 block_cipher = None
 
 a = Analysis(
@@ -116,6 +122,7 @@ a = Analysis(
     runtime_hooks=[
         str(REPO_ROOT / "packaging" / "rthook_stdio.py"),  # must run first
         str(REPO_ROOT / "packaging" / "rthook_qt.py"),
+        str(REPO_ROOT / "packaging" / "rthook_ssl.py"),
     ],
     excludes=[
         "PyQt5", "PyQt6", "PySide2",   # forbid clashing Qt bindings
