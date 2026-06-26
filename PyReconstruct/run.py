@@ -39,10 +39,11 @@ def runPyReconstruct(filename=None):
 def _macos_keep_running():
     """User setting (macOS): keep the app alive in the Dock after the window is
     closed, instead of quitting. Read straight from QSettings so it applies at
-    launch; default True (the Mac-native behavior)."""
+    launch; default False (close quits -- cleaner, and lets the updater hand off
+    to its installer). Opt in to keep the app in the Dock."""
     from PySide6.QtCore import QSettings
     return QSettings("KHLab", "PyReconstruct").value(
-        "macos_keep_running_on_close", True, type=bool
+        "macos_keep_running_on_close", False, type=bool
     )
 
 

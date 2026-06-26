@@ -146,7 +146,7 @@ default_settings = {
     "update_branch": "main",      # source/dev installs only     # MFO
 
     # macOS window behavior
-    "macos_keep_running_on_close": True,   # MFO (macOS only): close keeps app in Dock
+    "macos_keep_running_on_close": False,  # MFO (macOS only): on = close keeps app in Dock; default off = quit on close
 
     # 3D
     "translate_step_3D": 0.1,  # MFO
