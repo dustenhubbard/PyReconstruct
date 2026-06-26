@@ -2,9 +2,12 @@
 
 This directory builds the one-click desktop installers. It produces a frozen
 app with PyInstaller, which is then wrapped per platform (Windows: Inno Setup;
-macOS: `.dmg`). This is a **proof of concept** — builds are currently unsigned,
-so users will see an "unknown publisher" / Gatekeeper warning until signing is
-added.
+macOS: `.dmg`). This is a **proof of concept** — builds are currently unsigned.
+On Windows users get an "unknown publisher" SmartScreen warning (click *More
+info → Run anyway*). On macOS it's stricter: a downloaded, quarantined app is
+refused outright ("PyReconstruct is damaged and can't be opened") until the
+quarantine attribute is cleared — see the macOS section. Real signing /
+notarization is a post-POC milestone.
 
 | File | Purpose |
 |------|---------|
@@ -55,6 +58,16 @@ bash packaging/macos/make_dmg.sh
 
 Build x86_64 for the POC (runs on Apple Silicon via Rosetta). Native arm64 is
 deferred pending a vtk bump (9.3.1 ships no macOS arm64 wheel).
+
+**Unsigned macOS first launch (Gatekeeper):** since the `.app` is unsigned and
+un-notarized, a copy downloaded from the Releases page is quarantined and macOS
+refuses it ("…is damaged and can't be opened"). To run it, drag
+`PyReconstruct.app` to `/Applications`, then clear the quarantine flag once:
+
+    xattr -dr com.apple.quarantine /Applications/PyReconstruct.app
+
+(Apps pulled by the in-app updater over the API are generally not quarantined;
+this mainly affects browser downloads from the Releases page.)
 
 ## VTK 3D viewport — the main risk
 

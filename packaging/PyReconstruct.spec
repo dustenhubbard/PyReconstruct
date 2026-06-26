@@ -132,6 +132,8 @@ is_mac = sys.platform == "darwin"
 
 win_icon = str(PKG_DIR / "assets" / "img" / "PyReconstruct.ico")
 mac_icon = str(REPO_ROOT / "packaging" / "PyReconstruct.icns")  # built by make_icns.sh
+if not Path(mac_icon).exists():   # allow a local build that skipped make_icns.sh
+    mac_icon = None
 
 exe = EXE(
     pyz,
