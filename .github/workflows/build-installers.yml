@@ -23,7 +23,11 @@ jobs:
       matrix:
         include:
           - { os: windows-2022, plat: Windows, arch: x86_64 }
-          - { os: macos-13,     plat: macOS,   arch: x86_64 }
+          # macOS deferred: GitHub-hosted macOS runners are effectively unavailable
+          # on this fork (7h+ queue), and macos-13 (the last free x86_64 image) is
+          # retiring. Re-enable once vtk is bumped to 9.4.x so we can build native
+          # arm64 on the plentiful macos-14 runners:
+          # - { os: macos-14,     plat: macOS,   arch: arm64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
