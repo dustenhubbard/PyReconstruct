@@ -14,6 +14,21 @@ import os
 import sys
 
 
+def _is_subprocess_invocation():
+    # This binary re-executes itself for several non-GUI roles, none of which
+    # open a 3D viewport: the zarr converter scripts (__run_script__),
+    # multiprocessing Pool workers (--multiprocessing-fork), the multiprocessing
+    # resource tracker / forkserver (python -c ...), and the CI import self-test.
+    # Loading a software GL driver into those is pure overhead -- and doing it in
+    # every Pool worker stalled the zarr conversion on RDP VMs. Only the real GUI
+    # launch needs GL.
+    argv = sys.argv[1:]
+    for tok in ("__run_script__", "--multiprocessing-fork", "-c", "--selftest"):
+        if tok in argv:
+            return True
+    return False
+
+
 def _should_use_software_gl():
     # Explicit overrides win, in both directions.
     if os.environ.get("PYRECON_SOFTWARE_GL"):
@@ -31,15 +46,19 @@ def _should_use_software_gl():
     return False
 
 
-if sys.platform.startswith("win") and getattr(sys, "frozen", False):
-    if _should_use_software_gl():
-        try:
-            import ctypes
-            _sw = os.path.join(sys._MEIPASS, "mesa", "opengl32.dll")
-            if os.path.exists(_sw):
-                ctypes.WinDLL(_sw)  # preload before Qt/VTK pull in opengl32
-                print(f"[gl] software OpenGL preloaded: {_sw}", flush=True)
-            else:
-                print(f"[gl] software OpenGL not bundled: {_sw}", flush=True)
-        except Exception as e:
-            print(f"[gl] software OpenGL preload failed: {e!r}", flush=True)
+if (
+    sys.platform.startswith("win")
+    and getattr(sys, "frozen", False)
+    and not _is_subprocess_invocation()
+    and _should_use_software_gl()
+):
+    try:
+        import ctypes
+        _sw = os.path.join(sys._MEIPASS, "mesa", "opengl32.dll")
+        if os.path.exists(_sw):
+            ctypes.WinDLL(_sw)  # preload before Qt/VTK pull in opengl32
+            print(f"[gl] software OpenGL preloaded: {_sw}", flush=True)
+        else:
+            print(f"[gl] software OpenGL not bundled: {_sw}", flush=True)
+    except Exception as e:
+        print(f"[gl] software OpenGL preload failed: {e!r}", flush=True)
