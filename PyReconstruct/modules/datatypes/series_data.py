@@ -36,12 +36,10 @@ class TraceData():
         # functions: length/area/centroid identical, radius within machine
         # epsilon. For affine tforms the centroid of the mapped points equals the
         # mapped centroid of the raw points (up to rounding).
-        tformed_points = tform.map(trace.points)
-        if tformed_points:
-            pts = np.asarray(tformed_points, dtype=float)
+        pts = tform.mapPointsArray(trace.points)
+        if len(pts):
             length, trace_area, (cx, cy), radius = traceGeometry(pts, self.closed)
         else:
-            pts = None
             length, trace_area, (cx, cy), radius = 0.0, 0.0, (0.0, 0.0), 0.0
 
         self.length = length
@@ -59,7 +57,7 @@ class TraceData():
         # and compute the Feret lazily on first request, then drop the points.
         if self.closed:
             self._feret = None
-            self._feret_points = pts if pts is not None else np.asarray([], dtype=float)
+            self._feret_points = pts
         else:
             self._feret = (0, 0)
             self._feret_points = None
