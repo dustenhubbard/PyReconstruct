@@ -239,8 +239,12 @@ class ObjectTableView(QTableView):
         model = self.model()
         vheader = self.verticalHeader()
         if model is not None and model.rowCount() > 0:
-            # resizeRowToContents(0) builds only row 0 (one getItems pass),
-            # giving the same content height the old resizeRowsToContents would.
+            # Perf trade-off (intentional): measure ONLY row 0 (one getItems
+            # pass) and apply its height to every row. This is O(1), but a cell
+            # in some OTHER row whose text spans multiple lines is rendered on a
+            # single line (clipped) instead of growing that row to fit -- see the
+            # multi-line note in the docstring. Measuring per row to avoid this
+            # would re-introduce the O(#objects) pass virtualization removes.
             self.resizeRowToContents(0)
             row_h = self.rowHeight(0)
         else:

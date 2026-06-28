@@ -547,6 +547,14 @@ class ObjectTableWidget(DataTable):
     def updateData(self, names : list):
         """Update the data for a set of objects.
 
+        Perf trade-off (intentional): incremental updates only insert / remove /
+        refresh the affected rows -- they do NOT call resizeColumnsToContents().
+        Only the full createTable() path re-measures column widths. So a single
+        edit that produces a wider cell than any existing one will be clipped
+        until the next full table rebuild. Re-sizing here would re-introduce an
+        O(#objects) sampling pass on every edit, which is what virtualization
+        removes; clipping the rare widening edit is the accepted cost.
+
             Params:
                 names (iterable): the names of the objects to update
         """
@@ -761,7 +769,15 @@ class ObjectTableWidget(DataTable):
                 for c in range(n_cols):
                     index = model.index(r, c)
                     if c in checkable:  # hidden and closed cols
-                        if model.data(index, Qt.CheckStateRole) == Qt.Checked:
+                        # The model returns the int Qt stores for CheckStateRole,
+                        # so comparing to the Qt.Checked enum directly is always
+                        # False. Coerce to Qt.CheckState before comparing. (The
+                        # object list has no checkable export columns today --
+                        # "Hidden"/"Closed" are trace-only -- so this branch is
+                        # currently unreachable here, but the comparison must be
+                        # correct if those columns are ever added.)
+                        check_state = model.data(index, Qt.CheckStateRole)
+                        if Qt.CheckState(check_state) == Qt.CheckState.Checked:
                             cell_text = "yes"
                         else:
                             cell_text = "no"
