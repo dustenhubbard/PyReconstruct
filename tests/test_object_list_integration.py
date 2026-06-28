@@ -279,6 +279,111 @@ def test_real_locked_handler_matches_old_semantics(qapp):
     obj.mainwindow.seriesModified.assert_called_once_with(True)
 
 
+def _make_cr_handler(locked=False):
+    """Build a real ObjectTableWidget wired to a model for the CR branch.
+
+    Mirrors test_real_locked_handler_matches_old_semantics' setup but exposes a
+    "CR" column. series.getAttr (the locked check at the top of the CR branch)
+    is stubbed to ``locked``; everything else is a Mock so we can assert the
+    series-state calls the old itemChanged CR branch produced.
+    """
+    src = _CheckSource()
+    model = ObjectTableModel(src)
+    src.model = model
+
+    obj = ObjectTableWidget.__new__(ObjectTableWidget)
+    obj.horizontal_headers = ["Name", "CR"]
+    obj.model = model
+    obj.series = mock.Mock()
+    obj.series.getAttr.return_value = locked
+    obj.series_states = mock.Mock()
+    obj.manager = mock.Mock()
+    obj.mainwindow = mock.Mock()
+    return obj
+
+
+def test_real_cr_handler_unchecked_clears_curation(qapp):
+    """Unchecked CR clears curation (setCuration([name], "")), pushes a state,
+    updates the object, and marks modified -- the old Unchecked CR branch."""
+    obj = _make_cr_handler()
+
+    result = obj.onCheckStateChanged(0, 1, Qt.CheckState.Unchecked)
+
+    assert result is True
+    obj.series_states.addState.assert_called_once()
+    obj.series.setCuration.assert_called_once_with(["a"], "")
+    obj.manager.updateObjects.assert_called_once_with(["a"])
+    obj.mainwindow.seriesModified.assert_called_once_with(True)
+
+
+def test_real_cr_handler_checked_sets_curated(qapp):
+    """Checked CR marks the object "Curated"."""
+    obj = _make_cr_handler()
+
+    result = obj.onCheckStateChanged(0, 1, Qt.CheckState.Checked)
+
+    assert result is True
+    obj.series_states.addState.assert_called_once()
+    obj.series.setCuration.assert_called_once_with(["a"], "Curated")
+    obj.manager.updateObjects.assert_called_once_with(["a"])
+    obj.mainwindow.seriesModified.assert_called_once_with(True)
+
+
+def test_real_cr_handler_partial_assigns_when_confirmed(qapp):
+    """PartiallyChecked CR opens the assign-to dialog; when the user confirms,
+    curation is set to "Needs curation" with the entered assignee."""
+    obj = _make_cr_handler()
+
+    with mock.patch(
+        "PyReconstruct.modules.gui.table.object.QInputDialog.getText",
+        return_value=("alice", True),
+    ):
+        result = obj.onCheckStateChanged(0, 1, Qt.CheckState.PartiallyChecked)
+
+    assert result is True
+    obj.series_states.addState.assert_called_once()
+    obj.series.setCuration.assert_called_once_with(["a"], "Needs curation", "alice")
+    obj.manager.updateObjects.assert_called_once_with(["a"])
+    obj.mainwindow.seriesModified.assert_called_once_with(True)
+
+
+def test_real_cr_handler_partial_cancel_reverts(qapp):
+    """PartiallyChecked CR with the dialog cancelled reverts the row and makes
+    no series change (returns False) -- the "not confirmed" branch. addState was
+    already pushed (matching the old behavior), but no curation/modified call."""
+    obj = _make_cr_handler()
+
+    with mock.patch(
+        "PyReconstruct.modules.gui.table.object.QInputDialog.getText",
+        return_value=("", False),
+    ):
+        result = obj.onCheckStateChanged(0, 1, Qt.CheckState.PartiallyChecked)
+
+    assert result is False
+    obj.series.setCuration.assert_not_called()
+    obj.manager.updateObjects.assert_not_called()
+    obj.mainwindow.seriesModified.assert_not_called()
+
+
+def test_real_cr_handler_rejects_locked_object(qapp):
+    """A CR toggle on a locked object is rejected: it notifies, refreshes the
+    row, re-renders via the manager, and returns False without touching
+    curation or pushing a state."""
+    obj = _make_cr_handler(locked=True)
+
+    with mock.patch(
+        "PyReconstruct.modules.gui.table.object.notify"
+    ) as notify_mock:
+        result = obj.onCheckStateChanged(0, 1, Qt.CheckState.Checked)
+
+    assert result is False
+    notify_mock.assert_called_once()
+    obj.manager.updateObjects.assert_called_once_with(["a"])
+    obj.series_states.addState.assert_not_called()
+    obj.series.setCuration.assert_not_called()
+    obj.mainwindow.seriesModified.assert_not_called()
+
+
 # --------------------------------------------------------------------------- #
 # 4. getSelected mapping / copy() / export() equivalence vs old QTableWidget   #
 # --------------------------------------------------------------------------- #
