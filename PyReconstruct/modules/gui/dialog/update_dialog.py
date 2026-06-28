@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QTextBrowser, QProgressBar,
     QPushButton, QWidget,
 )
+from PySide6.QtGui import QTextCursor
 from PySide6.QtCore import Qt
 
 from PyReconstruct.modules.backend.threading import ThreadPool
@@ -73,6 +74,7 @@ class UpdateDialog(QDialog):
         self._notes.setOpenExternalLinks(True)
         try:
             self._notes.setMarkdown(notes)
+            self._space_after_headings()
         except Exception:
             self._notes.setPlainText(notes)
         self._notes.setMinimumHeight(180)
@@ -99,6 +101,24 @@ class UpdateDialog(QDialog):
         row.addWidget(self._later_btn)
         row.addWidget(self._install_btn)
         lay.addLayout(row)
+
+    def _space_after_headings(self, extra=10):
+        """Add breathing room below markdown headings in the notes.
+
+        Qt's ``setMarkdown`` ignores the document default stylesheet, so we walk
+        the blocks and bump the bottom margin on heading blocks instead. Applies
+        to whatever headings the real release notes carry, not just the sample.
+        """
+        doc = self._notes.document()
+        cursor = QTextCursor(doc)
+        block = doc.begin()
+        while block.isValid():
+            fmt = block.blockFormat()
+            if fmt.headingLevel() > 0:
+                fmt.setBottomMargin(fmt.bottomMargin() + extra)
+                cursor.setPosition(block.position())
+                cursor.setBlockFormat(fmt)
+            block = block.next()
 
     # --- download / verify ---------------------------------------------------
     def _start_download(self):
