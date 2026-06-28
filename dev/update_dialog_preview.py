@@ -1,21 +1,41 @@
-"""Preview the in-app update dialog without a frozen build or a real release.
+# /// script
+# requires-python = ">=3.11,<3.12"
+# dependencies = ["PySide6==6.5.2", "packaging"]
+# ///
+"""Standalone visual preview for the in-app update dialog (gui.dialog.update_dialog).
 
-Run on a machine WITH a display (macOS / Windows):
+Run on a machine WITH a real display (macOS / Windows):
 
-    PYTHONPATH=<repo-root> <python-with-PySide6> dev/update_dialog_preview.py
+    uv run --script dev/update_dialog_preview.py        # deps + Python 3.11 via PEP 723
+    # explicit:  uv run --no-project --python 3.11 --with PySide6==6.5.2 --with packaging dev/update_dialog_preview.py
+    # or pip:    pip install PySide6==6.5.2 packaging && python dev/update_dialog_preview.py
 
-It shows the UpdateDialog populated with sample data so you can sign off the
-look (version line, channel, size, "What's new" notes, buttons). NOTE: the
-"Download & Install" button points at a fake URL and will fail — this is a
-LAYOUT preview; click "Later" to close.
+It loads update_dialog.py directly by path, so the only dependencies are PySide6
+and packaging -- none of the heavy PyReconstruct runtime deps (vtk/vedo/zarr/...).
+Shows the dialog with sample data so you can sign off the look: version line,
+channel, download size, the "What's new" release notes, and the buttons.
+
+NOTE: "Download & Install" points at a fake URL and needs the full app env, so
+this is a LAYOUT preview -- click "Later" to close. Exercise the real
+download/verify/install flow from an actual build.
 """
 import os
 import sys
+import importlib.util
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO)
+
+# Load the dialog module by path so we never trigger the gui.dialog package
+# __init__ (and its heavier sibling dialogs). update_dialog's own imports are
+# PySide6 + the stdlib/packaging-only updater backend.
+_path = os.path.join(REPO, "PyReconstruct", "modules", "gui", "dialog", "update_dialog.py")
+_spec = importlib.util.spec_from_file_location("_update_dialog_preview", _path)
+_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
+UpdateDialog = _mod.UpdateDialog
 
 from PySide6.QtWidgets import QApplication, QMainWindow
-from PyReconstruct.modules.gui.dialog.update_dialog import UpdateDialog
 
 INFO = {
     "release": {
