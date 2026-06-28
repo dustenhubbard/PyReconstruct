@@ -1840,7 +1840,8 @@ class MainWindow(QMainWindow):
             return
         if response <= 0:
             notify("Magnification cannot be less than or equal to zero.")
-        
+            return
+
         self.saveAllData()
         
         self.field.setMag(response)
