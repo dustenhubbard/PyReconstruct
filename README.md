@@ -22,8 +22,8 @@ full provenance).
 
 This repository is an independently developed and maintained distribution of
 PyReconstruct. It tracks the upstream [SynapseWeb/PyReconstruct](https://github.com/SynapseWeb/PyReconstruct)
-project and builds on it with substantial performance work, one-click installers,
-an in-app updater, and ongoing user-interface modernization.
+project and builds on it with 3–4× faster open and refresh on large series,
+one-click installers, an in-app updater, and ongoing user-interface modernization.
 
 ## Who it's for
 
@@ -51,10 +51,11 @@ Python required:
   ```
 
 Installed builds can update themselves from within the app via **Help ▸ Check for
-updates**, on either the **Release** (stable, tagged `vX.Y.Z`) or **Pre-release
-(experimental)** (rolling, latest `main`) channel. Updates are downloaded from
-GitHub Releases and checksum-verified before they are applied. An optional
-once-per-day check on startup is available too, off by default.
+updates**, on either the **Release** channel (stable, tagged `vX.Y.Z`) or the
+**Pre-release** channel (experimental; rolling, latest `main`). Updates are
+downloaded from GitHub Releases and verified against a published SHA-256 checksum
+before they are applied. An optional once-per-day check on startup is available
+too, off by default.
 
 ### From source (developers)
 
@@ -92,12 +93,14 @@ geometry and serialization paths, with no change to the `.jser` format or the
 data model:
 
 - **3–4× faster to open and refresh a series**, measured across real autoseg
-  series from 6 MB to 1.4 GB (up to **4.2×** on the fastest case). For example, a
+  series from 6 MB to 1.4 GB (up to **4.2×** on the best case). For example, a
   1.4 GB / 492k-trace series drops from roughly **9.7 minutes to about 3.1
   minutes** to open and refresh.
-- **Exact equivalence.** The optimized code produces numerically identical
-  geometry to the previous implementation — section, object, and trace counts
-  match, and total area / length / radius agree to the floating-point limit. The
+- **Verified equivalence.** The optimized code reproduces the previous
+  implementation's geometry: section, object, and trace counts match exactly, and
+  summed area, length, and radius are identical on seven of the eight benchmark
+  series — on the largest (492k traces) the summed radius differs by ~1e-11
+  relative, from floating-point summation order, not from doing less work. The
   speedup comes from doing the same work faster, not from skipping work.
 - **Algorithmic, single-threaded wins** — vectorized per-trace geometry, a lazy
   Feret-diameter (convex-hull) computation, NumPy point mapping, and
@@ -115,13 +118,13 @@ In the latest tagged release (v1.20.0):
 
 - **One-click installers** for Windows and macOS, built in CI; the macOS build is
   a native Apple Silicon binary on an updated 3D stack (vtk 9.4.2 + vedo 2025.5.4).
-- **In-app updater** with Release / Pre-release channels and checksum-verified
-  downloads from GitHub Releases.
+- **In-app updater** that updates installed builds from GitHub Releases (see
+  [Install](#install) for channels and verification).
 
 On the Pre-release (experimental) channel, ahead of the next tagged release:
 
 - **Faster large-series open & refresh** — the performance work above (3–4×, with
-  exact geometry equivalence).
+  verified geometry equivalence).
 - **A correctness test suite** (geometry/transform equivalence, updater logic)
   and a headless performance harness.
 
@@ -146,9 +149,9 @@ Michael D. Musslewhite, Larry F. Lindsey, and Kristen M. Harris (Kristen Harris
 Lab, Department of Neuroscience, Center for Learning and Memory, **The University
 of Texas at Austin**) and introduced in *PNAS* (2025; see
 [Citation](#citation)). The upstream project lives at
-[SynapseWeb/PyReconstruct](https://github.com/SynapseWeb/PyReconstruct). It is the
-modern successor to the original **Reconstruct** by John C. Fiala — a
-long-standing, Windows-only serial-section reconstruction program.
+[SynapseWeb/PyReconstruct](https://github.com/SynapseWeb/PyReconstruct). It
+succeeds the original **Reconstruct** by John C. Fiala — a long-standing,
+Windows-only serial-section reconstruction program.
 
 This distribution is independently developed and maintained by **Dusten Hubbard**
 (Kristen Harris Lab, Department of Neuroscience, Center for Learning and Memory,
@@ -168,6 +171,7 @@ If you use PyReconstruct in published work, please cite
 	number = {31},
 	pages = {e2505822122},
 	year = {2025},
+	month = {7},
 	doi = {10.1073/pnas.2505822122},
 }
 ```

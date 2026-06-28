@@ -14,7 +14,7 @@ the next tagged release.
 ### Added
 - A `pytest` test suite covering geometry/transform equivalence and the updater's
   selection, version-comparison, and checksum logic, plus a headless performance
-  harness. (#1, #2, #3)
+  harness. (#2, #3)
 - Reproducible fork-vs-upstream benchmarks under `benchmarks/`, with raw results,
   aggregated medians, and an equivalence report. (#1)
 
@@ -24,7 +24,9 @@ the next tagged release.
   change to the `.jser` format or data model. Open and refresh are **3–4× faster**
   across real autoseg series from 6 MB to 1.4 GB (up to ~4.2×); the geometry is
   verified equivalent to the previous implementation — section/object/trace counts
-  match and total area/length/radius agree to the floating-point limit. The work
+  match exactly and summed area/length/radius are identical on seven of the eight
+  benchmark series (the largest differs by ~1e-11 relative on summed radius, from
+  floating-point summation order). The work
   vectorizes `traceGeometry` into a single NumPy pass, defers the Feret-diameter
   convex hull until it is read, maps trace points straight to NumPy arrays, and
   uses [orjson](https://github.com/ijl/orjson) on the JSON load/save paths (with a
