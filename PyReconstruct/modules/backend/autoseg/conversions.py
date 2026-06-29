@@ -40,7 +40,7 @@ def get_zarr_array(zarr: zarr.hierarchy.Group, path: str="raw"):
 
     else:
 
-        return ValueError("No zarr array found.")
+        raise ValueError("No zarr array found.")
 
 
 def get_true_mag(zarr_array):
