@@ -474,7 +474,10 @@ def labelsToObjects(series : Series, data_fp : str, group : str, ids: list = Non
             the threadpool
     """
 
-    data_zg, sections, section_start = getLabelsToObjectsData(data_fp, group)
+    data = getLabelsToObjectsData(data_fp, group)
+    if data is None:  # group not present in the zarr
+        return
+    data_zg, sections, section_start = data
 
     ## Create threadpool and iterate across sections
     setDT()
