@@ -266,3 +266,38 @@ class ObjectTableView(QTableView):
     def resizeColumnsToContents(self):
         super().resizeColumnsToContents()
         self._applyQDarkPadding()
+
+    def growColumnsToFitRow(self, row):
+        """Widen any column that the cells in ``row`` no longer fit into.
+
+        The full ``resizeColumnsToContents()`` samples up to 100 rows on every
+        call (see ``setResizeContentsPrecision`` in createTable), which is what
+        made the old per-edit re-measure cost ~4-7 ms. This measures ONLY the
+        one row that just changed -- ``sizeHintForIndex`` on that row's cell in
+        each column -- so the work is O(#columns), independent of #objects.
+
+        It only ever GROWS a column (never shrinks), matching the visible part
+        of the old behavior: an edited/added value wider than the current column
+        widens the column to fit it; nothing else moves. Returns True if any
+        column was grown (used by tests to confirm a fit-width edit is a no-op).
+        """
+        model = self.model()
+        if model is None or not (0 <= row < model.rowCount()):
+            return False
+        grew = False
+        # qdark adds 8px of padding to each column width in resizeColumnsToContents;
+        # match it here so a grown column lines up with a full-rebuild width.
+        try:
+            series = getattr(self.parent().parent(), "series")
+            pad = 8 if series.getOption("theme") == "qdark" else 0
+        except AttributeError:
+            pad = 0
+        for c in range(model.columnCount()):
+            hint = self.sizeHintForIndex(model.index(row, c)).width()
+            if hint <= 0:
+                continue
+            needed = hint + pad
+            if needed > self.columnWidth(c):
+                self.setColumnWidth(c, needed)
+                grew = True
+        return grew

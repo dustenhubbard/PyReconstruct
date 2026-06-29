@@ -165,6 +165,154 @@ def test_uniform_row_height_handles_empty_model(qapp):
 
 
 # --------------------------------------------------------------------------- #
+# 2b. Incremental column auto-widen (O(1)-per-edit mitigation)                 #
+#                                                                              #
+# The old QTableWidget re-ran resizeColumnsToContents() on every edit, so a    #
+# longer edited/inserted value widened its column to fit. Virtualization       #
+# dropped that full re-sample; growColumnsToFitRow restores the widen by       #
+# measuring ONLY the changed row (O(#columns), independent of #objects). These #
+# pin: it grows a column for a too-wide cell, never shrinks for a fit cell,    #
+# and the per-edit path never calls the full resizeColumnsToContents().        #
+# --------------------------------------------------------------------------- #
+class _WidthSource:
+    """Synthetic source whose Comment cell text is editable per object."""
+    def __init__(self, names):
+        self._names = sortList(names)
+        self.static_columns = ["Name"]
+        self.columns = [("Comment", True)]
+        self.comments = {n: "" for n in self._names}
+
+    def getHeaders(self):
+        return ["Name", "Comment"]
+
+    def getFiltered(self):
+        return sortList([n for n in self._names if n in self.comments])
+
+    def getItems(self, name, key):
+        if key == "Comment":
+            return [QTableWidgetItem(self.comments.get(name, ""))]
+        return [QTableWidgetItem(name)]
+
+
+def test_wide_edit_grows_only_changed_column(qapp):
+    """An edit whose new value is wider than the current column grows that
+    column to fit (the cell's own sizeHint), restoring the old widen behavior --
+    without a full resizeColumnsToContents()."""
+    src = _WidthSource(["a", "b", "c"])
+    model, view = _make_view(src, show=True, configure=True)
+
+    comment_col = view.model().columnCount() - 1
+    before = view.columnWidth(comment_col)
+
+    src.comments["b"] = "X" * 200
+    row, exists = model.rowOf("b")
+    assert exists
+    model.refreshRow(row)
+    grew = view.growColumnsToFitRow(row)
+
+    after = view.columnWidth(comment_col)
+    assert grew is True
+    assert after > before
+    # the column is now at least as wide as the edited cell needs (not clipped)
+    assert after >= view.sizeHintForIndex(model.index(row, comment_col)).width()
+
+
+def test_inserted_wide_value_grows_column(qapp):
+    """Inserting a row whose value is wider than any existing column widens that
+    column -- the new-object analogue of the wide-edit case."""
+    src = _WidthSource(["a", "c"])
+    model, view = _make_view(src, show=True, configure=True)
+
+    comment_col = view.model().columnCount() - 1
+    before = view.columnWidth(comment_col)
+
+    # add a new object "b" carrying a long comment
+    src.comments["b"] = "WIDE" * 60
+    row, exists = model.rowOf("b")
+    assert not exists
+    model.insertName("b", row)
+    grew = view.growColumnsToFitRow(row)
+
+    assert grew is True
+    assert view.columnWidth(comment_col) > before
+
+
+def test_fit_edit_does_not_shrink_or_full_resize(qapp):
+    """An edit that fits the current column neither shrinks it nor triggers the
+    O(#rows) resizeColumnsToContents() -- the cost that virtualization removed.
+    growColumnsToFitRow reports no growth for a fit-width edit."""
+    src = _WidthSource(["a", "b", "c"])
+    model, view = _make_view(src, show=True, configure=True)
+
+    comment_col = view.model().columnCount() - 1
+
+    # first widen the column with a long value
+    src.comments["b"] = "X" * 200
+    row, _ = model.rowOf("b")
+    model.refreshRow(row)
+    view.growColumnsToFitRow(row)
+    wide = view.columnWidth(comment_col)
+
+    # now a short edit that comfortably fits: width must stay (never shrink)
+    full_resize = mock.patch.object(
+        ObjectTableView, "resizeColumnsToContents", autospec=True
+    )
+    with full_resize as resize_spy:
+        src.comments["b"] = "y"
+        model.refreshRow(row)
+        grew = view.growColumnsToFitRow(row)
+
+    assert grew is False
+    assert view.columnWidth(comment_col) == wide          # never shrinks
+    resize_spy.assert_not_called()                         # no O(#rows) resample
+
+
+def test_updateData_grows_column_without_full_resize(qapp, tmp_path):
+    """End-to-end on the real ObjectTableWidget.updateData path: a comment edit
+    wider than the column widens it, and updateData never calls the full
+    resizeColumnsToContents().
+
+    _RealObjectSource already implements the full source contract (and exposes
+    .series / .passesFilters), so it doubles as the updateData container; we
+    only attach the model/view/mainwindow updateData also touches.
+    """
+    series = _load_series(tmp_path)
+    names = sortList(list(series.data["objects"].keys()))
+    all_cols = [(k, True) for k, _ in series.getOption("object_columns")]
+
+    obj = _RealObjectSource(series, all_cols)
+    obj.updateData = ObjectTableWidget.updateData.__get__(obj, _RealObjectSource)
+    obj.horizontal_headers = obj.getHeaders()
+
+    model = ObjectTableModel(obj)
+    obj.model = model
+    view = ObjectTableView(obj)
+    view.setModel(model)
+    view.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    view.horizontalHeader().setResizeContentsPrecision(100)
+    view.resizeColumnsToContents()
+    view.resize(900, 600)
+    view.show()
+    QApplication.processEvents()
+    obj.table = view
+    obj.mainwindow = mock.Mock()
+
+    comment_col = obj.getHeaders().index("Comment")
+    before = view.columnWidth(comment_col)
+
+    target = names[0]
+    series.setAttr(target, "comment", "VERYLONGCOMMENT" * 20)
+
+    with mock.patch.object(
+        ObjectTableView, "resizeColumnsToContents", autospec=True
+    ) as resize_spy:
+        obj.updateData([target])
+
+    assert view.columnWidth(comment_col) > before          # widened to fit
+    resize_spy.assert_not_called()                          # stayed O(1)/edit
+
+
+# --------------------------------------------------------------------------- #
 # 3. The edit seam: setData -> onCheckStateChanged                             #
 # --------------------------------------------------------------------------- #
 class _CheckSource:

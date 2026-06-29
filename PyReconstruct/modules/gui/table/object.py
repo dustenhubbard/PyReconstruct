@@ -547,13 +547,14 @@ class ObjectTableWidget(DataTable):
     def updateData(self, names : list):
         """Update the data for a set of objects.
 
-        Perf trade-off (intentional): incremental updates only insert / remove /
-        refresh the affected rows -- they do NOT call resizeColumnsToContents().
-        Only the full createTable() path re-measures column widths. So a single
-        edit that produces a wider cell than any existing one will be clipped
-        until the next full table rebuild. Re-sizing here would re-introduce an
-        O(#objects) sampling pass on every edit, which is what virtualization
-        removes; clipping the rare widening edit is the accepted cost.
+        Incremental updates only insert / remove / refresh the affected rows --
+        they never call resizeColumnsToContents() (which samples up to 100 rows
+        and cost ~4-7 ms per edit, defeating virtualization). To keep the old
+        "a longer edited value widens its column" behavior without that cost,
+        each refreshed/inserted row is measured on its own (O(#columns) via
+        ObjectTableView.growColumnsToFitRow) and a column is grown only if that
+        one row's cell now needs more width than the current column -- never
+        shrunk, never a full re-sample. Per-edit cost stays O(1) in #objects.
 
             Params:
                 names (iterable): the names of the objects to update
@@ -575,11 +576,15 @@ class ObjectTableWidget(DataTable):
             elif exists_in_table and exists_in_series:
 
                 self.model.refreshRow(row)
+                # only this row's cells can have grown wider -- measure just it
+                self.table.growColumnsToFitRow(row)
 
             ## Add new row
             elif not exists_in_table and exists_in_series and pass_filters:
 
                 self.model.insertName(name, row)
+                # the inserted value may be wider than any existing column
+                self.table.growColumnsToFitRow(row)
 
         self.mainwindow.checkActions()
     
