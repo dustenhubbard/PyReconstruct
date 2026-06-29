@@ -142,6 +142,10 @@ def seriesXMLToJSON(series_fp, section_fps, hidden_dir):
             xml_contour,
         )
         series_dict["palette_traces"].append(trace.getList())
+    if not series_dict["palette_traces"]:  # legacy series with no palette contours
+        series_dict["palette_traces"] = [
+            t.getList() for t in Series.getDefaultPaletteTraces()
+        ]
     series_dict["current_trace"] = series_dict["palette_traces"][0]
     
     # import ztraces
