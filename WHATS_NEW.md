@@ -6,12 +6,10 @@ full release notes on GitHub (linked from the dialog).
 
 ## [1.20.3] — 2026-06-29
 
-- **A calmer first launch.** PyReconstruct no longer pops up a box asking for your
-  name every time it starts — it just remembers you.
-- **The window opens at a comfortable size** and reopens wherever you left it.
-- **Your palette stays how you set it.** Hide the section-increment buttons, the
-  brightness/contrast sliders, or the scale bar, and they stay hidden next time.
-- **A quick summary after each update** (like this one), so you always know what's new.
+- **Your palette layout sticks.** Drag the brightness/contrast sliders, increment
+  buttons, or scale bar where you want them — they reopen right where you left them.
+- **A clearer "What's new."** This dialog now shows your version and release date,
+  and sums up everything new since the version you last had.
 
 ## [1.20.2] — 2026-06-29
 
