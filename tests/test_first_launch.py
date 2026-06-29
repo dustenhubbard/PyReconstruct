@@ -185,3 +185,19 @@ def test_maybe_show_resolves_current_version_by_default(monkeypatch):
     monkeypatch.setattr(W, "current_version_str", lambda: "2.0.0")
     assert W.maybe_show_whats_new(None, settings=FakeSettings(), show=show) is True
     assert calls == ["2.0.0"]
+
+
+# ---- startup-flow guard (first-run friction audit) --------------------------
+def test_startup_username_resolver_has_no_path_to_a_prompt():
+    """Guard the first-run flow against a reintroduced startup prompt.
+
+    The startup audit confirmed the old "Enter your username" dialog was the
+    only unprompted blocking modal on a fresh launch; every other startup modal
+    is gated behind a user action. Lock that in for the username path: the
+    silent resolver lives in a module that imports no Qt *widget*, so a
+    focus-stealing prompt cannot creep back into startup username resolution.
+    """
+    import inspect
+    src = inspect.getsource(F)
+    for forbidden in ("QtWidgets", "QInputDialog", "QMessageBox", "QDialog", ".exec("):
+        assert forbidden not in src, f"{forbidden} must not appear in the silent startup helper"
