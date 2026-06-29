@@ -156,6 +156,9 @@ class FieldWidgetBase:
             self.mainwindow,
         )
 
+        ## Auto-open the promoted lists (UI v1 Slice 3)
+        self._restoreOpenTables()
+
         ## Reset cursor
         self.mouse_mode = 0
         self.setCursor(QCursor(Qt.ArrowCursor))
@@ -471,11 +474,23 @@ class FieldWidgetBase:
     
     def openList(self, list_type : str):
         """Open a list.
-        
+
             Params:
                 list_type (str): object, trace, section, ztrace, or flag
         """
         self.table_manager.newTable(list_type, self.section)
+
+    def _restoreOpenTables(self):
+        """Auto-open the saved list docks on series open (UI v1 Slice 3). The
+        welcome series opens nothing. Iterates a snapshot since openList -> newTable
+        updates the open_tables option as each dock opens. Unknown types (corrupted
+        QSettings, or a type removed in a future version) are skipped, not fatal."""
+        if self.series.isWelcomeSeries():
+            return
+        from PyReconstruct.modules.backend.table.manager import table_type_classes
+        for list_type in list(self.series.getOption("open_tables")):
+            if list_type in table_type_classes:
+                self.openList(list_type)
     
     def updateData(self, clear_tracking=True) -> None:
         """Update the series data object and the tables.
