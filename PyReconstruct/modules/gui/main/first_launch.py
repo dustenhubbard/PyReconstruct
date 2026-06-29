@@ -94,6 +94,22 @@ def find_changelog_path():
     return None
 
 
+def find_whats_new_path():
+    """Locate the bundled ``WHATS_NEW.md`` (friendly highlights) across layouts."""
+    candidates = [
+        Path(assets_dir) / "WHATS_NEW.md",       # frozen build (bundled in assets)
+        Path(src_dir).parent / "WHATS_NEW.md",   # source checkout (repo root)
+        Path(src_dir) / "WHATS_NEW.md",
+    ]
+    for c in candidates:
+        try:
+            if c.is_file():
+                return c
+        except OSError:
+            continue
+    return None
+
+
 def _normalize_version(version):
     v = (version or "").strip()
     return v[1:] if v[:1] in ("v", "V") else v
@@ -137,29 +153,26 @@ def github_release_url(version=None):
 
 
 def release_notes_markdown(version):
-    """Best-effort release-note markdown for ``version`` (offline-safe).
+    """Friendly, user-facing highlights for ``version`` (offline-safe).
 
-    Prefers the version's CHANGELOG section, then the ``[Unreleased]`` section,
-    then a short generic message. Never raises and never touches the network.
+    Shows the version's section from ``WHATS_NEW.md`` -- short, plain-language
+    highlights, deliberately *not* the technical CHANGELOG. If no highlights are
+    bundled for this version, returns a brief, non-technical message; the detailed
+    changelog is reached via the "Full release notes on GitHub" link, not here.
+    Never raises and never touches the network.
     """
-    text = None
-    path = find_changelog_path()
+    path = find_whats_new_path()
     if path is not None:
         try:
             text = path.read_text(encoding="utf-8")
         except OSError:
             text = None
-    if text:
-        section = parse_changelog_section(text, version)
-        if section:
-            return section
-        unreleased = parse_changelog_section(text, "Unreleased")
-        if unreleased:
-            return (
-                "_These changes have landed and ship ahead of the next tagged "
-                "release._\n\n" + unreleased
-            )
+        if text:
+            section = parse_changelog_section(text, version)
+            if section:
+                return section
     return (
         "Thanks for updating PyReconstruct.\n\n"
-        "See the full release notes on GitHub for what changed in this version."
+        "Click **Full release notes on GitHub** below to see everything that "
+        "changed in this version."
     )

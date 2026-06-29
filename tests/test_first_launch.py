@@ -117,18 +117,21 @@ def test_parse_changelog_section_missing_returns_none():
     assert F.parse_changelog_section(SAMPLE, "") is None
 
 
-def test_release_notes_prefers_version_then_unreleased_then_generic(monkeypatch, tmp_path):
-    cl = tmp_path / "CHANGELOG.md"
-    cl.write_text(SAMPLE, encoding="utf-8")
-    monkeypatch.setattr(F, "find_changelog_path", lambda: cl)
+def test_release_notes_shows_friendly_highlights_then_generic(monkeypatch, tmp_path):
+    # the dialog body comes from WHATS_NEW.md (friendly), not the technical CHANGELOG
+    wn = tmp_path / "WHATS_NEW.md"
+    wn.write_text(SAMPLE, encoding="utf-8")
+    monkeypatch.setattr(F, "find_whats_new_path", lambda: wn)
     assert "Silent username." in F.release_notes_markdown("1.20.2")          # exact version
-    fallback = F.release_notes_markdown("9.9.9")                              # -> unreleased
-    assert "Unreleased thing." in fallback
-    assert "ship ahead of the next tagged release" in fallback
 
-    monkeypatch.setattr(F, "find_changelog_path", lambda: None)              # nothing bundled
-    generic = F.release_notes_markdown("1.20.2")
-    assert "release notes on GitHub" in generic
+    # no highlights section for this version -> friendly generic, never raw changelog
+    generic = F.release_notes_markdown("9.9.9")
+    assert "release notes on GitHub" in generic.lower() or "Full release notes" in generic
+    assert "Unreleased thing." not in generic
+
+    monkeypatch.setattr(F, "find_whats_new_path", lambda: None)              # nothing bundled
+    generic2 = F.release_notes_markdown("1.20.2")
+    assert "Full release notes on GitHub" in generic2
 
 
 # ---- github link ------------------------------------------------------------
