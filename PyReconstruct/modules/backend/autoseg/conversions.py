@@ -688,6 +688,9 @@ def importSection(data_zg, group, snum, series, ids=None):
     except KeyError:
         return
 
+    if snum not in series.sections:  # section not in the current series
+        return
+
     ## Load section and corresponding data
     section = series.loadSection(snum)
     z = sections.index(snum)
