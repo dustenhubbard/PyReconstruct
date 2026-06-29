@@ -45,6 +45,11 @@ the next tagged release.
 - Renamed the updater channels to **Release** and **Pre-release (experimental)**.
 
 ### Fixed
+- **No username prompt on launch.** Startup no longer opens a blocking "Enter
+  your username" dialog that stole focus and ignored a previously saved name.
+  The username is now resolved silently: a name saved on this machine is reused,
+  otherwise the OS login is used and saved. "Change username..." in the menu
+  still sets it explicitly.
 - Declared the `orjson` dependency in `pyproject.toml`. It powers the jser
   load/save speedups but was previously only in `requirements.txt`, so a
   pyproject-based install silently dropped it and lost both the speedup and the

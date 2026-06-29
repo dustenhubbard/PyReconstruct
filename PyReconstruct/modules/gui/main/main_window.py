@@ -69,8 +69,8 @@ class MainWindow(QMainWindow):
 
         self.show()
 
-        ## Prompt for username
-        self.changeUsername()
+        ## Resolve the username silently -- no prompt on launch
+        self.resolveUsernameStartup()
 
         ## Opt-in background update check (frozen builds), once the window is up
         from PySide6.QtCore import QTimer
@@ -444,9 +444,21 @@ class MainWindow(QMainWindow):
             convert_cmd = " ".join(convert_cmd)
             subprocess.Popen(convert_cmd, shell=True, stdout=None, stderr=None)
 
+    def resolveUsernameStartup(self):
+        """Resolve the tracking username silently at launch -- never prompts.
+
+        Uses a name saved on this machine if present, otherwise the OS login
+        (the default), persisting it. The "Change username..." menu action stays
+        for explicit edits. Trace-history attribution still gets a username via
+        ``self.series.user``.
+        """
+        from PyReconstruct.modules.gui.main.first_launch import resolve_username
+        resolve_username(QSettings("KHLab", "PyReconstruct"), self.series)
+        self.notifyNewEditor()
+
     def changeUsername(self, new_name : str = None):
         """Edit the login name used to track history.
-        
+
             Params:
                 new_name (str): the new username
         """
