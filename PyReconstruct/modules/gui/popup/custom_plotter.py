@@ -746,6 +746,8 @@ class VPlotter(vedo.Plotter):
     
     def setFocalPointToSelected(self):
         """Set the focal point as the center of the selected items."""
+        if not self.selected:
+            return
         # get the total cetner
         centers = [np.array(obj.center) for obj in self.selected]
         avg_center = tuple(sum(centers) / len(centers))
