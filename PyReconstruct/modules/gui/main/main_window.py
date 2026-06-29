@@ -18,16 +18,23 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("PyReconstruct")
         self.setWindowIcon(QPixmap(icon_path))
 
-        ## Set main window to slightly less than monitor
+        ## Restore the saved window geometry, or fall back to a modest default
         screen = QApplication.primaryScreen()
         self.screen_info = get_screen_info(screen)
 
-        self.setGeometry(
-            50,                               # x
-            80,                               # y 
-            self.screen_info["width"] - 100,  # width
-            self.screen_info["height"] - 160  # height
-        )
+        geometry = QSettings("KHLab", "PyReconstruct").value("window/geometry")
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+        else:
+            # first launch: ~80% of the screen, centered (not near-maximized)
+            w = int(self.screen_info["width"] * 0.8)
+            h = int(self.screen_info["height"] * 0.8)
+            self.setGeometry(
+                (self.screen_info["width"] - w) // 2,   # x
+                (self.screen_info["height"] - h) // 2,  # y
+                w,                                       # width
+                h,                                       # height
+            )
 
         self.series                 =  None
         self.series_data            =  None
@@ -3302,6 +3309,8 @@ class MainWindow(QMainWindow):
                 self._pending_installer = None
                 self._pending_update_dir = None
             return
+        # persist window geometry so size/position survive a restart
+        QSettings("KHLab", "PyReconstruct").setValue("window/geometry", self.saveGeometry())
         if self.viewer and not self.viewer.is_closed:
             self.viewer.close()
         # launch a pending update installer now that the close is committed
