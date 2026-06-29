@@ -142,6 +142,12 @@ jobs:
         with:
           files: dist/*
           prerelease: false
+          # Stage a release as a hidden DRAFT (e.g. for a live demo): set the repo
+          # variable STAGE_RELEASE_AS_DRAFT=true, push the tag, then hit "Publish"
+          # when ready — assets are pre-built so it goes live instantly. The updater
+          # ignores drafts, so it stays invisible until published. Unset/false (the
+          # default) publishes immediately, exactly as before.
+          draft: ${{ vars.STAGE_RELEASE_AS_DRAFT == 'true' }}
           generate_release_notes: true
 
   release-prerelease:
