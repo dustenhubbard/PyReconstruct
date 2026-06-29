@@ -2997,6 +2997,8 @@ class MainWindow(QMainWindow):
 
         # open the other series
         o_series = Series.openJser(jser_fp)
+        if o_series is None:  # user cancelled the open
+            return
 
         # check the manigifcations
         if not checkMag(self.series, o_series):
