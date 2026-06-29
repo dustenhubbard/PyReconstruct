@@ -44,6 +44,12 @@ _version_file = PKG_DIR / "_version.py"
 if _version_file.exists():
     datas.append((str(_version_file), "PyReconstruct"))
 
+# --- CHANGELOG.md: bundled beside the assets so the first-launch "What's new"
+#     dialog can read the running version's notes offline (no network needed).
+_changelog = REPO_ROOT / "CHANGELOG.md"
+if _changelog.exists():
+    datas.append((str(_changelog), "PyReconstruct/assets"))
+
 # --- VTK 9.4.2: hooks-contrib covers it; we still collect everything and force
 #     the render/interaction modules as belt-and-suspenders vs a blank viewport.
 _vd, _vb, _vh = collect_all("vtkmodules")

@@ -12,6 +12,11 @@ the next tagged release.
 ## [Unreleased]
 
 ### Added
+- **"What's new" on first launch.** On the first launch of a new version — a
+  fresh install or after an update — PyReconstruct shows a dismissible "What's
+  new" dialog with that version's release notes, read from the bundled
+  `CHANGELOG.md` (offline-safe) with a link to the full notes on GitHub. It
+  appears once per version and is modeless, so it never blocks startup.
 - **Intel macOS installer.** CI now builds a native x86_64 `.dmg`
   (`PyReconstruct-<version>-macOS-x86_64.dmg`) on a `macos-15-intel` runner
   alongside the Apple Silicon arm64 build, so Intel Macs get a native installer.

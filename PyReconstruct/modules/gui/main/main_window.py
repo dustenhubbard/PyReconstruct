@@ -76,6 +76,9 @@ class MainWindow(QMainWindow):
         from PySide6.QtCore import QTimer
         QTimer.singleShot(2500, self.checkForUpdatesStartup)
 
+        ## First-launch / post-update "What's new" (once per version, dismissible)
+        QTimer.singleShot(750, self.showWhatsNewStartup)
+
     def openWelcomeSeries(self):
         """Open a welcome series."""
 
@@ -455,6 +458,18 @@ class MainWindow(QMainWindow):
         from PyReconstruct.modules.gui.main.first_launch import resolve_username
         resolve_username(QSettings("KHLab", "PyReconstruct"), self.series)
         self.notifyNewEditor()
+
+    def showWhatsNewStartup(self):
+        """Show the 'What's new' dialog once per version (fresh install/upgrade).
+
+        Dismissible and modeless -- never blocks startup. Any failure is
+        swallowed so this first-launch convenience can't disrupt the app.
+        """
+        try:
+            from PyReconstruct.modules.gui.dialog.whats_new import maybe_show_whats_new
+            maybe_show_whats_new(self)
+        except Exception:
+            pass
 
     def changeUsername(self, new_name : str = None):
         """Edit the login name used to track history.

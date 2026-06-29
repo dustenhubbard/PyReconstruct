@@ -1,7 +1,7 @@
-"""First-launch UX tests: silent username resolution.
+"""First-launch UX tests: silent username resolution and the What's-new gate.
 
-All hermetic and headless -- the QSettings store is injected, so nothing touches
-the real user settings or pops a dialog.
+All hermetic and headless -- the QSettings store and current-version lookup are
+injected, so nothing touches the real user settings or pops a dialog.
 """
 import pytest
 
@@ -10,7 +10,7 @@ from PyReconstruct.modules.gui.main import first_launch as F
 
 # ---- fakes ------------------------------------------------------------------
 class FakeSettings:
-    """A QSettings-shaped dict so the resolver can be tested without Qt I/O."""
+    """A QSettings-shaped dict so the gate/resolver can be tested without Qt I/O."""
 
     def __init__(self, data=None):
         self._d = dict(data or {})
@@ -55,3 +55,133 @@ def test_resolve_username_treats_empty_or_nonstring_as_unset(saved):
 def test_resolve_username_default_of_last_resort():
     settings = FakeSettings()
     assert F.resolve_username(settings, default_factory=lambda: "") == "default"
+
+
+# ---- what's-new version gate ------------------------------------------------
+@pytest.mark.parametrize("stored,current,expected", [
+    (None, "1.20.2", True),          # fresh install
+    ("", "1.20.2", True),            # empty stored == fresh
+    ("1.20.0", "1.20.2", True),      # after an update
+    ("1.19.9", "1.20.0", True),
+    ("1.20.2", "1.20.2", False),     # re-launch of a seen version
+    ("1.21.0", "1.20.2", False),     # downgrade -> don't nag
+    ("garbage", "1.20.2", True),     # corrupt stored -> show once, self-heals
+    ("1.20.2", None, False),         # indeterminate current -> don't show
+    (None, None, False),
+    (None, "", False),
+])
+def test_whats_new_due(stored, current, expected):
+    assert F.whats_new_due(stored, current) is expected
+
+
+# ---- changelog parsing ------------------------------------------------------
+SAMPLE = """# Changelog
+
+## [Unreleased]
+
+### Added
+- Unreleased thing.
+
+## [1.20.2] - 2026-07-01
+
+### Fixed
+- Silent username.
+- What's new dialog.
+
+## [1.20.0] - 2026-06-26
+
+### Added
+- Installers.
+"""
+
+
+def test_parse_changelog_section_finds_version():
+    sec = F.parse_changelog_section(SAMPLE, "1.20.2")
+    assert "Silent username." in sec
+    assert "What's new dialog." in sec
+    assert "Installers." not in sec      # stops at the next ## heading
+    assert "Unreleased thing." not in sec
+
+
+def test_parse_changelog_section_strips_v_prefix():
+    assert F.parse_changelog_section(SAMPLE, "v1.20.2") == F.parse_changelog_section(SAMPLE, "1.20.2")
+
+
+def test_parse_changelog_section_unreleased():
+    assert "Unreleased thing." in F.parse_changelog_section(SAMPLE, "Unreleased")
+
+
+def test_parse_changelog_section_missing_returns_none():
+    assert F.parse_changelog_section(SAMPLE, "9.9.9") is None
+    assert F.parse_changelog_section("", "1.20.2") is None
+    assert F.parse_changelog_section(SAMPLE, "") is None
+
+
+def test_release_notes_prefers_version_then_unreleased_then_generic(monkeypatch, tmp_path):
+    cl = tmp_path / "CHANGELOG.md"
+    cl.write_text(SAMPLE, encoding="utf-8")
+    monkeypatch.setattr(F, "find_changelog_path", lambda: cl)
+    assert "Silent username." in F.release_notes_markdown("1.20.2")          # exact version
+    fallback = F.release_notes_markdown("9.9.9")                              # -> unreleased
+    assert "Unreleased thing." in fallback
+    assert "ship ahead of the next tagged release" in fallback
+
+    monkeypatch.setattr(F, "find_changelog_path", lambda: None)              # nothing bundled
+    generic = F.release_notes_markdown("1.20.2")
+    assert "release notes on GitHub" in generic
+
+
+# ---- github link ------------------------------------------------------------
+def test_github_release_url_points_at_the_updater_repo():
+    assert F.GITHUB_REPO in F.github_release_url()
+    assert F.github_release_url("1.20.2").endswith("/releases/tag/v1.20.2")
+    assert F.github_release_url("Unreleased").endswith("/releases")  # not a real tag
+    assert F.github_release_url(None).endswith("/releases")
+
+
+# ---- maybe_show_whats_new (gate + persistence, dialog stubbed) --------------
+def _record_show():
+    calls = []
+    return calls, (lambda parent, version: calls.append(version))
+
+
+def test_maybe_show_fresh_install_shows_once_and_records():
+    from PyReconstruct.modules.gui.dialog import whats_new as W
+    calls, show = _record_show()
+    settings = FakeSettings()
+    assert W.maybe_show_whats_new(None, settings=settings, current="1.20.2", show=show) is True
+    assert calls == ["1.20.2"]
+    assert settings.value(F.WHATSNEW_KEY) == "1.20.2"
+    # re-launch of the same version: no second show
+    assert W.maybe_show_whats_new(None, settings=settings, current="1.20.2", show=show) is False
+    assert calls == ["1.20.2"]
+
+
+def test_maybe_show_after_update_shows_again():
+    from PyReconstruct.modules.gui.dialog import whats_new as W
+    calls, show = _record_show()
+    settings = FakeSettings({F.WHATSNEW_KEY: "1.20.0"})
+    assert W.maybe_show_whats_new(None, settings=settings, current="1.20.2", show=show) is True
+    assert calls == ["1.20.2"]
+    assert settings.value(F.WHATSNEW_KEY) == "1.20.2"
+
+
+def test_maybe_show_skips_downgrade_and_unknown(monkeypatch):
+    from PyReconstruct.modules.gui.dialog import whats_new as W
+    calls, show = _record_show()
+    down = FakeSettings({F.WHATSNEW_KEY: "1.21.0"})
+    assert W.maybe_show_whats_new(None, settings=down, current="1.20.2", show=show) is False
+    assert down.value(F.WHATSNEW_KEY) == "1.21.0"   # record left untouched
+    # an indeterminate running version (current_version_str -> None): never show
+    monkeypatch.setattr(W, "current_version_str", lambda: None)
+    assert W.maybe_show_whats_new(None, settings=FakeSettings(), show=show) is False
+    assert calls == []
+
+
+def test_maybe_show_resolves_current_version_by_default(monkeypatch):
+    """With no explicit current, it uses current_version_str() (the running build)."""
+    from PyReconstruct.modules.gui.dialog import whats_new as W
+    calls, show = _record_show()
+    monkeypatch.setattr(W, "current_version_str", lambda: "2.0.0")
+    assert W.maybe_show_whats_new(None, settings=FakeSettings(), show=show) is True
+    assert calls == ["2.0.0"]
