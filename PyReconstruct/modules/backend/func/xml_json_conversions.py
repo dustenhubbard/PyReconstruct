@@ -228,7 +228,7 @@ def sectionXMLtoJSON(section_fp, alignment_dict, hidden_dir):
 
     # get transform data
     section_dict["tforms"] = {}
-    if alignment_dict:
+    if alignment_dict and fname in alignment_dict:
         section_dict["tforms"] = alignment_dict[fname]
     else:
         section_dict["tforms"] = {}
