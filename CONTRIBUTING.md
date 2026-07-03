@@ -17,7 +17,7 @@ project's [GPL-3.0-or-later](license.md) license.
 ## Filing issues
 
 Open issues on the project's
-**[GitHub Issues](https://github.com/SynapseWeb/PyReconstruct/issues)**. Three
+**[GitHub Issues](https://github.com/SynapseWeb/PyReconstruct/issues)**. Four
 issue templates are available from the "New issue" chooser:
 
 - **Bug report** — please include the **version or commit** you're running.
@@ -26,6 +26,8 @@ issue templates are available from the "New issue" chooser:
 - **Feature request** — describe the problem you're trying to solve, not only a
   proposed solution.
 - **Documentation request** — tell us what's missing or unclear.
+- **Chore or task** — mainly for the development team's own tracking of
+  tooling, CI, and maintenance work, rather than typical outside requests.
 
 Documentation, an installation guide, and manuals are hosted on the lab's
 [wiki site](https://wikis.utexas.edu/display/khlab/PyReconstruct+user+guide) and
