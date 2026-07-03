@@ -17,7 +17,11 @@ An installation guide, quickstart, and manuals can be found at our lab's [wiki s
 
 <a id="submitting-bug-reports-and-feature-requests"></a>
 
-# Then it would say lanch party, Kevin.
+# Installation
+
+PyReconstruct can be installed into a virtual environment using the command line or it can be installed using a graphical installer similar to a normal desktop app.
+
+## Install PyReconstruct into a virtual environment
 
 In a virtual environment running Python 3.11, install bleeding-edge PyReconstruct:
 
@@ -38,6 +42,24 @@ PyReconstruct
 ```
 
 To install a dev version of PyReconstruct, see [here](https://github.com/SynapseWeb/PyReconstruct/wiki/Developers).
+
+## Install PyReconstruct using a graphical installer
+
+Not comfortable using command line? You can install PyReconstruct like a normal desktop app by [downloading an installer](https://github.com/SynapseWeb/PyReconstruct/releases) and following the instructions below.
+
+(Note for Windows and macOS users: PyReconstruct isn't yet "code-signed", which means you must explicitly give your system permission to run the app. The steps below walk you through this process.)
+
+### Windows
+
+Download the `.exe` installer for Windows and open it. Your system may warn you this PyReconstruct isn't yet "code-signed". If you trust us, simply click **More info** then **Run anyway**.
+
+### macOS
+
+Download the `.dmg` installer, open it, and drag PyReconstruct into your Applications folder. Your system may warn you that PyReconstruct isn't yet "code-signed" and a short **Read Before First Launch** note that walks you through the process.
+
+### Linux
+
+Download the installer shell script and run it. This will add PyReconstruct to your applications menu.
 
 # Bug reports / Feature requests
 
