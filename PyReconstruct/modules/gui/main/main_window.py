@@ -478,6 +478,16 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def showWhatsNew(self):
+        """Reopen the 'What's new' dialog on demand (Help -> What's new).
+
+        Ungated: shows the recent release history whether or not the startup
+        popup already ran for this version, and leaves the once-per-version
+        record untouched.
+        """
+        from PyReconstruct.modules.gui.dialog.whats_new import show_whats_new
+        show_whats_new(self)
+
     def changeUsername(self, new_name : str = None):
         """Edit the login name used to track history.
 
