@@ -295,8 +295,11 @@ def whats_new_content(current, last_seen=None, cap=5, text=None, on_demand=False
         if current_section and current_section["date"] else None
     )
 
-    # No notes for the running version at all -> friendly generic body.
-    if current_section is None:
+    # No notes for the running version at all -> friendly generic body. An
+    # indeterminate running version (an on-demand open where the version can't
+    # be determined) instead falls through to the recent-history view below,
+    # so the dialog still shows the notes it has.
+    if current_section is None and not (cur_v is None and sections):
         return {"version": current, "date": friendly, "orienter": orienter,
                 "body": GENERIC_NOTES, "truncated": False}
 

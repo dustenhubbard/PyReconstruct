@@ -433,3 +433,29 @@ def test_whats_new_dialog_is_modeless_and_renders_its_content(qapp):
         assert "Got it" in [b.text() for b in dlg.findChildren(QPushButton)]
     finally:
         dlg.deleteLater()
+
+
+def test_whats_new_on_demand_with_unknown_version_omits_it_and_still_opens(
+        qapp, monkeypatch, tmp_path):
+    """When the running version can't be determined, the on-demand dialog must
+    never render "None" -- a version-free title, the orienter leading the
+    dialog -- and it still opens showing the recent release notes."""
+    from PyReconstruct.modules.gui.dialog import whats_new as W
+    from PySide6.QtWidgets import QLabel
+
+    wn = tmp_path / "WHATS_NEW.md"
+    wn.write_text(WN, encoding="utf-8")
+    monkeypatch.setattr(F, "find_whats_new_path", lambda: wn)
+    monkeypatch.setattr(W, "current_version_str", lambda: None)
+
+    dlg = W.show_whats_new(None)
+    try:
+        assert dlg.isVisible()                        # still opens
+        assert dlg.windowTitle() == "What's new in PyReconstruct"
+        labels = [lab.text() for lab in dlg.findChildren(QLabel)]
+        assert not any("None" in t for t in labels)   # no "PyReconstruct None"
+        assert "Recent releases" in labels            # orienter as the header
+        assert "Bullet three-A." in dlg._notes.toPlainText()  # recent notes shown
+    finally:
+        dlg.close()
+        dlg.deleteLater()

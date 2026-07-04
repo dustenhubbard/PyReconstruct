@@ -32,19 +32,25 @@ class WhatsNewDialog(QDialog):
         if url is None:
             url = github_release_url(version)
 
-        self.setWindowTitle(f"What's new in PyReconstruct {version}")
+        self.setWindowTitle(
+            f"What's new in PyReconstruct {version}" if version
+            else "What's new in PyReconstruct"
+        )
         self.setMinimumWidth(540)
         self.setModal(False)  # modeless: does not block the app
 
         lay = QVBoxLayout(self)
 
-        # prominent version header, with the release date beneath it
-        title = QLabel(f"PyReconstruct {content['version']}")
-        tf = title.font()
-        tf.setBold(True)
-        tf.setPointSize(18 if tf.pointSize() <= 0 else tf.pointSize() + 6)
-        title.setFont(tf)
-        lay.addWidget(title)
+        # prominent version header, with the release date beneath it -- omitted
+        # when the running version is unknown (never render "None"; the
+        # orienter below then leads the dialog)
+        if content["version"]:
+            title = QLabel(f"PyReconstruct {content['version']}")
+            tf = title.font()
+            tf.setBold(True)
+            tf.setPointSize(18 if tf.pointSize() <= 0 else tf.pointSize() + 6)
+            title.setFont(tf)
+            lay.addWidget(title)
 
         if content.get("date"):
             released = QLabel(f"Released {content['date']}")
