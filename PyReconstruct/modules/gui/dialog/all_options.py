@@ -257,17 +257,21 @@ class AllOptionsDialog(QDialog):
               ("System", mode == "system"),
               ("Light", mode == "light"),
               ("Dark", mode == "dark"),
+              ("Studio", mode == "studio"),
+              ("Atlas", mode == "atlas"),
             )],
         ]
 
         def setOption(response):
 
             theme = self.series.getOption("theme")  # keep current if neither radio matched
-            if response[0][0][1]: theme = "system"
-            elif response[0][1][1]: theme = "light"
-            elif response[0][2][1]: theme = "dark"
+            flags = response[0]
+            if flags[0][1]: theme = "system"
+            elif flags[1][1]: theme = "light"
+            elif flags[2][1]: theme = "dark"
+            elif len(flags) > 3 and flags[3][1]: theme = "studio"
+            elif len(flags) > 4 and flags[4][1]: theme = "atlas"
             self.series.setOption("theme", theme)
-
 
         self.addOptionWidget("theme", structure, setOption)
 
