@@ -7,8 +7,6 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Union
 
-from PySide6.QtCore import QSettings
-
 from .log import LogSet, LogSetPair
 from .ztrace import Ztrace
 from .section import Section
@@ -28,7 +26,89 @@ from PyReconstruct.modules.constants import (
     fast_dumps
 )
 from PyReconstruct.modules.constants import welcome_series_dir, default_traces
-from PyReconstruct.modules.gui.utils import getProgbar
+
+
+class SeriesOpenError(Exception):
+    """Raised when a file cannot be opened as a series (corrupt or not a jser)."""
+
+
+_SETTINGS_STORE = None
+
+
+def _default_settings_store():
+    """Lazily create and cache the default QSettings-backed settings store.
+
+    Imported lazily so that this module does not pull in Qt just to resolve
+    the default; behavior for GUI callers is identical to direct QSettings use.
+    """
+    global _SETTINGS_STORE
+    if _SETTINGS_STORE is None:
+        from PyReconstruct.modules.backend.settings_store import QSettingsStore
+        _SETTINGS_STORE = QSettingsStore()
+    return _SETTINGS_STORE
+
+
+_PROGRESS_REPORTER_FACTORY = None
+
+
+def _default_progress_reporter_factory():
+    """Lazily resolve and cache the default Qt-backed ProgressReporter factory.
+
+    Imported lazily so that this module does not pull in Qt just to resolve the
+    default; behavior for GUI callers is identical to direct getProgbar use. The
+    factory is a callable ``(text, cancel) -> ProgressReporter`` (the
+    QtProgressReporter class), invoked fresh per operation.
+    """
+    global _PROGRESS_REPORTER_FACTORY
+    if _PROGRESS_REPORTER_FACTORY is None:
+        from PyReconstruct.modules.backend.progress import QtProgressReporter
+        _PROGRESS_REPORTER_FACTORY = QtProgressReporter
+    return _PROGRESS_REPORTER_FACTORY
+
+
+_NOTIFIER = None
+
+
+def _default_notifier():
+    """Lazily create and cache the default Qt-backed notifier.
+
+    Imported lazily so that this module does not pull in Qt/GUI just to resolve
+    the default; behavior for GUI callers is identical to the previous inline
+    notify()/QApplication guard.
+    """
+    global _NOTIFIER
+    if _NOTIFIER is None:
+        from PyReconstruct.modules.backend.notifier import QtNotifier
+        _NOTIFIER = QtNotifier()
+    return _NOTIFIER
+
+
+def _atomicWrite(fp : str, data : bytes):
+    """Write bytes to a file atomically.
+
+    Writes to a temp file in the same directory, flushes and fsyncs it, then
+    os.replace()s it over the destination so a crash, power loss, or full disk
+    mid-write can never leave a truncated file behind.
+
+        Params:
+            fp (str): the destination filepath
+            data (bytes): the bytes to write
+    """
+    tmp_fp = fp + ".tmp"
+    try:
+        with open(tmp_fp, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_fp, fp)
+    except OSError:
+        # best-effort cleanup of the temp file; the destination is untouched
+        try:
+            if os.path.isfile(tmp_fp):
+                os.remove(tmp_fp)
+        except OSError:
+            pass
+        raise
 
 
 class Series():
@@ -131,20 +211,23 @@ class Series():
         
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback):
-        
-        if exc_type is not None:
-            traceback.print_exception(exc_type, exc_value, traceback)
+    def __exit__(self, exc_type, exc_value, tb):
 
         self.close()
+
+        return False  # propagate any exception from the with-block
     
     ## OPENING, LOADING, AND MOVING THE JSER FILE
     @staticmethod
-    def openJser(fp : str):
+    def openJser(fp : str, progress=None):
         """Process the file containing all section and series information.
-        
+
             Params:
                 fp (str): the filepath to the jser
+                progress: an optional ProgressReporter factory (callable
+                    (text, cancel) -> ProgressReporter); defaults to the
+                    Qt-backed reporter. Headless callers may pass
+                    NullProgressReporter.
             Returns:
                 (Series): the series object created from the jser
         """
@@ -170,9 +253,21 @@ class Series():
             return series
 
         # load json
-        with open(fp, "rb") as f:
-            jser_data = fast_loads(f.read())
-        
+        try:
+            with open(fp, "rb") as f:
+                jser_data = fast_loads(f.read())
+        except ValueError as e:
+            raise SeriesOpenError(
+                f"{os.path.basename(fp)} is not a valid series file "
+                f"(the file is corrupt or is not JSON)."
+            ) from e
+
+        if not isinstance(jser_data, dict):
+            raise SeriesOpenError(
+                f"{os.path.basename(fp)} is not a valid series file "
+                f"(unexpected file structure)."
+            )
+
         # UPDATE FROM OLD JSER FORMATS
         updated_jser_data = {}
         sections_dict = {}
@@ -190,6 +285,11 @@ class Series():
                     sections_dict[snum] = jser_data[key]
                 else:
                     updated_jser_data["series"] = jser_data[key]
+            if not sections_dict or "series" not in updated_jser_data:
+                raise SeriesOpenError(
+                    f"{os.path.basename(fp)} is not a valid series file "
+                    f"(no series or section data found)."
+                )
             # organize the sections in a list
             sections_list = [None] * (max(sections_dict.keys())+1)
             for snum, sdata in sections_dict.items():
@@ -197,15 +297,25 @@ class Series():
             updated_jser_data["sections"] = sections_list
             # replace data
             jser_data = updated_jser_data
-        
+
+        # validate the overall structure before extracting anything
+        if (
+            not isinstance(jser_data.get("series"), dict) or
+            not isinstance(jser_data.get("sections"), list) or
+            not any(s is not None for s in jser_data["sections"])
+        ):
+            raise SeriesOpenError(
+                f"{os.path.basename(fp)} is not a valid series file "
+                f"(missing series or section data)."
+            )
+
         # UPDATE TO INCLUDE A LOG
         if "log" not in jser_data:
             jser_data["log"] = "Date, Time, User, Obj, Sections, Event"
         
         # creating loading bar
-        progbar = getProgbar(
-            text="Opening series..."
-        )
+        factory = progress if progress is not None else _default_progress_reporter_factory()
+        reporter = factory(text="Opening series...")
         progress = 0
         final_value = 0
         for sdata in jser_data["sections"]:
@@ -215,67 +325,81 @@ class Series():
 
         # create the hidden directory
         hidden_dir = createHiddenDir(sdir, sname)
-        
-        # extract JSON series data
-        series_data = jser_data["series"]
-        # add empty log_set for opening/saving purposes
-        series_data["log_set"] = []
-        Series.updateJSON(series_data)
-        series_fp = os.path.join(hidden_dir, sname + ".ser")
-        with open(series_fp, "wb") as f:
-            f.write(fast_dumps(series_data))
-        if progbar.wasCanceled():
-            return None
-        progress += 1
-        progbar.setValue(progress/final_value * 100)
 
-        # extract JSON section data
-        sections = {}
-        for snum, section_data in enumerate(jser_data["sections"]):
-            # check for empty section, skip if so
-            if section_data is None:
-                continue
+        # The .ser file is written LAST as the completion sentinel: both
+        # recovery scans (the fast path above and the GUI's unsaved-work
+        # prompt) require it, so a cancelled or crashed open can never leave
+        # a partial hidden dir that is later mistaken for unsaved work.
+        # On any cancel or exception, remove the partial hidden dir entirely.
+        try:
+            # extract JSON section data
+            sections = {}
+            for snum, section_data in enumerate(jser_data["sections"]):
+                # check for empty section, skip if so
+                if section_data is None:
+                    continue
 
-            filename = sname + "." + str(snum)
-            section_fp = os.path.join(hidden_dir, filename)
+                filename = sname + "." + str(snum)
+                section_fp = os.path.join(hidden_dir, filename)
 
-            Section.updateJSON(section_data, snum)  # update any missing attributes
-            
-            section_data["align_locked"] = True  # lock the section
+                Section.updateJSON(section_data, snum)  # update any missing attributes
 
-            # gather the section numbers and section filenames
-            sections[snum] = filename
-                
-            with open(section_fp, "wb") as f:
-                f.write(fast_dumps(section_data))
-            
-            if progbar.wasCanceled():
+                section_data["align_locked"] = True  # lock the section
+
+                # gather the section numbers and section filenames
+                sections[snum] = filename
+
+                with open(section_fp, "wb") as f:
+                    f.write(fast_dumps(section_data))
+
+                if reporter.was_canceled():
+                    shutil.rmtree(hidden_dir, ignore_errors=True)
+                    return None
+                progress += 1
+                reporter.set_progress(progress/final_value * 100)
+
+            # extract the existing log
+            log_str = jser_data["log"]
+            existing_log_fp = os.path.join(hidden_dir, "existing_log.csv")
+            with open(existing_log_fp, "w", encoding="utf-8") as f:
+                f.write(log_str)
+            if reporter.was_canceled():
+                shutil.rmtree(hidden_dir, ignore_errors=True)
                 return None
             progress += 1
-            progbar.setValue(progress/final_value * 100)
-        
-        # extract the existing log
-        log_str = jser_data["log"]
-        existing_log_fp = os.path.join(hidden_dir, "existing_log.csv")
-        with open(existing_log_fp, "w") as f:
-            f.write(log_str)
-        if progbar.wasCanceled():
-            return None
-        progress += 1
-        progbar.setValue(progress/final_value * 100)
-        
-        # create the series
-        series = Series(series_fp, sections, get_series_data=False)
-        series.jser_fp = fp
+            reporter.set_progress(progress/final_value * 100)
 
-        # gather the series data
-        for snum, section in series.enumerateSections(show_progress=False):
-            series.data.updateSection(section, update_traces=True, log_events=False)
-            if progbar.wasCanceled():
+            # extract JSON series data (LAST: the .ser is the completion sentinel)
+            series_data = jser_data["series"]
+            # add empty log_set for opening/saving purposes
+            series_data["log_set"] = []
+            Series.updateJSON(series_data)
+            series_fp = os.path.join(hidden_dir, sname + ".ser")
+            with open(series_fp, "wb") as f:
+                f.write(fast_dumps(series_data))
+            if reporter.was_canceled():
+                shutil.rmtree(hidden_dir, ignore_errors=True)
                 return None
             progress += 1
-            progbar.setValue(progress/final_value * 100)
-        
+            reporter.set_progress(progress/final_value * 100)
+
+            # create the series
+            series = Series(series_fp, sections, get_series_data=False)
+            series.jser_fp = fp
+
+            # gather the series data
+            for snum, section in series.enumerateSections(show_progress=False):
+                series.data.updateSection(section, update_traces=True, log_events=False)
+                if reporter.was_canceled():
+                    shutil.rmtree(hidden_dir, ignore_errors=True)
+                    return None
+                progress += 1
+                reporter.set_progress(progress/final_value * 100)
+
+        except BaseException:
+            shutil.rmtree(hidden_dir, ignore_errors=True)
+            raise
+
         return series
 
     def saveJser(self, save_fp : str = None, close : bool = False):
@@ -291,7 +415,7 @@ class Series():
 
         filenames = os.listdir(self.hidden_dir)
 
-        progbar = getProgbar(
+        reporter = self._progressReporterFactory()(
             text="Saving series...",
             cancel=False
         )
@@ -326,7 +450,7 @@ class Series():
                 # save the series
                 jser_data["series"] = filedata
             elif filename == "existing_log.csv":
-                with open(fp, "r") as f:
+                with open(fp, "r", encoding="utf-8", errors="replace") as f:
                     existing_log = ""
                     for line in f.readlines():
                         if line.strip():
@@ -334,19 +458,23 @@ class Series():
                 # continue saving the existing log file
                 jser_data["log"] = existing_log + jser_data["log"]
 
-            progbar.setValue(progress/final_value * 100)
+            reporter.set_progress(progress/final_value * 100)
             progress += 1
         
         save_bytes = fast_dumps(jser_data)
 
         jser_fp = self.jser_fp if not save_fp else save_fp
-        with open(jser_fp, "wb") as f:
-            f.write(save_bytes)
-        
+        try:
+            # atomic: the previous .jser stays intact until the new one is complete
+            _atomicWrite(jser_fp, save_bytes)
+        except OSError as e:
+            self._surfaceSaveError(jser_fp, e)
+            raise
+
         if close:
             self.close()
 
-        progbar.setValue(100)
+        reporter.finish()
     
     def move(self, new_jser_fp : str, section : Section = None, b_section : Section = None):
         """Move/rename the series to its jser filepath.
@@ -369,7 +497,19 @@ class Series():
             "." + new_name
         )
 
-        shutil.move(old_hidden_dir, new_hidden_dir)
+        # Save-As onto the current path: the hidden dir is already in place --
+        # moving it onto itself would fail (or nest it), so just refresh paths
+        same_dir = (
+            os.path.isdir(new_hidden_dir) and
+            os.path.samefile(old_hidden_dir, new_hidden_dir)
+        )
+
+        if not same_dir:
+            # clear any stale hidden dir at the destination: shutil.move would
+            # otherwise nest the old dir inside it, orphaning every filepath
+            if os.path.isdir(new_hidden_dir):
+                shutil.rmtree(new_hidden_dir)
+            shutil.move(old_hidden_dir, new_hidden_dir)
 
         ## Manually hide dir if Windows
         if os.name == "nt":
@@ -380,10 +520,11 @@ class Series():
         for f in os.listdir(new_hidden_dir):
             if old_name in f:
                 new_f = f.replace(old_name, new_name)
-                os.rename(
-                    os.path.join(new_hidden_dir, f),
-                    os.path.join(new_hidden_dir, new_f)
-                )
+                if new_f != f:
+                    os.rename(
+                        os.path.join(new_hidden_dir, f),
+                        os.path.join(new_hidden_dir, new_f)
+                    )
         
         ## Rename series
         self.rename(new_name)
@@ -751,7 +892,7 @@ class Series():
 
         ## Create empty existing_log.csv file
         existing_log_path = os.path.join(hidden_dir, "existing_log.csv")
-        with open(existing_log_path, "w") as f:
+        with open(existing_log_path, "w", encoding="utf-8") as f:
             f.write("Date, Time, User, Obj, Sections, Event")
 
         ## Create series object
@@ -790,9 +931,12 @@ class Series():
             return
 
         d = self.getDict()
-        with open(self.filepath, "wb") as f:
-            # internal hidden working file -- write compact bytes
-            f.write(fast_dumps(d))
+        try:
+            # internal hidden working file -- write compact bytes atomically
+            _atomicWrite(self.filepath, fast_dumps(d))
+        except OSError as e:
+            self._surfaceSaveError(self.filepath, e)
+            raise
 
     def getwdir(self) -> str:
         """Get the working directory of the series.
@@ -966,7 +1110,11 @@ class Series():
         if z_points is None:
             z_points = []
 
-        if not z_points:  # append name with "_zlen" if creating from obj
+        # capture this BEFORE the from-object branch below fills z_points --
+        # the alignment decision at the end must not see the mutated list
+        from_object = not z_points
+
+        if from_object:  # append name with "_zlen" if creating from obj
             ztrace_name = f"{obj_name}_zlen"
         else:  # use tracing_trace name
             ztrace_name = obj_name
@@ -977,7 +1125,7 @@ class Series():
             del(self.ztraces[ztrace_name])
             if log_event: self.addLog(ztrace_name, None, "Updated ztrace")
 
-        if not z_points:  # generate points from already traced object if non provided
+        if from_object:  # generate points from already traced object if none provided
 
             ## If create on midpoints, make one point per section
 
@@ -1018,10 +1166,10 @@ class Series():
             z_points
         )
 
-        ## Assign alignement to ztrace 
-        if not z_points:  # use obj alignment
+        ## Assign alignement to ztrace
+        if from_object:  # use obj alignment
             alignment = self.getAttr(obj_name, "alignment")
-        else:  # use current alignment 
+        else:  # use current alignment
             alignment = self.alignment
 
         self.setAttr(ztrace_name, "alignment", alignment, ztrace=True)
@@ -1635,7 +1783,9 @@ class Series():
         
         if log_event:
             self.addLog(None, None, f"{'Hide' if hidden else 'Unhide'} all traces in series")
-    
+
+        self.modified = True
+
     def importObjectGroups(self, other, regex_filters=[], group_filters=[]):
         """Import the object groups from another series.
         
@@ -2144,7 +2294,7 @@ class Series():
                 (LogSet): the object containing the full history
         """
         csv_fp = os.path.join(self.hidden_dir, "existing_log.csv")
-        with open(csv_fp, "r") as f:
+        with open(csv_fp, "r", encoding="utf-8", errors="replace") as f:
             log_list = f.readlines()[1:]
         full_hist = LogSet.fromList(log_list)
         for log in self.log_set.all_logs:
@@ -2397,9 +2547,87 @@ class Series():
                     self.obj_attrs[name]["curation"] = (False, "", log.date)
                 marked_objs.add(name)
     
+    def _settingsStore(self):
+        """Return the SettingsStore backing this series' settings.
+
+        Defaults to a lazily-created QSettings-backed store (behavior identical
+        to the previous direct QSettings use); a caller or test may inject a
+        different store via setSettingsStore().
+        """
+        store = getattr(self, "_settings_store", None)
+        if store is None:
+            store = _default_settings_store()
+        return store
+
+    def setSettingsStore(self, store):
+        """Inject a SettingsStore for this series (e.g. headless use or tests).
+
+        Pass None to fall back to the default QSettings-backed store.
+        """
+        self._settings_store = store
+
+    def _progressReporterFactory(self):
+        """Return the ProgressReporter factory backing this series' progress.
+
+        Defaults to the lazily-resolved Qt-backed factory (behavior identical
+        to the previous direct getProgbar use); a caller or test may inject a
+        different factory (e.g. NullProgressReporter) via setProgressReporter().
+        """
+        factory = getattr(self, "_progress_reporter_factory", None)
+        if factory is None:
+            factory = _default_progress_reporter_factory()
+        return factory
+
+    def setProgressReporter(self, factory):
+        """Inject a ProgressReporter factory for this series (headless/tests).
+
+        ``factory`` is a callable ``(text, cancel) -> ProgressReporter`` (e.g.
+        the NullProgressReporter class). Pass None to fall back to the default
+        Qt-backed reporter.
+        """
+        self._progress_reporter_factory = factory
+
+    def _notifier(self):
+        """Return the Notifier backing this series' user notifications.
+
+        Defaults to a lazily-created Qt-backed notifier (behavior identical to
+        the previous inline notify()/QApplication guard); a caller or test may
+        inject a different notifier (e.g. NullNotifier) via setNotifier().
+        """
+        notifier = getattr(self, "_notifier_impl", None)
+        if notifier is None:
+            notifier = _default_notifier()
+        return notifier
+
+    def setNotifier(self, notifier):
+        """Inject a Notifier for this series (e.g. headless use or tests).
+
+        Pass None to fall back to the default Qt-backed notifier.
+        """
+        self._notifier_impl = notifier
+
+    def _surfaceSaveError(self, fp : str, err : Exception):
+        """Show a 'Save failed' message to the user (best-effort, headless-safe).
+
+            Params:
+                fp (str): the filepath that failed to save
+                err (Exception): the error that occurred
+        """
+        message = (
+            f"Save failed: {err}\n\n"
+            f"The existing file was left unchanged:\n{fp}"
+        )
+        try:
+            if self._notifier().notify(message):
+                return
+        except Exception:
+            pass  # never let the notification itself mask the real error
+        # headless: don't block on a dialog/input -- just report it
+        print(message)
+
     def getOption(self, option_name : str, get_default=False):
         """Get an option from the series (or computer)
-        
+
             Params:
                 option_name (str): the name of the option
                 get_default (bool): True if only default should be returned
@@ -2416,30 +2644,33 @@ class Series():
         
         ## Get sane settings and defaults
         if option_name in Series.qsettings_series_defaults:
-            
+
             if self.isWelcomeSeries():  # return defaults if accessing series setting
                 return Series.qsettings_series_defaults[option_name]
-            
-            settings = QSettings("KHLab", f"PyReconstruct-{self.code}")
+
+            scope_code = self.code
             defaults = Series.qsettings_series_defaults
-            
+
         elif option_name in Series.qsettings_defaults:
-            
-            settings = QSettings("KHLab", "PyReconstruct")
+
+            scope_code = None
             defaults = Series.qsettings_defaults
-            
+
         else:
-            
+
             return None
-        
+
+        store = self._settingsStore()
+
         ## Get the option
         if get_default:
             return defaults[option_name]
-        elif settings.contains(option_name):
+        elif store.contains(scope_code, option_name):
             option_type = type(defaults[option_name])
-            option = settings.value(
+            option = store.value(
+                scope_code,
                 option_name,
-                type=(str if option_type in (dict, list, tuple) else option_type)
+                str if option_type in (dict, list, tuple) else option_type
             )
             if option_type in (dict, list, tuple):
                 option = json.loads(option)
@@ -2478,17 +2709,17 @@ class Series():
         if value_type in (dict, list, tuple):
             value = json.dumps(value)
         
-        # get the proper settings
+        # get the proper scope
         if option_name in Series.qsettings_series_defaults:
             if self.isWelcomeSeries():
                 return  # prevent setting for the welcome series
-            settings = QSettings("KHLab", f"PyReconstruct-{self.code}")
+            scope_code = self.code
         elif option_name in Series.qsettings_defaults:
-            settings = QSettings("KHLab", "PyReconstruct")
+            scope_code = None
         else:
             return
-        
-        settings.setValue(option_name, value)
+
+        self._settingsStore().set_value(scope_code, option_name, value)
     
     @property
     def user(self):
@@ -2981,7 +3212,7 @@ class SeriesIterator():
             )
         self.sni = 0
         if self.show_progress:
-            self.progbar = getProgbar(
+            self.reporter = self.series._progressReporterFactory()(
                 text=self.message,
                 cancel=False
             )
@@ -3002,7 +3233,7 @@ class SeriesIterator():
 
         if self.sni < len(self.section_numbers):
             if self.show_progress:
-                    self.progbar.setValue(self.sni / len(self.section_numbers) * 100)
+                    self.reporter.set_progress(self.sni / len(self.section_numbers) * 100)
             snum = self.section_numbers[self.sni]
             self.section = self.series.loadSection(snum)
             self.sni += 1
@@ -3015,7 +3246,7 @@ class SeriesIterator():
         
         else:
             if self.show_progress:
-                self.progbar.setValue(self.sni / len(self.section_numbers) * 100)
+                self.reporter.set_progress(self.sni / len(self.section_numbers) * 100)
             raise StopIteration
 
 

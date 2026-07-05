@@ -5,6 +5,8 @@ import shutil
 
 from .main_imports import *
 
+from PyReconstruct.modules.datatypes.series import SeriesOpenError
+
 
 class MainWindow(QMainWindow):
 
@@ -209,12 +211,14 @@ class MainWindow(QMainWindow):
 
         # check labels
         if clicked_label:
-            
-            if clicked_label in self.field.zarr_layer.selected_ids:
+
+            zarr_layer = self.field.zarr_layer
+
+            if clicked_label in zarr_layer.selected_ids:
 
                 self.importlabels_act.setEnabled(True)
 
-                if len(self.zarr_layer.selected_ids) > 1:
+                if len(zarr_layer.selected_ids) > 1:
                     self.mergelabels_act.setEnabled(True)
                     
             else:
@@ -425,34 +429,35 @@ class MainWindow(QMainWindow):
         )
         
         if create_new:
-            
+
             convert_cmd = launch_prefix + [
                 str(zarr_converter.absolute()),
                 "convert_zarr",
                 str(cores),
-                f"\"{self.series.src_dir}\"",
+                self.series.src_dir,
                 zarr_fp
             ]
-            
+
         else:
-            
+
             convert_cmd = launch_prefix + [
                 str(zarr_converter.absolute()),
                 "convert_zarr",
                 str(cores),
-                f"\"{self.series.src_dir}\""
+                self.series.src_dir
             ]
 
+        # pass argv as a list on every platform -- never through a shell, so
+        # paths read from the series file stay single literal arguments
         if os.name == 'nt':
 
             subprocess.Popen(
                 convert_cmd, creationflags=subprocess.CREATE_NO_WINDOW
             )
-            
+
         else:
 
-            convert_cmd = " ".join(convert_cmd)
-            subprocess.Popen(convert_cmd, shell=True, stdout=None, stderr=None)
+            subprocess.Popen(convert_cmd, stdout=None, stderr=None)
 
     def resolveUsernameStartup(self):
         """Resolve the tracking username silently at launch -- never prompts.
@@ -584,8 +589,12 @@ class MainWindow(QMainWindow):
                 new_series_fp = ""
                 sections = {}
                 for f in os.listdir(hidden_series_dir):
+                    if os.path.isdir(os.path.join(hidden_series_dir, f)):
+                        continue
                     # check if the series is currently being modified
                     if "." not in f:
+                        if not f.isdigit():
+                            continue  # not a timer file (e.g. stray editor/OS file)
                         current_time = round(time.time())
                         time_diff = current_time - int(f)
                         if time_diff <= 7:  # the series is currently being operated on
@@ -596,7 +605,11 @@ class MainWindow(QMainWindow):
                                 QMessageBox.Ok
                             )
                             if not self.series:
-                                exit()
+                                # aborting the very first open (no series, still
+                                # inside __init__, before the event loop) --
+                                # sys.exit is a real function even in frozen
+                                # builds, unlike site's exit()
+                                sys.exit()
                             else:
                                 return
                     else:
@@ -627,11 +640,20 @@ class MainWindow(QMainWindow):
 
             # open the JSER file if no unsaved series was opened
             if not new_series:
-                new_series = Series.openJser(jser_fp)
+                try:
+                    new_series = Series.openJser(jser_fp)
+                except SeriesOpenError as e:
+                    notify(str(e))
+                    if self.series is None:
+                        # aborting the very first open (see sys.exit note above)
+                        sys.exit()
+                    else:
+                        return
                 # user pressed cancel
                 if new_series is None:
                     if self.series is None:
-                        exit()
+                        # aborting the very first open (see sys.exit note above)
+                        sys.exit()
                     else:
                         return
             
@@ -1482,7 +1504,28 @@ class MainWindow(QMainWindow):
         #     self.series.palette_traces.append(button.trace)
         #     if button.isChecked():
         #         self.series.current_trace = button.trace
-        self.field.section.save(update_series_data=False)
+
+        # the b (flickered-away) section can hold unsaved edits: flickering and
+        # moveTo swap sections without saving, so it MUST be written here too --
+        # otherwise a save drops those edits and then marks the series clean
+        sections = [self.field.section]
+        if self.field.b_section:
+            sections.append(self.field.b_section)
+
+        # skip rewriting the hidden files when nothing has changed since they
+        # were last written (section scrolling is the hottest caller):
+        # series.modified is set by every user-edit path -- including
+        # brightness/contrast, mag changes, and undo/redo (see undo()) -- and
+        # the per-section trackers are a safety net for section-level changes
+        # that have not yet flipped it; when in doubt, write
+        if not self.series.modified and not any(
+            s.getAllModifiedNames() or s.tformsModified() or s.flags_modified
+            for s in sections
+        ):
+            return
+
+        for section in sections:
+            section.save(update_series_data=False)
         self.series.save()
     
     def backup(self, check_auto=False, comment="", from_saved=False):
@@ -2080,7 +2123,7 @@ class MainWindow(QMainWindow):
         convert_cmd = launch_prefix + [
             str(zarr_converter.absolute()),
             "create_ng_zarr",
-            f"\"{self.series.jser_fp}\""
+            self.series.jser_fp
         ]
 
         for argname, arg in args.items():
@@ -2088,29 +2131,30 @@ class MainWindow(QMainWindow):
                 if type(arg) is bool:
                     convert_cmd.append(argname)
                 else:
-                    
+
                     if argname == "--output":
 
                         convert_cmd += [
                             "--output",
-                            f"\"{arg}\""
+                            str(arg)
                         ]
-                        
+
                     else:
 
                         convert_cmd += [argname] + str(arg).split()
 
+        # pass argv as a list on every platform -- never through a shell, so
+        # paths read from the series file stay single literal arguments
         if os.name == 'nt':
 
             subprocess.Popen(
                 convert_cmd,
                 creationflags=subprocess.CREATE_NO_WINDOW
             )
-            
+
         else:
 
-            convert_cmd = " ".join(convert_cmd)
-            subprocess.Popen(convert_cmd, shell=True, stdout=None, stderr=None)
+            subprocess.Popen(convert_cmd, stdout=None, stderr=None)
     
     # AUTOSEG FUNCTIONS TEMPORARILY REMOVED
 
@@ -2474,9 +2518,10 @@ class MainWindow(QMainWindow):
                 obj_names (list): a list of object names
         """
         self.saveAllData()
-        
+
         if not self.viewer or self.viewer.is_closed:
-            
+
+            from PyReconstruct.modules.gui.popup import CustomPlotter
             self.viewer = CustomPlotter(self, names, ztraces)
             
         else:
@@ -2518,6 +2563,7 @@ class MainWindow(QMainWindow):
                 "Select folder to export objects to",
             )
         if not export_dir: return
+        from PyReconstruct.modules.backend.volume import export3DObjects
         export3DObjects(self.series, obj_names, export_dir, export_type)
 
     def export3DData(self, obj_names):
@@ -2537,6 +2583,7 @@ class MainWindow(QMainWindow):
         )
         if not output_fp: return
 
+        from PyReconstruct.modules.backend.volume import export3DData
         export3DData(self.series, obj_names, output_fp)
     
     def toggleCuration(self):
@@ -2564,6 +2611,11 @@ class MainWindow(QMainWindow):
         can_3D, can_2D, linked = self.field.series_states.canUndo(redo=redo)
         def act2D():
             self.field.undoState(redo)
+            # a 2D undo/redo changes data relative to the last save without
+            # passing through saveState() -- mark the series dirty so
+            # saveAllData() persists it and closing prompts to save
+            # (act3D covers this via field.reload())
+            self.seriesModified(True)
         def act3D():
             self.field.series_states.undoState(redo)
             self.field.reload()
@@ -2968,6 +3020,7 @@ class MainWindow(QMainWindow):
             return
         
         if not self.viewer or self.viewer.is_closed:
+            from PyReconstruct.modules.gui.popup import CustomPlotter
             self.viewer = CustomPlotter(self, load_fp=load_fp)
         else:
             self.viewer.loadScene(load_fp)
