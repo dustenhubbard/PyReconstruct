@@ -31,4 +31,4 @@ See CONTRIBUTING.md for the full workflow.
 
 ## Reviewer
 
-<!-- Request a maintainer as reviewer (see CODEOWNERS). -->
+<!-- Request a maintainer as reviewer. -->
