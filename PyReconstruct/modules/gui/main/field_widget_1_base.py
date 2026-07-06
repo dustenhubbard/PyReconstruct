@@ -53,6 +53,12 @@ class FieldWidgetBase:
         self.hide_image : bool              = False
         self.blend_sections : bool          = False
 
+        # SPIKE (issue #72): optional field-coord bbox (xmin, ymin, xmax, ymax)
+        # restricting the working view; None means unrestricted. View-only,
+        # runtime-only (not persisted); set/cleared via restrictViewToRegion /
+        # clearRegionRestriction on FieldWidgetTrace.
+        self.region_restriction : tuple     = None
+
         self.current_trace : list           = []
         self.current_ztrace: list           = []
         self.moving_traces : list           = None
@@ -272,7 +278,8 @@ class FieldWidgetBase:
             hide_traces=self.hide_trace_layer,
             show_all_traces=self.show_all_traces,
             hide_image=self.hide_image,
-            focus_on=self.focus_mode
+            focus_on=self.focus_mode,
+            region_restriction=self.region_restriction  # SPIKE (issue #72)
         )
 
         # blend b section if requested
@@ -286,7 +293,8 @@ class FieldWidgetBase:
                 hide_traces=self.hide_trace_layer,
                 show_all_traces=self.show_all_traces,
                 hide_image=self.hide_image,
-                focus_on=self.focus_mode
+                focus_on=self.focus_mode,
+                region_restriction=self.region_restriction  # SPIKE (issue #72)
             )
             # overlay a and b sections
             painter = QPainter(view)

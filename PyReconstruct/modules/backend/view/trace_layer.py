@@ -48,6 +48,12 @@ class TraceLayer():
         self.traces_in_view = []
         self.zsegments_in_view = []
         self.show_all_traces = False
+        # SPIKE (issue #72): optional field-coordinate bbox (xmin, ymin, xmax,
+        # ymax) restricting the working view. When set, traces whose bounds fall
+        # entirely outside are hidden from view/selection WITHOUT touching their
+        # persistent Trace.hidden flag, so clearing the restriction brings them
+        # all back. None means unrestricted.
+        self.region_restriction = None
     
     def pointToPix(self, pt : tuple, apply_tform=True, tform : Transform = None, qpoint=False) -> tuple:
         """Return the pixel point corresponding to a field point.
@@ -442,6 +448,18 @@ class TraceLayer():
             painter.drawRect(x, y, h, h)
         painter.end()
 
+    def _regionHidesTrace(self, trace) -> bool:
+        """SPIKE (issue #72): True if a spatial region restriction is active and
+        this trace lies entirely outside it.
+
+        View-only: this does NOT read or write Trace.hidden, so removing the
+        restriction restores every trace.
+        """
+        region = getattr(self, "region_restriction", None)
+        if region is None:
+            return False
+        return not traceInRegion(trace, region, self.section.tform)
+
     def trace_visibile_p(self, trace) -> bool:
         """Determine visibility of a trace in the field."""
 
@@ -449,15 +467,20 @@ class TraceLayer():
         show_all_traces = self.show_all_traces
         group_hide = trace in self.section.traces_group_hide
         trace_not_hidden = not trace.hidden
+        region_hide = self._regionHidesTrace(trace)  # SPIKE (issue #72)
 
         if temp_hide:  # always hide when dragging
-        
+
             show_trace = False
 
-        elif show_all_traces:  # show all temporarily
+        elif show_all_traces:  # show all temporarily (overrides region restriction)
 
             show_trace = True
-                
+
+        elif region_hide:  # SPIKE (issue #72): outside the restricted region
+
+            show_trace = False
+
         elif trace_not_hidden:  # trace unhidden, check group viz
 
             show_trace = True if not group_hide else False
@@ -475,21 +498,25 @@ class TraceLayer():
             show_all_traces=False,
             window_moved=True,
             focus_on=False,
+            region_restriction=None,
     ) -> QPixmap:
         """Draw traces on a transparent background.
-        
+
             Params:
                 pixmap_dim (tuple): the w and h of the pixmap to be output
                 window (list): the view of the window (x, y, w, h)
                 show_all_traces (bool): True if all traces are displayed regardless of hidden status
                 focus_mode (bool): True if in focus mode
                 window_moved (bool): True if the window has moved (upstream: same as generate_image)
+                region_restriction (tuple): SPIKE (issue #72) optional field-coord
+                    bbox (xmin, ymin, xmax, ymax); traces outside it are hidden
             Returns:
                 (QPixmap): the pixmap with traces drawn in
         """
         self.series.window = window
         self.pixmap_dim = pixmap_dim
         self.show_all_traces = show_all_traces
+        self.region_restriction = region_restriction  # SPIKE (issue #72)
         pixmap_w, pixmap_h = tuple(pixmap_dim)
         trace_layer = QPixmap(pixmap_w, pixmap_h)
         trace_layer.fill(Qt.transparent)
@@ -671,6 +698,22 @@ def boundsOverlap(b1 : tuple, b2 : tuple):
         b1[3] < b2[1] or 
         b1[1] > b2[3]
     )
+
+def traceInRegion(trace : Trace, region_bounds : tuple, tform : Transform = None) -> bool:
+    """SPIKE (issue #72): return True if a trace overlaps a region bbox.
+
+    The trace's field-coordinate bounding box (via the section transform) is
+    tested for any overlap with region_bounds. A trace is considered inside the
+    region if its bbox touches the region at all.
+
+        Params:
+            trace (Trace): the trace to test
+            region_bounds (tuple): xmin, ymin, xmax, ymax in field coordinates
+            tform (Transform): transform mapping trace points to field coords
+        Returns:
+            (bool): True if the trace's bounds overlap the region
+    """
+    return boundsOverlap(trace.getBounds(tform), region_bounds)
 
 def getTheta(line : QLine):
     """Get the angle a line makes with the x-axis.

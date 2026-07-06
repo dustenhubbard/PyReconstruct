@@ -401,6 +401,36 @@ class FieldWidgetTrace(FieldWidgetBase):
         self.hide_image = not self.hide_image
         self.generateView(generate_traces=False)
 
+    # SPIKE (issue #72): restrict the working view to a spatial region.
+    #
+    # This is a view-only restriction: traces whose field bounds fall outside
+    # the region are hidden from both the view and selection/hit-testing (they
+    # are never added to traces_in_view), but their persistent Trace.hidden flag
+    # is untouched. clearRegionRestriction() therefore brings every trace back
+    # with no undo entry required (mirrors the show_all_traces toggle).
+    #
+    # A future UI would capture a drawn region (e.g. the pointer lasso in
+    # field_widget_5_mouse.pointerRelease) as a field-coordinate polygon, then
+    # call restrictViewToRegion with its bounding box. The region-capture mode
+    # and menu wiring are intentionally NOT part of this spike.
+
+    def restrictViewToRegion(self, region_bounds):
+        """Restrict the field view to a field-coordinate bbox.
+
+            Params:
+                region_bounds (tuple): xmin, ymin, xmax, ymax in field microns,
+                    or None to clear the restriction
+        """
+        self.region_restriction = tuple(region_bounds) if region_bounds else None
+        self.generateView()
+
+    def clearRegionRestriction(self):
+        """Remove any active spatial view restriction (bring everything back)."""
+        if self.region_restriction is None:
+            return
+        self.region_restriction = None
+        self.generateView()
+
     def deselectAllTraces(self):
         # disable if trace layer is hidden
         if self.zarr_layer:
