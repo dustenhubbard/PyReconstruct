@@ -48,6 +48,7 @@ def get_field_menu_list(self):
         None,
         ("selectall_act", "Select all traces", self.series, self.field.selectAllTraces),
         ("deselect_act", "Deselect traces", self.series, self.field.deselectAllTraces),
+        ("invertselection_act", "Invert selection", self.series, self.field.invertTraceSelection),
         None,
         ("delete_act", "Delete", "Del", self.backspace),
     ]
@@ -172,6 +173,7 @@ def get_context_menu_list_trace(self, is_in_field=True):
         ("makepositive_act", "Make positive", "", lambda : self.makeNegative(False)),
         None,
         ("hidetraces_act", "Hide", sc, self.hideTraces),
+        ("hideunselected_act", "Hide unselected", sc, self.hideUnselectedTraces),
     ]
     
     if not is_in_field:

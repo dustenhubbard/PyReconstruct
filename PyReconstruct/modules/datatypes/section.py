@@ -667,7 +667,36 @@ class Section():
         self.deselectAllTraces()
         for trace in self.tracesAsList():
             self.addSelectedTrace(trace)
-    
+
+    def invertTraceSelection(self, include_hidden=False):
+        """Invert the trace selection: deselect every selected trace and
+        select every unselected trace.
+
+        Only traces visible in the field can become selected: hidden traces
+        and traces hidden through group visibility are skipped unless
+        include_hidden is True (the show-all-traces mode). Selected ztrace
+        points and flags are left untouched.
+
+        (Only meant for GUI use.)
+
+            Params:
+                include_hidden (bool): True if hidden traces can be selected
+        """
+        selected = set(self.selected_traces)
+        group_hidden = set(self.traces_group_hide)
+
+        to_select = []
+        for trace in self.tracesAsList():
+            if trace in selected:
+                continue
+            if not include_hidden and (trace.hidden or trace in group_hidden):
+                continue
+            to_select.append(trace)
+
+        self.selected_traces : list[Trace] = []
+        for trace in to_select:
+            self.addSelectedTrace(trace)
+
     def hideTraces(self, traces : list = None, hide=True, log_event=True):
         """Hide traces.
 
@@ -691,6 +720,45 @@ class Section():
                 self.series.addLog(trace.name, self.n, "Modify trace(s)")
         
         self.selected_traces : list[Trace] = []
+
+        return modified
+
+    def hideUnselectedTraces(self, traces : list = None, log_event=True):
+        """Hide every trace on the section EXCEPT the given traces
+        (the selected traces by default).
+
+        The kept traces stay selected so the user can keep working on them.
+        Traces that are already hidden are left untouched (and not logged).
+
+        (Only meant for GUI use.)
+
+            Params:
+                traces (list): the traces to keep visible (defaults to the
+                    selected traces)
+                log_event (bool): true if the event should be logged
+            Returns:
+                (bool): True if the section was modified
+        """
+        modified = False
+
+        if not traces:
+            traces = self.selected_traces.copy()
+
+        if not traces:  # never hide every trace on the section
+            return False
+
+        keep = set(traces)
+        for trace in self.tracesAsList():
+            if trace in keep or trace.hidden:
+                continue
+            modified = True
+            trace.setHidden(True)
+            self.modified_contours.add(trace.name)
+            if log_event:
+                self.series.addLog(trace.name, self.n, "Modify trace(s)")
+
+        # drop any traces that are now hidden from the selection
+        self.selected_traces = [t for t in self.selected_traces if not t.hidden]
 
         return modified
 
