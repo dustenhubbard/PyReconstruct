@@ -9,6 +9,7 @@ import pytest
 from PyReconstruct.modules.backend.autoseg.palette import (
     DEFAULT_AUTOSEG_PALETTE,
     palette_color,
+    palette_color_array,
 )
 
 # Thresholds separating a usable overlay color from the grayscale background.
@@ -67,14 +68,14 @@ def test_mapping_is_deterministic():
 def test_mapping_matches_known_reference_values():
     """Pin the exact id -> color mapping so the hash cannot drift silently."""
     expected = {
-        0: (230, 25, 75),
-        1: (145, 30, 180),
-        2: (188, 246, 12),
-        3: (255, 225, 25),
-        5: (245, 130, 49),
-        42: (230, 25, 75),
-        100: (70, 240, 240),
-        1000: (240, 50, 230),
+        0: (240, 228, 66),
+        1: (204, 121, 167),
+        2: (86, 180, 233),
+        3: (178, 0, 0),
+        5: (0, 0, 178),
+        42: (240, 228, 66),
+        100: (51, 255, 187),
+        1000: (0, 158, 115),
     }
     for label_id, color in expected.items():
         assert palette_color(label_id) == color
@@ -142,6 +143,103 @@ def test_return_type_is_int_tuple():
     color = palette_color(7)
     assert isinstance(color, tuple)
     assert all(isinstance(channel, int) for channel in color)
+
+
+# --- color-vision-deficiency (CVD) distinguishability ----------------------
+#
+# Simulate deuteranopia / protanopia / tritanopia with the Machado et al. (2009)
+# severity-1.0 matrices (applied in linear RGB) and require every pair of
+# palette colors to stay perceptually separated (CIEDE2000) under each
+# deficiency. This guards against a future edit reintroducing a CVD collision
+# (e.g. the yellow/lime pair that merges under red-green deficiency).
+
+# Minimum acceptable pairwise CIEDE2000 separation. The shipped palette holds a
+# worst case of ~10.9 under tritanopia; 9.0 leaves margin while still catching a
+# regression that pulls two colors together.
+MIN_CVD_DELTA_E = 9.0
+MIN_NORMAL_DELTA_E = 10.0
+
+_MACHADO = {
+    "protan": [[0.152286, 1.052583, -0.204868],
+               [0.114503, 0.786281, 0.099216],
+               [-0.003882, -0.048116, 1.051998]],
+    "deutan": [[0.367322, 0.860646, -0.227968],
+               [0.280085, 0.672501, 0.047413],
+               [-0.011820, 0.042940, 0.968881]],
+    "tritan": [[1.255528, -0.076749, -0.178779],
+               [-0.078411, 0.930809, 0.147602],
+               [0.004733, 0.691367, 0.303900]],
+}
+
+
+def _simulate(rgb255, kind, np):
+    c = np.asarray(rgb255, float) / 255.0
+    if kind == "normal":
+        return c
+    lin = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    sim = np.clip(np.asarray(_MACHADO[kind]) @ lin, 0.0, 1.0)
+    return np.where(sim <= 0.0031308, sim * 12.92,
+                    1.055 * (sim ** (1 / 2.4)) - 0.055)
+
+
+def _min_pairwise_delta_e(kind):
+    import numpy as np
+    from itertools import combinations
+    from skimage.color import rgb2lab, deltaE_ciede2000
+
+    labs = []
+    for color in DEFAULT_AUTOSEG_PALETTE:
+        sim = _simulate(color, kind, np).reshape(1, 1, 3)
+        labs.append(rgb2lab(sim))
+    return min(
+        float(deltaE_ciede2000(a, b)) for a, b in combinations(labs, 2)
+    )
+
+
+# --- vectorized overlay mapping ---------------------------------------------
+#
+# The live label overlay is colored with palette_color_array; it must produce
+# exactly the color palette_color would give each id, so the preview matches
+# the imported traces.
+
+
+def test_overlay_array_matches_scalar_mapping():
+    np = pytest.importorskip("numpy")
+    arr = np.array([[0, 1, 2, 3], [5, 42, 100, 1000]], dtype=np.int64)
+    out = palette_color_array(arr, None, seed=0, background=(100, 100, 100))
+    assert out.shape == (2, 4, 3)
+    assert out.dtype == np.uint8
+    for y in range(arr.shape[0]):
+        for x in range(arr.shape[1]):
+            lid = int(arr[y, x])
+            expected = (100, 100, 100) if lid == 0 else palette_color(lid)
+            assert tuple(int(v) for v in out[y, x]) == tuple(expected)
+
+
+def test_overlay_array_respects_background():
+    np = pytest.importorskip("numpy")
+    arr = np.zeros((3, 3), dtype=np.int64)
+    out = palette_color_array(arr, None, seed=0, background=(7, 8, 9))
+    assert (out == np.array([7, 8, 9], dtype=np.uint8)).all()
+
+
+def test_overlay_array_tracks_seed():
+    np = pytest.importorskip("numpy")
+    arr = np.array([[1, 2, 3]], dtype=np.int64)
+    a = palette_color_array(arr, None, seed=0)
+    b = palette_color_array(arr, None, seed=1)
+    assert not np.array_equal(a, b)
+
+
+@pytest.mark.parametrize("kind", ["protan", "deutan", "tritan"])
+def test_palette_is_cvd_distinguishable(kind):
+    pytest.importorskip("skimage")
+    assert _min_pairwise_delta_e(kind) >= MIN_CVD_DELTA_E
+
+
+def test_palette_is_distinguishable_to_normal_vision():
+    pytest.importorskip("skimage")
+    assert _min_pairwise_delta_e("normal") >= MIN_NORMAL_DELTA_E
 
 
 if __name__ == "__main__":

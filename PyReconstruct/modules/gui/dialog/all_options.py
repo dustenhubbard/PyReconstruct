@@ -87,6 +87,7 @@ class AllOptionsDialog(QDialog):
                 ["show_flags"],
                 ["fill_opacity"],
                 ["find_zoom"],
+                ["autoseg_colors"],
                 ["smoothing_3D"]
             ],
             "User/Series": [
@@ -320,6 +321,15 @@ class AllOptionsDialog(QDialog):
         def setOption(response):
             self.series.setOption("fill_opacity", response[0])
         self.addOptionWidget("fill_opacity", structure, setOption)
+
+        # autoseg import colors
+        structure = [
+            ["Autoseg color seed (change to reshuffle imported trace colors):",
+             ("int", self.series.getOption("autoseg_color_seed", use_defaults))]
+        ]
+        def setOption(response):
+            self.series.setOption("autoseg_color_seed", response[0])
+        self.addOptionWidget("autoseg_colors", structure, setOption)
 
         # find_zoom
         structure = [
