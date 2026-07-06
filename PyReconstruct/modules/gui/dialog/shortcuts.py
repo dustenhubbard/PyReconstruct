@@ -165,7 +165,6 @@ help_shortcuts = [
     ("mergetraces_act", "Merge selected traces"),
     ("mergeobjects_act", "Merge attributes of selected traces"),
     ("hidetraces_act", "Hide selected traces"),
-    ("hideunselected_act", "Hide all traces except selected (isolate selection)"),
     ("unhideall_act", "Unhide all hidden traces on current section"),
     ("pastetopalette_act", "Modify current palette button to match attributes of first selected trace"),
     ("pastetopalettewithshape_act", "Modify current palette button to match attributes and shape of first selected trace"),

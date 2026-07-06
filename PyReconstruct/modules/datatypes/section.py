@@ -723,45 +723,6 @@ class Section():
 
         return modified
 
-    def hideUnselectedTraces(self, traces : list = None, log_event=True):
-        """Hide every trace on the section EXCEPT the given traces
-        (the selected traces by default).
-
-        The kept traces stay selected so the user can keep working on them.
-        Traces that are already hidden are left untouched (and not logged).
-
-        (Only meant for GUI use.)
-
-            Params:
-                traces (list): the traces to keep visible (defaults to the
-                    selected traces)
-                log_event (bool): true if the event should be logged
-            Returns:
-                (bool): True if the section was modified
-        """
-        modified = False
-
-        if not traces:
-            traces = self.selected_traces.copy()
-
-        if not traces:  # never hide every trace on the section
-            return False
-
-        keep = set(traces)
-        for trace in self.tracesAsList():
-            if trace in keep or trace.hidden:
-                continue
-            modified = True
-            trace.setHidden(True)
-            self.modified_contours.add(trace.name)
-            if log_event:
-                self.series.addLog(trace.name, self.n, "Modify trace(s)")
-
-        # drop any traces that are now hidden from the selection
-        self.selected_traces = [t for t in self.selected_traces if not t.hidden]
-
-        return modified
-
     def setGroupVisibility(self, group_viz: Union[List[str], None]=None) -> None:
         """Modify traces_group_hide based on group visibility."""
 

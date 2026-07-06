@@ -1,41 +1,61 @@
-"""Tests for invert-selection and hide-unselected (show-only-selected).
+"""Tests for invert-selection and object-level "hide unselected".
 
-Motivation: proofreading a dense auto-seg ROI — isolate one or a few objects
-and push the rest out of the way, without losing Ctrl+Z.
+Motivation: proofreading a dense auto-seg ROI. An object spans many sections,
+so the isolation a proofreader needs is OBJECT-level and VOLUME-wide: pick the
+object(s) to work on and hide every other object throughout the whole series,
+so it stays isolated as they page through sections -- without losing Ctrl+Z.
 
-Covered here:
+Two features are covered:
 
-  * ``Section.invertTraceSelection`` — complement semantics; hidden,
-    group-hidden and locked traces; empty and full selections; ztrace/flag
-    selections untouched.
-  * ``Section.hideUnselectedTraces`` — hides exactly the complement, keeps
-    the working set selected, skips already-hidden traces, and never hides
-    everything on an empty selection.
-  * A real undo round-trip through ``SectionStates`` (the same machinery
-    ``FieldWidget.saveState()`` / ``undoState()`` drives for Ctrl+Z), so the
-    undo behavior is exercised, not assumed.
-  * The ``FieldWidgetTrace`` wrappers driven on duck-typed stubs (no Qt event
-    loop or MainWindow needed): the hidden-trace-layer guard, saveState
-    recording via the trace_function/field_interaction decorators, and the
-    empty-selection no-op.
-  * Wiring: the new actions have registered, non-colliding default shortcuts
-    and appear in the trace context menu.
+  * Invert selection
+      - field / current section (traces): ``Section.invertTraceSelection`` and
+        the ``FieldWidgetTrace`` wrapper -- flips the trace selection on the
+        current section (a convenience; not undoable, like every selection op).
+      - object list (objects): ``invert_object_rows`` -- the pure row-selection
+        logic behind ``ObjectTableWidget.invertSelection``.
 
-``Section`` cannot be constructed without real series files (its __init__
-reads them from disk), so bare ``Section.__new__`` instances carry only the
-attributes the methods under test touch.
+  * Hide unselected OBJECTS, volume-wide: ``FieldWidgetObject.hideUnselectedObjects``
+    hides every non-selected object across ALL sections via the existing
+    series-wide ``Series.hideObjects`` machinery, and ``unhideAllObjects``
+    restores. The crux is exercised end-to-end on a real multi-section series
+    (``shapes1.jser``, 4 objects on all 5 sections): the complement is hidden on
+    every section and a single undo restores every section.
+
+The section-only "hide unselected traces" that an earlier revision added was
+removed: it would have collided (same label, different scope) with the
+volume-wide object hide, which is what the feature actually needs.
+
+``Section`` cannot be constructed without real series files, so the pure
+section tests drive ``Section.__new__`` instances carrying only the attributes
+the methods touch. The volume-wide tests load a real series from the shipped
+``.jser`` and drive the real ``FieldWidgetObject`` method against it.
 """
+import os
 import types
+import shutil
 
 from PyReconstruct.modules.datatypes.trace import Trace
 from PyReconstruct.modules.datatypes.contour import Contour
 from PyReconstruct.modules.datatypes.section import Section
 from PyReconstruct.modules.datatypes.default_settings import default_settings
-from PyReconstruct.modules.backend.func.state_manager import SectionStates
+
+from PyReconstruct.modules.gui.table.object import invert_object_rows
+from PyReconstruct.modules.gui.main import field_widget_2_trace as fwt
+from PyReconstruct.modules.gui.main import field_widget_3_object as fwo
+from PyReconstruct.modules.gui.main.context_menu_list import (
+    get_context_menu_list_trace,
+    get_context_menu_list_obj,
+)
+
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SHAPES1 = os.path.join(
+    REPO_ROOT, "PyReconstruct", "assets", "checker", "files", "shapes1.jser"
+)
 
 
 # --------------------------------------------------------------------------- #
-# helpers
+# helpers -- section-level (no Qt)
 # --------------------------------------------------------------------------- #
 def mk(name, hidden=False):
     """Build a Trace with explicit points (bypassing the GUI add path)."""
@@ -81,7 +101,7 @@ def bare_section(traces, locked_names=()):
 
 
 # --------------------------------------------------------------------------- #
-# Section.invertTraceSelection
+# Section.invertTraceSelection (current-section trace invert; field convenience)
 # --------------------------------------------------------------------------- #
 def test_invert_flips_selected_and_unselected():
     a, b, c, d = mk("a"), mk("b"), mk("c"), mk("d")
@@ -183,137 +203,8 @@ def test_invert_leaves_ztrace_and_flag_selection_untouched():
 
 
 # --------------------------------------------------------------------------- #
-# Section.hideUnselectedTraces
+# FieldWidgetTrace.invertTraceSelection wrapper (duck-typed stubs, no Qt loop)
 # --------------------------------------------------------------------------- #
-def test_hide_unselected_hides_exactly_the_complement():
-    a, b, c, d = mk("a"), mk("b"), mk("c"), mk("d")
-    s = bare_section([a, b, c, d])
-    s.selected_traces = [a, c]
-
-    modified = s.hideUnselectedTraces()
-
-    assert modified is True
-    assert [t.hidden for t in (a, b, c, d)] == [False, True, False, True]
-    # the working set stays selected
-    assert set(s.selected_traces) == {a, c}
-    # only the newly hidden contours are marked modified / logged
-    assert s.modified_contours == {"b", "d"}
-    assert len(s.series.log) == 2
-
-
-def test_hide_unselected_with_empty_selection_never_hides_everything():
-    a, b = mk("a"), mk("b")
-    s = bare_section([a, b])
-
-    modified = s.hideUnselectedTraces()
-
-    assert modified is False
-    assert not a.hidden and not b.hidden
-    assert s.modified_contours == set()
-
-
-def test_hide_unselected_with_everything_selected_is_a_noop():
-    a, b = mk("a"), mk("b")
-    s = bare_section([a, b])
-    s.selected_traces = [a, b]
-
-    modified = s.hideUnselectedTraces()
-
-    assert modified is False
-    assert not a.hidden and not b.hidden
-    assert set(s.selected_traces) == {a, b}
-
-
-def test_hide_unselected_skips_already_hidden_traces():
-    a, b, h = mk("a"), mk("b"), mk("h", hidden=True)
-    s = bare_section([a, b, h])
-    s.selected_traces = [a]
-
-    modified = s.hideUnselectedTraces()
-
-    assert modified is True
-    assert b.hidden and h.hidden
-    # h was already hidden: not re-marked, not re-logged
-    assert s.modified_contours == {"b"}
-    assert len(s.series.log) == 1
-
-
-def test_hide_unselected_accepts_explicit_traces():
-    # the trace-list path: the kept traces come from the table selection,
-    # not from the field selection
-    a, b, c = mk("a"), mk("b"), mk("c")
-    s = bare_section([a, b, c])
-    s.selected_traces = [c]  # field selection differs from the table's
-
-    modified = s.hideUnselectedTraces(traces=[a])
-
-    assert modified is True
-    assert [t.hidden for t in (a, b, c)] == [False, True, True]
-    # c became hidden, so it must not stay selected (hidden-but-selected
-    # traces are the bug class later operations trip over)
-    assert s.selected_traces == []
-
-
-# --------------------------------------------------------------------------- #
-# Undo: real SectionStates round-trip (the Ctrl+Z machinery)
-# --------------------------------------------------------------------------- #
-def _undoable_section(tmp_path, traces):
-    s = bare_section(traces)
-    s.tforms = {}
-    s.tforms_values_copy = []
-    s.flags = []
-    series = s.series
-    series.hidden_dir = str(tmp_path)
-    series.sections = {0: "series.0"}
-    series.ztraces = {}
-    series.modified_ztraces = set()
-    return s, series
-
-
-def test_undo_restores_hidden_flags_after_hide_unselected(tmp_path):
-    a, b, pre_hidden = mk("a"), mk("b"), mk("c", hidden=True)
-    s, series = _undoable_section(tmp_path, [a, b, pre_hidden])
-    s.selected_traces = [a]
-
-    states = SectionStates(s, series)  # pristine snapshot, as on section load
-    before = {name: [t.hidden for t in contour]
-              for name, contour in s.contours.items()}
-
-    assert s.hideUnselectedTraces() is True
-    states.addState(s, series)  # what FieldWidget.saveState() does
-
-    hidden_now = {t.name: t.hidden for t in s.tracesAsList()}
-    assert hidden_now == {"a": False, "b": True, "c": True}
-
-    states.undoState(s, series)  # what FieldWidget.undoState() does
-
-    after = {name: [t.hidden for t in contour]
-             for name, contour in s.contours.items()}
-    # b is visible again; the pre-hidden trace stays hidden
-    assert after == before
-
-
-def test_redo_reapplies_hide_unselected(tmp_path):
-    a, b = mk("a"), mk("b")
-    s, series = _undoable_section(tmp_path, [a, b])
-    s.selected_traces = [a]
-
-    states = SectionStates(s, series)
-    s.hideUnselectedTraces()
-    states.addState(s, series)
-    states.undoState(s, series)
-    assert {t.name: t.hidden for t in s.tracesAsList()} == {"a": False, "b": False}
-
-    states.redoState(s, series)
-    assert {t.name: t.hidden for t in s.tracesAsList()} == {"a": False, "b": True}
-
-
-# --------------------------------------------------------------------------- #
-# FieldWidgetTrace wrappers (duck-typed stubs, no Qt event loop)
-# --------------------------------------------------------------------------- #
-from PyReconstruct.modules.gui.main import field_widget_2_trace as fwt
-
-
 def test_field_invert_is_disabled_while_trace_layer_hidden():
     a = mk("a")
     s = bare_section([a])
@@ -363,90 +254,313 @@ def test_field_invert_passes_show_all_mode_through():
     assert s.selected_traces == [h]
 
 
-def _field_stub(section, selected):
-    """A stub FieldWidget good enough for trace_function/field_interaction."""
-    section.selected_traces = list(selected)
+# --------------------------------------------------------------------------- #
+# invert_object_rows -- pure logic behind ObjectTableWidget.invertSelection
+# --------------------------------------------------------------------------- #
+def test_object_invert_returns_the_unselected_rows():
+    rows = ["a", "b", "c", "d"]
+    assert invert_object_rows(rows, {"a", "c"}, set()) == [1, 3]
+
+
+def test_object_invert_empty_selection_selects_every_row():
+    rows = ["a", "b", "c"]
+    assert invert_object_rows(rows, set(), set()) == [0, 1, 2]
+
+
+def test_object_invert_all_selected_selects_nothing():
+    rows = ["a", "b"]
+    assert invert_object_rows(rows, {"a", "b"}, set()) == []
+
+
+def test_object_invert_never_selects_locked_rows():
+    rows = ["a", "b", "c", "d"]
+    # b unselected but locked -> excluded; d selected+locked -> stays out anyway
+    assert invert_object_rows(rows, {"c", "d"}, {"b", "d"}) == [0]
+
+
+def test_object_invert_double_invert_returns_to_start_without_locks():
+    rows = ["a", "b", "c", "d"]
+    selected = {"b"}
+    first = set(rows[i] for i in invert_object_rows(rows, selected, set()))
+    second = set(rows[i] for i in invert_object_rows(rows, first, set()))
+    assert second == selected
+
+
+# --------------------------------------------------------------------------- #
+# FieldWidgetObject.hideUnselectedObjects / unhideAllObjects (recording stubs)
+# --------------------------------------------------------------------------- #
+class _FakeSeries:
+    """Records hideObjects calls; enough surface for the object field methods."""
+
+    def __init__(self, objects, locked=()):
+        self.data = {"objects": {n: object() for n in objects}}
+        self.locked = set(locked)
+        self.hide_calls = []
+
+    def getAttr(self, name, attr):
+        assert attr == "locked"
+        return name in self.locked
+
+    def hideObjects(self, names, hide, series_states=None, log_event=True):
+        self.hide_calls.append((sorted(names), hide))
+
+
+def _obj_field_stub(series, selected_names, series_states="STATES"):
+    """A stub FieldWidgetObject good enough for object_function + the methods.
+
+    hasFocus() returns None so the decorator resolves the object names from the
+    field's selected traces (the field entry point). The object-list entry
+    point -- getSelected() -- is exercised end-to-end by the offscreen driver.
+    """
     events = []
     stub = types.SimpleNamespace(
-        section=section,
-        series=section.series,
-        hide_trace_layer=False,
-        table_manager=types.SimpleNamespace(hasFocus=lambda: None),
-        mainwindow=types.SimpleNamespace(
-            saveAllData=lambda: events.append("saveAllData")
+        series=series,
+        series_states=series_states,
+        section=types.SimpleNamespace(
+            selected_traces=[types.SimpleNamespace(name=n) for n in selected_names]
         ),
-        saveState=lambda: events.append("saveState"),
-        generateView=lambda *a_, **k: events.append("generateView"),
+        table_manager=types.SimpleNamespace(
+            hasFocus=lambda: None,
+            updateObjects=lambda names: events.append(("updateObjects", sorted(names))),
+        ),
+        mainwindow=types.SimpleNamespace(
+            saveAllData=lambda: events.append("saveAllData"),
+            seriesModified=lambda *a: events.append("seriesModified"),
+        ),
+        reload=lambda: events.append("reload"),
     )
     return stub, events
 
 
-def test_field_hide_unselected_records_an_undo_state():
-    a, b = mk("a"), mk("b")
-    s = bare_section([a, b])
-    stub, events = _field_stub(s, [a])
+def test_hide_unselected_objects_hides_complement_excluding_locked():
+    series = _FakeSeries(["a", "b", "c", "d"], locked={"d"})
+    stub, events = _obj_field_stub(series, ["a"])
 
-    fwt.FieldWidgetTrace.hideUnselectedTraces(stub)
+    fwo.FieldWidgetObject.hideUnselectedObjects(stub)
 
-    assert b.hidden and not a.hidden
-    # the decorators recorded the undo state and redrew, same as Hide (Ctrl+H)
-    assert "saveState" in events
-    assert "generateView" in events
-
-
-def test_field_hide_unselected_with_empty_selection_is_a_silent_noop():
-    a, b = mk("a"), mk("b")
-    s = bare_section([a, b])
-    stub, events = _field_stub(s, [])
-
-    fwt.FieldWidgetTrace.hideUnselectedTraces(stub)
-
-    assert not a.hidden and not b.hidden
-    assert "saveState" not in events  # no phantom undo state
+    # keep a; d is locked -> left visible; b + c hidden volume-wide
+    assert series.hide_calls == [(["b", "c"], True)]
+    assert "reload" in events
+    assert ("updateObjects", ["b", "c"]) in events
 
 
-def test_field_hide_unselected_is_disabled_while_trace_layer_hidden():
-    a, b = mk("a"), mk("b")
-    s = bare_section([a, b])
-    stub, events = _field_stub(s, [a])
-    stub.hide_trace_layer = True
+def test_hide_unselected_objects_empty_selection_is_a_noop():
+    series = _FakeSeries(["a", "b"])
+    stub, events = _obj_field_stub(series, [])  # nothing selected
 
-    fwt.FieldWidgetTrace.hideUnselectedTraces(stub)
+    fwo.FieldWidgetObject.hideUnselectedObjects(stub)
 
-    assert not b.hidden
-    assert "saveState" not in events
+    # the decorator bails before the body -> series never blanked
+    assert series.hide_calls == []
+    assert "reload" not in events
+
+
+def test_hide_unselected_objects_everything_selected_is_a_noop():
+    series = _FakeSeries(["a", "b"])
+    stub, events = _obj_field_stub(series, ["a", "b"])
+
+    fwo.FieldWidgetObject.hideUnselectedObjects(stub)
+
+    assert series.hide_calls == []       # complement empty -> nothing hidden
+    assert "reload" not in events
+
+
+def test_hide_unselected_objects_when_only_locked_remain_is_a_noop():
+    series = _FakeSeries(["a", "b", "c"], locked={"b", "c"})
+    stub, events = _obj_field_stub(series, ["a"])
+
+    fwo.FieldWidgetObject.hideUnselectedObjects(stub)
+
+    # the only unselected objects are locked -> nothing to hide
+    assert series.hide_calls == []
+    assert "reload" not in events
+
+
+def test_unhide_all_objects_unhides_every_object():
+    series = _FakeSeries(["a", "b", "c"])
+    stub, events = _obj_field_stub(series, [])  # selection irrelevant
+
+    fwo.FieldWidgetObject.unhideAllObjects(stub)
+
+    assert series.hide_calls == [(["a", "b", "c"], False)]
+    assert "reload" in events
+
+
+def test_unhide_all_objects_on_empty_series_does_nothing():
+    series = _FakeSeries([])
+    stub, events = _obj_field_stub(series, [])
+
+    fwo.FieldWidgetObject.unhideAllObjects(stub)
+
+    assert series.hide_calls == []
+    assert "reload" not in events
 
 
 # --------------------------------------------------------------------------- #
-# wiring: shortcuts and context menu
+# CRUX: volume-wide hide + undo on a REAL multi-section series
 # --------------------------------------------------------------------------- #
-from PyReconstruct.modules.gui.main.context_menu_list import (
-    get_context_menu_list_trace,
-)
+from PyReconstruct.modules.datatypes import Series
+from PyReconstruct.modules.backend.func.state_manager import SeriesStates
 
 
-def test_new_actions_have_registered_default_shortcuts():
-    assert default_settings["invertselection_act"] == "Ctrl+Shift+I"
-    assert default_settings["hideunselected_act"] == "Shift+H"
+def _open_shapes(tmp_path):
+    dst = os.path.join(str(tmp_path), "shapes1.jser")
+    shutil.copy(SHAPES1, dst)
+    return Series.openJser(dst)
 
 
-def test_new_shortcuts_do_not_collide_with_existing_ones():
-    acts = {k: v for k, v in default_settings.items()
-            if k.endswith("_act") and isinstance(v, str)}
-    for key in ("invertselection_act", "hideunselected_act"):
-        clashes = [k for k, v in acts.items() if v == acts[key] and k != key]
-        assert not clashes, f"{key} ({acts[key]}) collides with {clashes}"
+def _hidden_by_section(series, name):
+    """{section number: are ALL of this object's traces hidden there}."""
+    res = {}
+    for snum in sorted(series.sections):
+        sec = series.loadSection(snum)
+        if name in sec.contours:
+            res[snum] = all(t.hidden for t in sec.contours[name])
+    return res
 
 
-def test_trace_context_menu_offers_hide_unselected_next_to_hide():
+def _real_field_stub(series, states, selected_names):
+    return types.SimpleNamespace(
+        series=series,
+        series_states=states,
+        section=types.SimpleNamespace(
+            selected_traces=[types.SimpleNamespace(name=n) for n in selected_names]
+        ),
+        table_manager=types.SimpleNamespace(
+            hasFocus=lambda: None,
+            updateObjects=lambda names: None,
+        ),
+        mainwindow=types.SimpleNamespace(
+            saveAllData=lambda: None,
+            seriesModified=lambda *a: None,
+        ),
+        reload=lambda: None,
+    )
+
+
+def test_fixture_objects_really_span_multiple_sections(tmp_path):
+    # guards the crux: if the fixture ever became single-section this whole
+    # proof would be vacuous.
+    series = _open_shapes(tmp_path)
+    assert len(series.sections) >= 3
+    for name in series.data["objects"]:
+        present = _hidden_by_section(series, name)
+        assert len(present) >= 3, f"{name} only on sections {list(present)}"
+
+
+def test_hide_unselected_objects_persists_across_every_section(tmp_path):
+    series = _open_shapes(tmp_path)
+    all_names = set(series.data["objects"].keys())
+    keep = "star"
+    assert keep in all_names
+
+    states = SeriesStates(series)
+    stub = _real_field_stub(series, states, [keep])
+
+    fwo.FieldWidgetObject.hideUnselectedObjects(stub)
+
+    for name in all_names:
+        hidden = _hidden_by_section(series, name)
+        if name == keep:
+            assert all(v is False for v in hidden.values()), \
+                f"kept object {name} was hidden: {hidden}"
+        else:
+            assert hidden and all(v is True for v in hidden.values()), \
+                f"{name} not hidden on every section: {hidden}"
+
+
+def test_single_undo_restores_hidden_on_every_section(tmp_path):
+    series = _open_shapes(tmp_path)
+    states = SeriesStates(series)
+    stub = _real_field_stub(series, states, ["star"])
+
+    fwo.FieldWidgetObject.hideUnselectedObjects(stub)
+    # sanity: something really was hidden across the volume
+    assert any(
+        all(v is True for v in _hidden_by_section(series, n).values())
+        for n in series.data["objects"] if n != "star"
+    )
+
+    states.undoState()  # the Ctrl+Z path for a series-wide action
+
+    for name in series.data["objects"]:
+        hidden = _hidden_by_section(series, name)
+        assert all(v is False for v in hidden.values()), \
+            f"{name} still hidden on some section after undo: {hidden}"
+
+
+def test_redo_reapplies_the_volume_wide_hide(tmp_path):
+    series = _open_shapes(tmp_path)
+    states = SeriesStates(series)
+    stub = _real_field_stub(series, states, ["star"])
+
+    fwo.FieldWidgetObject.hideUnselectedObjects(stub)
+    states.undoState()
+    states.undoState(redo=True)
+
+    # after redo everything but star is hidden again, on every section
+    for name in series.data["objects"]:
+        hidden = _hidden_by_section(series, name)
+        expect = name != "star"
+        assert all(v is expect for v in hidden.values()), \
+            f"{name} redo state wrong: {hidden}"
+
+
+# --------------------------------------------------------------------------- #
+# wiring: menus and dropped shortcut
+# --------------------------------------------------------------------------- #
+class _ObjMenuStub:
+    def __init__(self):
+        self.series = types.SimpleNamespace(
+            user_columns={}, alignments=set(), groups_visibility={}
+        )
+
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+
+def _act_names(menu):
+    """Flatten a menu-list structure into its action names, in order."""
+    names = []
+    for entry in menu:
+        if isinstance(entry, tuple):
+            names.append(entry[0])
+        elif isinstance(entry, dict):
+            names.extend(_act_names(entry["opts"]))
+    return names
+
+
+def test_trace_menu_no_longer_offers_hide_unselected():
     class _Stub:
         series = object()
 
         def __getattr__(self, name):
             return lambda *a, **k: None
 
-    menu = get_context_menu_list_trace(_Stub(), is_in_field=True)
-    names = [entry[0] for entry in menu if isinstance(entry, tuple)]
+    names = _act_names(get_context_menu_list_trace(_Stub(), is_in_field=True))
+    assert "hideunselected_act" not in names   # the section-level version is gone
+    assert "hidetraces_act" in names           # ordinary Hide stays
 
-    assert "hideunselected_act" in names
-    assert names.index("hideunselected_act") == names.index("hidetraces_act") + 1
+
+def test_object_menu_offers_hide_unselected_and_show_all_next_to_hide():
+    names = _act_names(get_context_menu_list_obj(_ObjMenuStub()))
+    assert "hideunselectedobj_act" in names
+    assert "showallobj_act" in names
+    # placed right after the existing object Hide/Unhide pair
+    assert names.index("hideunselectedobj_act") == names.index("unhideobj_act") + 1
+    assert names.index("showallobj_act") == names.index("hideunselectedobj_act") + 1
+
+
+def test_dropped_shortcut_removed_and_field_invert_kept():
+    # the section-level "hide unselected traces" shortcut is gone...
+    assert "hideunselected_act" not in default_settings
+    # ...while the field trace-invert convenience keeps its shortcut
+    assert default_settings["invertselection_act"] == "Ctrl+Shift+I"
+
+
+def test_no_shortcut_collisions_remain():
+    acts = {k: v for k, v in default_settings.items()
+            if k.endswith("_act") and isinstance(v, str)}
+    clashes = [k for k, v in acts.items()
+               if v == acts["invertselection_act"] and k != "invertselection_act"]
+    assert not clashes, f"invertselection_act collides with {clashes}"

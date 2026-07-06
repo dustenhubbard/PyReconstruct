@@ -945,17 +945,6 @@ class FieldWidgetTrace(FieldWidgetBase):
 
     @trace_function
     @field_interaction
-    def hideUnselectedTraces(self, traces : list):
-        """Hide every trace on the section except the requested traces
-        (selected traces by default).
-
-            Params:
-                traces (list): the traces to keep visible
-        """
-        return self.section.hideUnselectedTraces(traces)
-
-    @trace_function
-    @field_interaction
     def makeNegative(self, traces : list, negative=True):
         """Make the selected traces negative.
         

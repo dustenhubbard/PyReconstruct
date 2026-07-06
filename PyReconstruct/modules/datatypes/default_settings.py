@@ -93,7 +93,6 @@ default_settings = {
     "mergetraces_act": "Ctrl+M",
     "mergeobjects_act": "Ctrl+Shift+M",
     "hidetraces_act": "Ctrl+H",
-    "hideunselected_act": "Shift+H",
     "unhideall_act": "Ctrl+U",
     "pastetopalette_act": "Shift+G",
     "pastetopalettewithshape_act": "Ctrl+Shift+G",
