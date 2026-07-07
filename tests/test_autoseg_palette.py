@@ -192,7 +192,10 @@ def _min_pairwise_delta_e(kind):
         sim = _simulate(color, kind, np).reshape(1, 1, 3)
         labs.append(rgb2lab(sim))
     return min(
-        float(deltaE_ciede2000(a, b)) for a, b in combinations(labs, 2)
+        # deltaE_ciede2000 on (1,1,3) Lab inputs returns a (1,1) array; numpy
+        # >= 2.0 refuses float() on a non-0-d array, so flatten to a scalar
+        # (robust across numpy/skimage versions).
+        float(np.ravel(deltaE_ciede2000(a, b))[0]) for a, b in combinations(labs, 2)
     )
 
 
