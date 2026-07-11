@@ -16,7 +16,7 @@ The University of Texas at Austin) and the in-app **Help ▸ Shortcuts list**.
 >
 > > 📸 *Screenshot: short description of what to capture.*
 >
-> Contributions of screenshots are welcome — see [CONTRIBUTING.md](../CONTRIBUTING.md).
+> Contributions of screenshots are welcome — see [CONTRIBUTING.md](https://github.com/dustenhubbard/PyReconstruct/blob/main/CONTRIBUTING.md).
 
 > **Shortcuts.** Key combinations shown here are the **defaults**. Almost all of
 > them are rebindable under **Help ▸ Shortcuts list** (press `?`). A few menu
@@ -99,7 +99,7 @@ PyReconstruct
 `pip` pulls in the runtime dependencies (PySide6, VTK, vedo, NumPy, SciPy,
 scikit-image, shapely, trimesh, zarr, and others). For a full development setup
 (conda environment, tests, code layout), see
-[CONTRIBUTING.md](../CONTRIBUTING.md).
+[CONTRIBUTING.md](https://github.com/dustenhubbard/PyReconstruct/blob/main/CONTRIBUTING.md).
 
 ### Launching the app
 
@@ -923,5 +923,5 @@ the original **Reconstruct** by John C. Fiala.
 
 This distribution is independently developed and maintained by **Dusten Hubbard**
 (Kristen Harris Lab, **The University of Texas at Austin**). See the
-[README](../README.md) for provenance, performance notes, and citation details, and
-[CONTRIBUTING.md](../CONTRIBUTING.md) to help improve PyReconstruct.
+[README](https://github.com/dustenhubbard/PyReconstruct/blob/main/README.md) for provenance, performance notes, and citation details, and
+[CONTRIBUTING.md](https://github.com/dustenhubbard/PyReconstruct/blob/main/CONTRIBUTING.md) to help improve PyReconstruct.
