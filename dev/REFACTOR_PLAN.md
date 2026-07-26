@@ -113,9 +113,10 @@ file/line citation below was independently re-checked by at least two agents.
 
 - **Reframed the WASM/web workstream from "extract existing kernels" to "author a new
   engine and migrate the desktop onto it, or drop the drift-free claim"** (CONFIRMED,
-  plan-breaking). No extractable kernel exists: the affine is `QTransform`
-  (`transform.py`), pixels come from `QPainter` (`trace_layer.py` 797 lines,
-  `image_layer.py` 437 lines), and `calc/` leans on OpenCV and shapely/GEOS. The
+  plan-breaking). No extractable kernel exists: pixels come from `QPainter`
+  (`trace_layer.py` 797 lines, `image_layer.py` 437 lines), and `calc/` leans on
+  OpenCV and shapely/GEOS. (The affine was `QTransform` too; it is now pure
+  Python/NumPy — the one kernel that did get extracted.) The
   kernel-shaped fraction of the codebase is tiny (~2–5% depending on counting method)
   and non-portable. While desktop pixels come from Qt's scanline rasterizer and web
   pixels from Rust/WASM, drift is guaranteed by construction. The web version is a
@@ -149,7 +150,8 @@ hotspots) with defensible measurements.
 
 **1a. In-place type annotations, no dataclasses.**
 - Annotate `Trace`, `Flag`, `Transform`, `Contour`, `Section`, `Series` as-is. Fix
-  known-wrong annotations first (e.g. `Trace.getList`'s `-> dict`, `trace.py:147`).
+  known-wrong annotations first (`Trace.getList`'s `-> dict` and `Trace.getFeret`'s
+  `-> float` are already corrected to `-> list` / `-> tuple`).
 - Explicit rule in CONTRIBUTING: no `@dataclass` conversion of any type used with
   `in`/`remove`/`index`/`set()` without `eq=False`, `default_factory`, a written
   call-site inventory, and duplicate-trace regression tests.
@@ -239,10 +241,11 @@ than they return.
   explicitly funds migrating desktop rasterization off QPainter onto a shared Rust
   engine (Qt reduced to a blit target). Short of that, characterize drift with
   golden-file tests instead of denying it.
-- If a shared engine is funded, sequence it: (1) replace `QTransform` inside
-  `datatypes/transform.py` with the Rust affine — low-risk, since `mapPointsArray`
-  proves the 6-number affine is the whole contract and provides a 5.9M-point
-  bit-for-bit oracle; (2) replace cv2/shapely calls in `calc/` with Rust equivalents,
+- If a shared engine is funded, sequence it: (1) replace the affine inside
+  `datatypes/transform.py` (now pure Python/NumPy, no longer `QTransform`) with the
+  Rust one — low-risk, since `mapPointsArray` proves the 6-number affine is the whole
+  contract and `tests/test_transform_qt_equivalence.py` is the bit-for-bit oracle
+  harness; (2) replace cv2/shapely calls in `calc/` with Rust equivalents,
   budgeted as *new numerics* with characterized differences; (3) only then
   rasterization.
 - **Budget honestly:** kernel reuse covers at most a few percent of the codebase;
@@ -255,15 +258,19 @@ than they return.
 
 ### Cross-cutting (from the Opus 5 session, verified here)
 
-- **Finish the Qt-free core (M11 seam).** `backend/settings_store.py`, `progress.py`,
-  and `notifier.py` already port GUI concerns behind seams; `series.py` no longer
-  imports from `gui` (`tests/test_notifier_seam.py`). Two cords remain:
-  `constants/getdatetime.py:3` imports `QSettings` just to read a boolean UTC
-  preference (the first failure on `import ...datatypes`, and apparently unnoticed —
-  the seam-test docstring doesn't name it), and `transform.py:3`'s `QTransform`
-  (four 3×3 operations, with `mapPointsArray` as a bit-exact NumPy oracle). Cutting
-  both is the maintainability fix, makes the memory work measurable headlessly, and
-  is the only viable web foundation.
+- **Finish the Qt-free core (M11 seam).** DONE. `backend/settings_store.py`,
+  `progress.py`, and `notifier.py` already ported GUI concerns behind seams and
+  `series.py` no longer imports from `gui`; the last two cords are now cut too.
+  `constants/getdatetime.py` reads the boolean UTC preference through the settings
+  seam (it was the first failure on `import ...datatypes`), and `transform.py`'s
+  four `QTransform` operations are a plain NumPy/Python affine, bit-for-bit
+  identical to QTransform for every transform whose special-case structure is
+  exact (`tests/test_transform_qt_equivalence.py`; the sole divergence is
+  QTransform's 1e-12 fuzzy type classification, characterized there). The whole
+  `modules.datatypes` import graph now imports and runs — including opening a jser
+  and mapping traces — with any `PySide6` import blocked and no Qt platform set
+  (`tests/test_qt_free_core.py`). This makes the memory work measurable headlessly
+  and is the foundation any web port would need.
 - **The fork constraint.** This fork tracks upstream and merges its fixes; any
   language change to shared code severs that permanently, leaving a single maintainer
   owning 100% of a published tool. Weigh every Rust/web decision against it.
