@@ -336,15 +336,31 @@ def test_save_is_pretty_printed_and_round_trips_losslessly(tmp_path):
     assert sum(1 for ln in lines if ln.startswith('  "src":')) == len(series.sections)
     assert sum(1 for ln in lines if ln.startswith("      [[")) > 0
 
-    # reopen and re-save: semantically identical, and now byte-identical
-    series2 = _open_fixture(tmp_path, name="second.jser")
-    shutil.copyfile(fp, series2.jser_fp)
-    series2.close()
-    series3 = _open_fixture(tmp_path, name="third.jser")
-    shutil.copyfile(fp, series3.jser_fp)
-    series3.close()
+    # Reopen the file this build just wrote and save it again. The comparison
+    # has to be between the FIRST document and the SECOND one actually read
+    # back off disk -- comparing `raw` to itself asserts nothing, and a save
+    # that silently dropped the log or every flag would still pass.
+    second_fp = str(tmp_path / "second.jser")
+    shutil.copyfile(fp, second_fp)
+    shutil.rmtree(str(tmp_path / ".second"), ignore_errors=True)
 
-    assert _semantic(first) == _semantic(json.loads(raw))
+    from PyReconstruct.modules.datatypes.series import Series
+    from PyReconstruct.modules.backend.progress import NullProgressReporter
+    series2 = Series.openJser(second_fp, progress=NullProgressReporter)
+    series2.setProgressReporter(NullProgressReporter)
+    series2.saveJser()
+    series2.close()
+
+    with open(second_fp, "rb") as f:
+        raw2 = f.read()
+    second = json.loads(raw2)
+
+    # nothing lost across the round trip, and the round trip is now a fixed point
+    assert _semantic(first) == _semantic(second)
+    assert first["log"] == second["log"]
+    assert ([None if s is None else s["flags"] for s in first["sections"]]
+            == [None if s is None else s["flags"] for s in second["sections"]])
+    assert raw == raw2, "a second save of unchanged content changed the bytes"
 
 
 def test_minify_env_flag_restores_the_single_line_form(tmp_path, monkeypatch):
@@ -503,3 +519,92 @@ def test_truncated_minified_file_is_not_salvageable(tmp_path, monkeypatch):
     sections, traces = _salvage(cut.decode(errors="replace"))
     assert not sections
     assert not traces
+
+
+# --------------------------------------------------------------------------
+# regressions found reviewing the writer
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("where", ["obj_attrs", "host_tree", "options",
+                                   "user_columns", "ztrace_groups"])
+def test_pretty_writer_emits_string_keys_like_the_compact_writer(where):
+    """A non-string key must not turn the file into non-JSON.
+
+    ``fast_dumps`` passes ``orjson.OPT_NON_STR_KEYS``, so the compact writer
+    coerces ``1`` to ``"1"``. Dumping a key on its own does not, and the writer
+    used to emit ``  1: {...}`` -- a save that succeeds and leaves a file no
+    parser will reopen.
+    """
+    doc = _doc()
+    doc["series"][where] = {1: (["a"] if where != "obj_attrs" else {"comment": "x"})}
+    pretty = dumps_jser(doc, pretty=True)
+    # the whole point: it still parses, and to the same document
+    assert json.loads(pretty) == json.loads(dumps_jser(doc, pretty=False))
+    assert b"\n  1:" not in pretty and b'\n    1:' not in pretty
+
+
+def test_pretty_writer_emits_string_contour_and_section_keys():
+    doc = _doc()
+    doc["sections"][1]["contours"] = {7: [list(_doc()["sections"][1]["contours"]["d01"][0])]}
+    doc["sections"][1][3] = "unknown numeric key"
+    pretty = dumps_jser(doc, pretty=True)
+    assert json.loads(pretty) == json.loads(dumps_jser(doc, pretty=False))
+
+
+def test_empty_group_is_written_as_an_array_not_a_set():
+    """A bare set reaching the writer raises TypeError in orjson AND stdlib."""
+    from PyReconstruct.modules.datatypes.obj_group_dict import ObjGroupDict
+    g = ObjGroupDict(None, "objects", {"a": ["x"]})
+    g.groups["empty"] = set()          # what a direct manipulation leaves behind
+    d = g.getGroupDict()
+    assert d["empty"] == []
+    fast_dumps(d)                      # would raise TypeError on a set
+
+
+def test_tags_are_sorted_even_when_the_section_is_never_touched(tmp_path):
+    """The writer's "tags are sorted" guarantee must not depend on provenance.
+
+    ``Trace.getList`` sorts tags, but it only runs for a section that goes back
+    through the model. ``saveJser`` reads the hidden dir verbatim, so a section
+    the user never opened used to keep whatever tag order its source file had --
+    and two files with identical content then differed by thousands of bytes.
+    """
+    if not os.path.exists(FIXTURE):
+        pytest.skip("fixture shapes1.jser not found")
+    descending = ["zzz_tag", "mmm_tag", "aaa_tag"]
+    doc = json.loads(open(FIXTURE, "rb").read())
+    n = 0
+    for sd in doc["sections"]:
+        if not sd:
+            continue
+        for rows in sd["contours"].values():
+            for row in rows:
+                row[7] = list(descending)
+                n += 1
+    assert n, "fixture has no traces to tag"
+
+    src = str(tmp_path / "unsorted.jser")
+    with open(src, "wb") as f:
+        f.write(json.dumps(doc).encode())
+
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication(["test"])
+    from PyReconstruct.modules.datatypes.series import Series
+    from PyReconstruct.modules.backend.progress import NullProgressReporter
+
+    series = Series.openJser(src, progress=NullProgressReporter)
+    series.setProgressReporter(NullProgressReporter)
+    series.saveJser()          # NO edit: every section is shuttled opaquely
+    series.close()
+
+    out = json.loads(open(src, "rb").read())
+    checked = 0
+    for sd in out["sections"]:
+        if not sd:
+            continue
+        for rows in sd["contours"].values():
+            for row in rows:
+                assert row[7] == sorted(row[7]), f"unsorted tags survived: {row[7]}"
+                assert set(row[7]) == set(descending), "tags were altered, not reordered"
+                checked += 1
+    assert checked == n
