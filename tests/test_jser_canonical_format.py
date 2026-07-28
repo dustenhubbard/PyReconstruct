@@ -397,8 +397,36 @@ def _content(doc):
     return out
 
 
+def _assert_actually_rich(doc):
+    """Guard the round trip against going vacuous again.
+
+    Comparing ``_content(saved) == _content(source)`` only proves something if the
+    source has content. If a future fixture change left any of these empty, the
+    comparison would quietly succeed while proving nothing about that field --
+    which is the exact defect this test was rewritten to remove. So assert the
+    inputs are non-empty before asserting they survive.
+    """
+    c = _content(doc)
+    assert c["log"].strip(), "source log is empty: losslessness of the log is untested"
+    assert c["sections"], "source has no sections"
+    ser = c["series"]
+    for key in ("editors", "object_groups", "ztrace_groups", "host_tree",
+                "obj_attrs", "user_columns"):
+        assert ser.get(key), f"source {key} is empty: its preservation is untested"
+    n_flags = sum(len(s["flags"]) for s in c["sections"].values())
+    n_traces = sum(len(rows) for s in c["sections"].values()
+                   for rows in s["contours"].values())
+    n_tagged = sum(1 for s in c["sections"].values()
+                   for rows in s["contours"].values() for r in rows if r[7])
+    assert n_flags, "source has no flag rows"
+    assert n_traces, "source has no traces"
+    assert n_tagged == n_traces, f"only {n_tagged}/{n_traces} traces carry tags"
+
+
 def test_save_is_pretty_printed_and_round_trips_losslessly(tmp_path):
     src_fp, src_doc = _rich_source(tmp_path)
+    # the comparison below is only meaningful if there is something to lose
+    _assert_actually_rich(src_doc)
 
     from PySide6.QtWidgets import QApplication
     QApplication.instance() or QApplication(["test"])
