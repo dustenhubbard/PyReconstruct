@@ -319,47 +319,131 @@ def _semantic(doc):
                        "log": doc.get("log", "")}, sort_keys=True)
 
 
+def _rich_source(tmp_path, name="rich.jser"):
+    """The fixture with content the round trip is supposed to preserve.
+
+    ``shapes1.jser`` has an empty log, no flags, no tags, no groups and no hosts,
+    so a save that silently discarded any of them round-trips perfectly. Nothing
+    can be shown to survive a round trip unless it is there to begin with.
+    """
+    doc = json.loads(open(FIXTURE, "rb").read())
+    doc["log"] = ("Date, Time, User, Obj, Sections, Event\n"
+                  "2026-07-27, 10:00:00, alice, d01, 1, created trace\n"
+                  "2026-07-27, 10:00:01, bob, d02, 2, modified trace\n")
+    for i, sd in enumerate(doc["sections"]):
+        if not sd:
+            continue
+        # a 7-field flag is already fully migrated, so updateJSON leaves it alone
+        sd["flags"] = [["flag%d" % i, "check this", 1.5, 2.5, [255, 0, 0],
+                        [["alice", "2026-07-27", "have a look"]], False]]
+        for rows in sd["contours"].values():
+            for row in rows:
+                row[7] = ["zzz_tag", "mmm_tag", "aaa_tag"]
+    ser = doc["series"]
+    ser["editors"] = ["zoe", "adam", "mia"]
+    ser["object_groups"] = {"zg": ["square", "star"], "ag": ["triangle"]}
+    ser["ztrace_groups"] = {"zt": ["square"]}
+    # no transitive edge: HostTree deliberately prunes a host that is already
+    # reachable through another host, and that pruning is not a round-trip loss
+    ser["host_tree"] = {"star": ["square"], "triangle": ["star"]}
+    ser["obj_attrs"] = {"square": {"comment": "a comment", "curation": ["", "", ""]}}
+    ser["user_columns"] = {"MyColumn": ["yes", "no"]}
+    fp = str(tmp_path / name)
+    with open(fp, "wb") as f:
+        f.write(json.dumps(doc).encode())
+    return fp, doc
+
+
+def _bc(sd):
+    """Brightness/contrast normalized across the legacy migration.
+
+    A pre-profiles section carries the scalar pair; the migration folds it into
+    ``brightness_contrast_profiles``, so the two shapes must compare equal.
+    """
+    bc = sd.get("brightness_contrast_profiles")
+    if bc is None:
+        bc = {"default": [sd.get("brightness", 0), int(sd.get("contrast", 0))]}
+    return {k: list(v) for k, v in bc.items()}
+
+
+def _content(doc):
+    """Everything a save must preserve, normalized for what a save may legally change.
+
+    A save is allowed to: lock sections (``align_locked``), drop a trace row's
+    trailing history field, sort tags, sort contour names, and reorder keys.
+    It is not allowed to lose anything.
+    """
+    out = {"log": doc.get("log", ""), "sections": {}}
+    for i, sd in enumerate(doc["sections"]):
+        if not sd:
+            continue
+        out["sections"][i] = {
+            "src": sd["src"], "mag": sd["mag"], "thickness": sd["thickness"],
+            "tforms": sd["tforms"], "calgrid": sd["calgrid"],
+            "bc": _bc(sd),
+            "flags": sd.get("flags", []),
+            "contours": {name: sorted([list(r[:7]) + [sorted(r[7])] for r in rows])
+                         for name, rows in sd["contours"].items()},
+        }
+    ser = doc["series"]
+    out["series"] = {
+        k: ser.get(k) for k in
+        ("current_section", "window", "alignment", "obj_attrs", "user_columns")
+    }
+    out["series"]["editors"] = sorted(ser.get("editors", []))
+    for gk in ("object_groups", "ztrace_groups", "host_tree"):
+        out["series"][gk] = {k: sorted(v) for k, v in (ser.get(gk) or {}).items()}
+    out["series"]["ztraces"] = ser.get("ztraces")
+    return out
+
+
 def test_save_is_pretty_printed_and_round_trips_losslessly(tmp_path):
-    series = _open_fixture(tmp_path)
-    fp = series.jser_fp
+    src_fp, src_doc = _rich_source(tmp_path)
+
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication(["test"])
+    from PyReconstruct.modules.datatypes.series import Series
+    from PyReconstruct.modules.backend.progress import NullProgressReporter
+
+    series = Series.openJser(src_fp, progress=NullProgressReporter)
+    series.setProgressReporter(NullProgressReporter)
+    n_sections = len(series.sections)
     series.saveJser()
     series.close()
 
-    with open(fp, "rb") as f:
+    with open(src_fp, "rb") as f:
         raw = f.read()
-    assert raw.count(b"\n") > 100, "the .jser should no longer be a single line"
     first = json.loads(raw)
 
+    assert raw.count(b"\n") > 100, "the .jser should no longer be a single line"
+
     # section count and trace count are both recoverable with grep alone
-    text = raw.decode()
-    lines = text.split("\n")
-    assert sum(1 for ln in lines if ln.startswith('  "src":')) == len(series.sections)
+    lines = raw.decode().split("\n")
+    assert sum(1 for ln in lines if ln.startswith('  "src":')) == n_sections
     assert sum(1 for ln in lines if ln.startswith("      [[")) > 0
 
-    # Reopen the file this build just wrote and save it again. The comparison
-    # has to be between the FIRST document and the SECOND one actually read
-    # back off disk -- comparing `raw` to itself asserts nothing, and a save
-    # that silently dropped the log or every flag would still pass.
-    second_fp = str(tmp_path / "second.jser")
-    shutil.copyfile(fp, second_fp)
-    shutil.rmtree(str(tmp_path / ".second"), ignore_errors=True)
+    # NOTHING WAS LOST. Compared against the SOURCE, not against another output
+    # of the same writer: a writer that consistently discards the log or every
+    # flag agrees with itself on every subsequent save.
+    assert _content(first) == _content(src_doc)
+    assert first["log"] == src_doc["log"]
+    for i, sd in enumerate(first["sections"]):
+        if sd is None:
+            continue
+        assert sd["flags"] == src_doc["sections"][i]["flags"], f"flags lost on {i}"
 
-    from PyReconstruct.modules.datatypes.series import Series
-    from PyReconstruct.modules.backend.progress import NullProgressReporter
+    # and the round trip is a fixed point: reopening and re-saving what this
+    # build wrote reproduces it byte for byte
+    second_fp = str(tmp_path / "second.jser")
+    shutil.copyfile(src_fp, second_fp)
+    shutil.rmtree(str(tmp_path / ".second"), ignore_errors=True)
     series2 = Series.openJser(second_fp, progress=NullProgressReporter)
     series2.setProgressReporter(NullProgressReporter)
     series2.saveJser()
     series2.close()
-
     with open(second_fp, "rb") as f:
         raw2 = f.read()
-    second = json.loads(raw2)
-
-    # nothing lost across the round trip, and the round trip is now a fixed point
-    assert _semantic(first) == _semantic(second)
-    assert first["log"] == second["log"]
-    assert ([None if s is None else s["flags"] for s in first["sections"]]
-            == [None if s is None else s["flags"] for s in second["sections"]])
+    assert _content(json.loads(raw2)) == _content(first)
     assert raw == raw2, "a second save of unchanged content changed the bytes"
 
 
