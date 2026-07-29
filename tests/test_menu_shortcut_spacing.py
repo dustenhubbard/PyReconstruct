@@ -278,32 +278,50 @@ VIEW_SHAPED_ITEMS = [
 
 
 @pytest.mark.parametrize(
-    "items,shortcut_row",
+    "items,shortcut_row,strictly_absorbing",
     [
-        (LIST_SHAPED_ITEMS, "Object list"),
-        (VIEW_SHAPED_ITEMS, "Toggle curation in object lists"),
+        (LIST_SHAPED_ITEMS, "Object list", False),
+        (VIEW_SHAPED_ITEMS, "Toggle curation in object lists", True),
     ],
     ids=["Lists-shaped", "View-shaped"],
 )
 def test_shortcut_column_moves_even_when_the_widest_row_has_no_shortcut(
-    qapp, items, shortcut_row
+    qapp, items, shortcut_row, strictly_absorbing
 ):
     """The regression the maintainer caught: these menus must gain the same
-    offset File does, though no shortcut row is the widest row."""
+    offset File does, though no shortcut row is the widest row.
+
+    ``strictly_absorbing`` distinguishes what each case can promise, because
+    "which row is widest" depends on the platform's font metrics:
+
+    * View-shaped is strictly absorbing -- its shortcut-less row beats every
+      shortcut row by MORE than the widening, so a tab-rows-only style provably
+      moves nothing, on any style. This is the deterministic guard, and the one
+      that fails in CI if the mechanism regresses (measured under
+      offscreen/fusion: 300 px -> 300 px).
+    * Lists-shaped is the real Lists menu, where "Series history" merely ties
+      the widened shortcut rows. That is an absorbing shape under the macOS
+      native metrics (where a tab-rows-only style delivered 12 of 14 px) but not
+      under fusion, where the widened rows do become the widest. So it is kept
+      as a real-world shape that must gain the full offset, not as a proof that
+      the old mechanism fails everywhere.
+    """
     plain = _menu(qapp, spaced=False, items=items)
     spaced = _menu(qapp, spaced=True, items=items)
     extra = spaced.fontMetrics().height()
 
-    # the premise: the widest row is indeed a shortcut-less one
-    def width_of(menu, text):
-        action = next(a for a in menu.actions() if a.text() == text)
-        return menu.fontMetrics().horizontalAdvance(text)
+    # the premise these cases rest on: the widest LABEL belongs to a row with
+    # no shortcut, which is what let the first version's widening be absorbed
+    def label_width(text):
+        return plain.fontMetrics().horizontalAdvance(text)
 
-    labels_with_shortcut = [t for t, kbd in items if kbd]
-    labels_without = [t for t, kbd in items if not kbd]
-    assert max(width_of(plain, t) for t in labels_without) >= max(
-        width_of(plain, t) for t in labels_with_shortcut
-    ), "premise broken: pick labels where a shortcut-less row is the widest"
+    widest_without = max(label_width(t) for t, kbd in items if not kbd)
+    widest_with = max(label_width(t) for t, kbd in items if kbd)
+    margin = extra if strictly_absorbing else 0
+    assert widest_without >= widest_with + margin, (
+        "premise broken: pick labels where a shortcut-less row is the widest"
+        + (" by more than one line-height" if strictly_absorbing else "")
+    )
 
     assert spaced.sizeHint().width() == plain.sizeHint().width() + extra
 
