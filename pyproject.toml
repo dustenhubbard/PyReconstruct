@@ -43,6 +43,19 @@ dependencies = [
     "packaging",
 ]
 
+# Test-only dependency, kept out of the runtime `dependencies` above so end
+# users never install it. pytest is held to the 9.x line these tests are
+# verified against. Install with `uv sync --extra test` (or
+# `pip install -e '.[test]'`) and run with `uv run pytest`.
+#
+# No pytest-qt here on purpose: the tests in this tree drive the methods under
+# test against duck-typed stubs and a real Series loaded from a shipped .jser,
+# and never construct a Qt widget, so they need no QApplication fixture.
+[project.optional-dependencies]
+test = [
+    "pytest>=9,<10",
+]
+
 [project.urls]
 Homepage = "https://github.com/SynapseWeb/PyReconstruct"
 
