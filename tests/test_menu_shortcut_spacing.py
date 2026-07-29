@@ -9,17 +9,35 @@ is in-window -- setNativeMenuBar(False) -- so every menu is Qt-drawn and the
 fix belongs in the style layer.
 
 ``MenuShortcutSpacingStyle`` (a QProxyStyle installed once in run.py) widens
-CT_MenuItem by one line-height of the menu font for items that carry a
-shortcut, which pushes the right-aligned shortcut column further right while
-leaving ALL painting to the native style. A stylesheet was rejected with
+CT_MenuItem by one line-height of the menu font for every row of a menu that
+shows shortcuts, which pushes the right-aligned shortcut column further right
+while leaving ALL painting to the native style. A stylesheet was rejected with
 evidence: any ``QMenu::item`` rule swaps the item's layout to the CSS box
 model, which visibly strips the native left padding (label ink moved from
 x=18.5 to x=0.5 in the same grab harness).
 
+"Every row", not "the rows with a shortcut", is the load-bearing part, and it
+is what section 3 below exists for. Qt lays a menu out at a single width for
+all of its items: QMenuPrivate::updateActionRects takes the *maximum* item
+width and only then adds the shortcut column. Widening just the shortcut rows
+therefore moves the column only when a shortcut row happens to be the widest
+row in that menu -- which is why the first version of this style did nothing
+whatsoever to View (widest row: the shortcut-less "Set zoom when finding
+contours...") and only 12 of 14 px to Lists (where "Series history" nearly ties
+the widened rows), while looking correct on File. Measured, real menubar,
+macOS native style:
+
+    menu width      before  tab-rows-only  every-row
+    File               203       217           219
+    Lists              148       160           164
+    Alignments         224       230           240
+    View               270       270 (!)       286
+
 These tests prove the mechanism on a per-widget style (equivalent sizing path,
-no mutation of the suite-wide QApplication style): the width grows by exactly
-one line-height, the *rendered* pixel gap between label ink and shortcut ink
-grows accordingly, and menus without shortcuts are untouched.
+no mutation of the suite-wide QApplication style): the width grows by one
+line-height, the *rendered* pixel gap between label ink and shortcut ink grows
+accordingly, menus that show no shortcut are untouched, and -- section 3 -- all
+of that holds when the widest row is one without a shortcut.
 """
 
 import pytest
@@ -54,6 +72,44 @@ def qapp():
     app.setAttribute(Qt.AA_DontShowShortcutsInContextMenus, before)
 
 
+class _Anything:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+    def __getattr__(self, name):
+        return lambda *a, **k: []
+
+
+class _MainWindowStub(_Anything):
+    """The MainWindow surface return_list_menu touches."""
+
+    def __init__(self, series):
+        super().__init__(series=series, field=_Anything(), mouse_palette=_Anything())
+
+
+@pytest.fixture(scope="module")
+def real_shortcut_series(tmp_path_factory):
+    """The real Series, so getOption resolves the real default shortcuts -- the
+    bare-Series path Lists and Alignments use (newAction's ``else`` branch)."""
+    import os
+    import shutil
+
+    from PyReconstruct.modules.backend.settings_store import DictSettingsStore
+    from PyReconstruct.modules.datatypes.series import Series
+
+    fixture = os.path.join(
+        os.path.dirname(__file__), "..", "PyReconstruct",
+        "assets", "checker", "files", "shapes1.jser",
+    )
+    if not os.path.exists(fixture):
+        pytest.skip("fixture shapes1.jser not found")
+    fp = str(tmp_path_factory.mktemp("series") / "s.jser")
+    shutil.copyfile(fixture, fp)
+    series = Series.openJser(fp)
+    series.setSettingsStore(DictSettingsStore())
+    return series
+
+
 def _menu(qapp, spaced: bool, items=ITEMS) -> QMenu:
     menu = QMenu()
     if spaced:
@@ -73,20 +129,34 @@ def _menu(qapp, spaced: bool, items=ITEMS) -> QMenu:
     return menu
 
 
+# The scan is limited to a horizontal band through the middle of the row, inset
+# from its left and right edges. Both restrictions are needed to make the
+# measurement portable: scanning the full row counted the menu frame and the
+# fusion style's row edges as "ink", which on the offscreen platform (fusion)
+# marked every single column as ink and reported a 1 px gap for rows whose
+# shortcut was plainly rendered. Text lives in the middle band, frames do not.
+_SCAN_INSET = 4          # px, clear of the menu frame and row edges
+_SCAN_HALF_BAND = 0.22   # fraction of the row height above/below its centre
+
+
 def _ink_columns(menu: QMenu, action: QAction):
-    """x-positions (logical px, relative to the item rect) of every column of
-    the rendered item that contains non-background pixels."""
+    """x-positions (logical px, relative to the scanned region) of every column
+    of the rendered row that contains non-background pixels."""
     image = menu.grab().toImage()
     scale = image.devicePixelRatio()
     rect = menu.actionGeometry(action)
-    x0, y0 = int(rect.x() * scale), int(rect.y() * scale)
-    w, h = int(rect.width() * scale), int(rect.height() * scale)
 
-    # background = the item's most common color
+    x0 = int((rect.x() + _SCAN_INSET) * scale)
+    x1 = int((rect.x() + rect.width() - _SCAN_INSET) * scale)
+    middle = rect.y() + rect.height() / 2
+    y0 = int((middle - rect.height() * _SCAN_HALF_BAND) * scale)
+    y1 = int((middle + rect.height() * _SCAN_HALF_BAND) * scale)
+
+    # background = the band's most common color
     from collections import Counter
 
     counts = Counter(
-        image.pixel(x, y) for y in range(y0, y0 + h) for x in range(x0, x0 + w)
+        image.pixel(x, y) for y in range(y0, y1) for x in range(x0, x1)
     )
     background = counts.most_common(1)[0][0]
 
@@ -99,8 +169,8 @@ def _ink_columns(menu: QMenu, action: QAction):
 
     return [
         (x - x0) / scale
-        for x in range(x0, x0 + w)
-        if any(contrasts(image.pixel(x, y)) for y in range(y0, y0 + h))
+        for x in range(x0, x1)
+        if any(contrasts(image.pixel(x, y)) for y in range(y0, y1))
     ]
 
 
@@ -121,7 +191,7 @@ def _widest_action(menu: QMenu) -> QAction:
 # --------------------------------------------------------------------------- #
 # sizing: deterministic, style-arithmetic level
 # --------------------------------------------------------------------------- #
-def test_shortcut_rows_gain_exactly_one_line_height_of_width(qapp):
+def test_a_menu_with_shortcuts_gains_exactly_one_line_height_of_width(qapp):
     plain = _menu(qapp, spaced=False)
     spaced = _menu(qapp, spaced=True)
     extra = spaced.fontMetrics().height()
@@ -165,9 +235,149 @@ def test_shortcut_column_stays_right_justified(qapp):
 
     def right_margin(menu):
         action = _widest_action(menu)
-        return menu.actionGeometry(action).width() - _ink_columns(menu, action)[-1]
+        scanned_width = menu.actionGeometry(action).width() - 2 * _SCAN_INSET
+        return scanned_width - _ink_columns(menu, action)[-1]
 
     assert abs(right_margin(spaced) - right_margin(plain)) <= 2.0
+
+
+# --------------------------------------------------------------------------- #
+# 3. the max-width interaction: menus of the Lists / View shape
+# --------------------------------------------------------------------------- #
+# The maintainer click-tested the first version of this style and reported Lists
+# as "looking untouched" while File was visibly improved. The cause is Qt's
+# single-width-per-menu layout, not the shortcut code path: a menu whose widest
+# row carries NO shortcut absorbs a per-shortcut-row widening entirely. Both
+# shapes below are regression cases for that, and both are unaffected by the
+# tab-rows-only version of the style.
+#
+# Note this is NOT about how the shortcut was configured. Lists and Alignments
+# reach newAction's `else` branch (a bare Series -> kbd.getOption(act_name)),
+# unlike File's plain strings, but by the time a menu is laid out the shortcut
+# is a QKeySequence on the QAction either way -- verified: with the real series,
+# objectlist_act resolves to Ctrl+Shift+O and its style option carries the tab.
+LIST_SHAPED_ITEMS = [
+    # the real Lists menu: short labels with shortcuts, and one longer
+    # shortcut-less row ("Series history") that ties/beats them on width
+    ("Object list", "Ctrl+Shift+O"),
+    ("Trace list", "Ctrl+Shift+T"),
+    ("Section list", "Ctrl+Shift+S"),
+    ("Z-trace list", "Ctrl+Shift+Z"),
+    ("Flag list", "Ctrl+Shift+F"),
+    ("Series history", ""),
+]
+
+# the extreme of the same shape, from the real View menu: the widest row by far
+# has no shortcut, so the tab-rows-only widening moved nothing at all (measured:
+# View stayed at 270 px)
+VIEW_SHAPED_ITEMS = [
+    ("Set view to image", "Home"),
+    ("Set zoom when finding contours...", ""),
+    ("Toggle curation in object lists", "Ctrl+Shift+C"),
+]
+
+
+@pytest.mark.parametrize(
+    "items,shortcut_row",
+    [
+        (LIST_SHAPED_ITEMS, "Object list"),
+        (VIEW_SHAPED_ITEMS, "Toggle curation in object lists"),
+    ],
+    ids=["Lists-shaped", "View-shaped"],
+)
+def test_shortcut_column_moves_even_when_the_widest_row_has_no_shortcut(
+    qapp, items, shortcut_row
+):
+    """The regression the maintainer caught: these menus must gain the same
+    offset File does, though no shortcut row is the widest row."""
+    plain = _menu(qapp, spaced=False, items=items)
+    spaced = _menu(qapp, spaced=True, items=items)
+    extra = spaced.fontMetrics().height()
+
+    # the premise: the widest row is indeed a shortcut-less one
+    def width_of(menu, text):
+        action = next(a for a in menu.actions() if a.text() == text)
+        return menu.fontMetrics().horizontalAdvance(text)
+
+    labels_with_shortcut = [t for t, kbd in items if kbd]
+    labels_without = [t for t, kbd in items if not kbd]
+    assert max(width_of(plain, t) for t in labels_without) >= max(
+        width_of(plain, t) for t in labels_with_shortcut
+    ), "premise broken: pick labels where a shortcut-less row is the widest"
+
+    assert spaced.sizeHint().width() == plain.sizeHint().width() + extra
+
+    action_before = next(a for a in plain.actions() if a.text() == shortcut_row)
+    action_after = next(a for a in spaced.actions() if a.text() == shortcut_row)
+    gap_before = _label_shortcut_gap(plain, action_before)
+    gap_after = _label_shortcut_gap(spaced, action_after)
+    assert gap_after >= gap_before + 0.75 * extra, (
+        f"{shortcut_row!r}: gap only went {gap_before:.1f}px -> {gap_after:.1f}px "
+        f"(extra={extra}px) -- the shortcut column did not move"
+    )
+
+
+def test_real_lists_menu_gains_the_offset_with_series_configured_shortcuts(
+    qapp, real_shortcut_series
+):
+    """End to end on the real definition and the real bare-Series code path:
+    return_list_menu built through newAction, shortcuts resolved from series
+    options, measured on rendered pixels."""
+    from PyReconstruct.modules.gui.main.menubar import return_list_menu
+    from PyReconstruct.modules.gui.utils.utils import addItem
+
+    def build(spaced):
+        from PySide6.QtWidgets import QWidget
+
+        holder = QWidget()
+        container = QMenu(holder)
+        if spaced:
+            from PyReconstruct.modules.gui.utils import MenuShortcutSpacingStyle
+
+            style = MenuShortcutSpacingStyle()
+            style.setParent(holder)
+            container.setStyle(style)
+        addItem(holder, container, return_list_menu(_MainWindowStub(real_shortcut_series)))
+        menu = holder.listsmenu
+        if spaced:
+            menu.setStyle(style)
+        menu.resize(menu.sizeHint())
+        return holder, menu
+
+    holder_plain, plain = build(spaced=False)
+    holder_spaced, spaced = build(spaced=True)
+    extra = spaced.fontMetrics().height()
+
+    # the series option really is what supplies the key here
+    assert real_shortcut_series.getOption("objectlist_act") == "Ctrl+Shift+O"
+    assert holder_plain.objectlist_act.shortcut().toString() == "Ctrl+Shift+O"
+
+    assert spaced.sizeHint().width() == plain.sizeHint().width() + extra
+
+    gap_before = _label_shortcut_gap(plain, holder_plain.objectlist_act)
+    gap_after = _label_shortcut_gap(spaced, holder_spaced.objectlist_act)
+    assert gap_after >= gap_before + 0.75 * extra, (
+        f"real Lists menu: gap only went {gap_before:.1f}px -> {gap_after:.1f}px"
+    )
+
+    holder_plain.deleteLater()
+    holder_spaced.deleteLater()
+
+
+def test_a_menu_that_hides_its_shortcuts_is_left_alone(qapp):
+    """Qt decides whether a shortcut column is drawn at all (on macOS it is
+    hidden in context menus by default). Where nothing is drawn, the extra space
+    would buy nothing, so the style asks Qt via the option text rather than
+    assuming a QAction with a shortcut means a visible shortcut."""
+    before = qapp.testAttribute(Qt.AA_DontShowShortcutsInContextMenus)
+    qapp.setAttribute(Qt.AA_DontShowShortcutsInContextMenus, True)
+    try:
+        plain = _menu(qapp, spaced=False)
+        spaced = _menu(qapp, spaced=True)
+        # nothing is rendered to space out, so nothing is widened
+        assert spaced.sizeHint().width() == plain.sizeHint().width()
+    finally:
+        qapp.setAttribute(Qt.AA_DontShowShortcutsInContextMenus, before)
 
 
 # --------------------------------------------------------------------------- #

@@ -114,27 +114,63 @@ class MenuShortcutSpacingStyle(QProxyStyle):
     here are always Qt-drawn -- the menubar is in-window, not the native macOS
     bar -- so the fix belongs in the style layer, on every platform.
 
-    Widening CT_MenuItem for items that carry a shortcut (Qt separates label
-    from shortcut with a tab in the style option's text) pushes the shortcut
-    column right while leaving all painting to the native style; a stylesheet
-    on QMenu is NOT an option for the default theme, because any QMenu::item
-    rule replaces the native item layout wholesale (it visibly strips the
-    native left padding, among other things).
+    Widening CT_MenuItem pushes the shortcut column right while leaving all
+    painting to the native style; a stylesheet on QMenu is NOT an option for
+    the default theme, because any QMenu::item rule replaces the native item
+    layout wholesale (it visibly strips the native left padding, among other
+    things).
+
+    The widening is applied to EVERY row of a menu that shows shortcuts, not
+    just to the rows that have one. That is the whole subtlety: Qt lays a menu
+    out at one width for all items -- QMenuPrivate::updateActionRects takes the
+    maximum over items and only then adds the shortcut column -- so widening
+    just the shortcut rows moves the column only when a shortcut row happens to
+    be the widest row. Measured on the real menubar (macOS, native style), the
+    first version of this class therefore did nothing at all to View, whose
+    widest row is the shortcut-less "Set zoom when finding contours...", and
+    only 12 of 14 px to Lists, where "Series history" nearly ties the widened
+    rows. Widening every row makes the offset unconditional and uniform.
 
     The extra width is one line-height of the menu font, so the gap scales
     with the user's font size and lands near the item's own left padding.
-    Menus with no shortcuts are untouched (item width is the max over items,
-    and only shortcut rows are widened). The qdark theme is unaffected either
-    way: its stylesheet routes menu-item sizing through QStyleSheetStyle,
-    which bypasses this proxy and already spaces items generously.
+    Menus that show no shortcut are left alone -- asked via Qt itself, see
+    _shows_a_shortcut -- which covers both a menu whose actions have no
+    shortcuts (File > Utilities) and the macOS default of hiding shortcuts in
+    context menus, where the space would buy nothing. The qdark theme is
+    unaffected either way: its stylesheet routes menu-item sizing through
+    QStyleSheetStyle, which bypasses this proxy and already spaces items
+    generously.
     """
+
+    @staticmethod
+    def _shows_a_shortcut(menu : QMenu) -> bool:
+        """Whether this menu will actually render a shortcut column.
+
+        Qt is the authority, so it is asked rather than second-guessed:
+        QMenu.initStyleOption appends "\\t<shortcut>" to the option text only
+        for a shortcut it is going to draw. Whether it does depends on more
+        than the QAction (Qt.AA_DontShowShortcutsInContextMenus, which is on by
+        default on macOS, and whether the menu was opened from a menubar), and
+        none of that is reachable from a style -- but the resulting option text
+        is.
+        """
+        option = QStyleOptionMenuItem()
+        for action in menu.actions():
+            if action.isSeparator() or action.shortcut().isEmpty():
+                continue
+            menu.initStyleOption(option, action)
+            if "\t" in option.text:
+                return True
+        return False
 
     def sizeFromContents(self, contents_type, option, size, widget):
         size = super().sizeFromContents(contents_type, option, size, widget)
         if (
             contents_type == QStyle.ContentsType.CT_MenuItem
             and isinstance(option, QStyleOptionMenuItem)
-            and "\t" in option.text
+            and option.menuItemType != QStyleOptionMenuItem.MenuItemType.Separator
+            and isinstance(widget, QMenu)
+            and self._shows_a_shortcut(widget)
         ):
             size.setWidth(size.width() + option.fontMetrics.height())
         return size
