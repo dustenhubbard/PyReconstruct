@@ -7,8 +7,9 @@ the modern, actively maintained successor to *Reconstruct*.
 This site documents an independently developed and maintained distribution of
 PyReconstruct. It tracks the upstream
 [SynapseWeb/PyReconstruct](https://github.com/SynapseWeb/PyReconstruct) project
-and builds on it with 3-4x faster open and refresh on large series, one-click
-installers, an in-app updater, and ongoing user-interface modernization.
+and builds on it with 3-4x faster opens on large series, one-click installers,
+an in-app updater with Stable and Beta channels, and ongoing quality-of-life
+fixes and features.
 
 ## Who it's for
 
