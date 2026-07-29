@@ -6,6 +6,9 @@ full release notes on GitHub (linked from the dialog).
 
 ## [Unreleased]
 
+- **New: Hover help on the Utilities menu.** Rest your mouse on File ▸ Utilities ▸ "Randomize project..." or "De-randomize project..." and a tooltip explains what the tool actually does before you commit to anything — including that randomizing writes a decode.txt key file you must keep to get your original image names back.
+- **Improved: Keyboard shortcuts in menus no longer crowd the labels.** The shortcut shown at the right of a menu item now keeps clear space between it and even the longest label, about the same as the menu's own edge padding.
+
 ## [1.21.0] — 2026-08-04
 
 - **New:** "Clear recents" empties the list of recently opened series. It sits at the bottom of File ▸ Open recent series, below a separator so you cannot hit it by accident.
