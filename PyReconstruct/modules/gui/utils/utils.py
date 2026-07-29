@@ -11,6 +11,9 @@ from PySide6.QtWidgets import (
     QProgressDialog,
     QMessageBox,
     QLabel,
+    QProxyStyle,
+    QStyle,
+    QStyleOptionMenuItem,
     QTableWidget
 )
 from PySide6.QtGui import (
@@ -100,6 +103,41 @@ def get_welcome_setup() -> tuple:
     )
 
     return welcome_setup
+
+
+class MenuShortcutSpacingStyle(QProxyStyle):
+    """Give menu shortcut keybinds breathing room from their labels.
+
+    Qt already right-justifies a menu item's shortcut against the item's right
+    edge, but the native macOS style sizes the item so tightly that the widest
+    label runs almost into the shortcut column (a ~5 px gap, measured). Menus
+    here are always Qt-drawn -- the menubar is in-window, not the native macOS
+    bar -- so the fix belongs in the style layer, on every platform.
+
+    Widening CT_MenuItem for items that carry a shortcut (Qt separates label
+    from shortcut with a tab in the style option's text) pushes the shortcut
+    column right while leaving all painting to the native style; a stylesheet
+    on QMenu is NOT an option for the default theme, because any QMenu::item
+    rule replaces the native item layout wholesale (it visibly strips the
+    native left padding, among other things).
+
+    The extra width is one line-height of the menu font, so the gap scales
+    with the user's font size and lands near the item's own left padding.
+    Menus with no shortcuts are untouched (item width is the max over items,
+    and only shortcut rows are widened). The qdark theme is unaffected either
+    way: its stylesheet routes menu-item sizing through QStyleSheetStyle,
+    which bypasses this proxy and already spaces items generously.
+    """
+
+    def sizeFromContents(self, contents_type, option, size, widget):
+        size = super().sizeFromContents(contents_type, option, size, widget)
+        if (
+            contents_type == QStyle.ContentsType.CT_MenuItem
+            and isinstance(option, QStyleOptionMenuItem)
+            and "\t" in option.text
+        ):
+            size.setWidth(size.width() + option.fontMetrics.height())
+        return size
 
 
 def newMenu(widget : QWidget, container, menu_dict : dict):
