@@ -57,7 +57,7 @@ def return_file_menu(self):
             },
             {
                 "attr_name": "exportmenu",
-                "text": "Export",
+                "text": "Export series",
                 "opts":
                 [
                     ("exportxml_act", "To legacy Reconstruct (XML)...", "", self.exportToXML),
@@ -119,10 +119,10 @@ def return_series_menu(self):
             ("alloptions_act", "Options...", self.series, self.allOptions),
             {
                 "attr_name": "importmenu",
-                "text": "Import",
+                "text": "Import series data",
                 "opts":
                 [
-                    ("importfromseries_act", "From series...", "", self.importFromSeries),
+                    ("importfromseries_act", "From another series...", "", self.importFromSeries),
                     ("importfromzarrlabels_act", "From neuroglancer zarr labels...", "", self.importFromZarrLabels),
                 ]
             },

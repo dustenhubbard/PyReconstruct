@@ -361,6 +361,34 @@ def test_renamed_label(attr):
     assert labels[attr] != old
 
 
+# The second label pass: the deferred "verb with no object" items from the pass
+# above. Same rules: every label verified against its handler, nothing moved,
+# no shortcut changed.
+RENAMED_SECOND_PASS = {
+    # attr_name: (old label, new label)
+    #
+    # exportToXML converts the open series to a legacy XML .ser;
+    # exportToZarr's handler docstring is "Export series as a
+    # neuroglancer-compatible zarr" (images over a section range/window plus
+    # any chosen group labels). Both act on the open series.
+    "exportmenu": ("Export", "Export series"),
+    # both children bring data into the open series: traces / z-traces /
+    # flags / attributes / alignments / palettes / b-c profiles from another
+    # series, or zarr labels converted to objects
+    "importmenu": ("Import", "Import series data"),
+    # importFromSeries's own docstring: "Import from another series."
+    "importfromseries_act": ("From series...", "From another series..."),
+}
+
+
+@pytest.mark.parametrize("attr", sorted(RENAMED_SECOND_PASS))
+def test_second_pass_renamed_label(attr):
+    old, new = RENAMED_SECOND_PASS[attr]
+    labels = _labels()
+    assert labels[attr] == new, f"{attr} should read {new!r}, not {labels[attr]!r}"
+    assert labels[attr] != old
+
+
 def test_menubar_attr_names_are_unique():
     """No two menubar rows may share an attr_name.
 
@@ -398,7 +426,7 @@ FILE_MENU_LABELS = [
     "Backup >",
     "    Backup now...",
     "    Settings...",
-    "Export >",
+    "Export series >",
     "    To legacy Reconstruct (XML)...",
     "    To Neuroglancer (Zarr)...",
     "-----",
@@ -410,8 +438,8 @@ FILE_MENU_LABELS = [
 
 SERIES_MENU_LABELS = [
     "Options...",
-    "Import >",
-    "    From series...",
+    "Import series data >",
+    "    From another series...",
     "    From neuroglancer zarr labels...",
     "Images >",
     "    Find/change image directory",
