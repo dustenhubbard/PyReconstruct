@@ -117,6 +117,10 @@ def _submenu(items, attr_name):
 # every row, separators included, in order. Built with no object groups (the
 # View menu appends a dynamic "Groups" submenu when the series has any) and no
 # recently opened series.
+#
+# One deliberate attr_name change since capture, commented in place below:
+# the Alignments import submenu is "importalignmentsmenu" (was "importmenu",
+# a duplicate of the Series one).
 MENUBAR_BASELINE = [
     (0, "menu", "filemenu"),
     (1, "menu", "newseriesmenu"),
@@ -227,7 +231,10 @@ MENUBAR_BASELINE = [
     (0, "menu", "alignmentsmenu"),
     (1, "act", "changealignment_act"),
     (1, "sep", None),
-    (1, "menu", "importmenu"),
+    # renamed from "importmenu", which Series > Import also used: newMenu does
+    # setattr(mw, attr_name, menu), so the second build overwrote the first and
+    # MainWindow.importmenu could only ever mean the Alignments submenu
+    (1, "menu", "importalignmentsmenu"),
     (2, "act", "importtransforms_act"),
     (2, "act", "import_swift_transforms_act"),
     (1, "sep", None),
@@ -352,6 +359,20 @@ def test_renamed_label(attr):
     labels = _labels()
     assert labels[attr] == new, f"{attr} should read {new!r}, not {labels[attr]!r}"
     assert labels[attr] != old
+
+
+def test_menubar_attr_names_are_unique():
+    """No two menubar rows may share an attr_name.
+
+    newMenu/newAction do ``setattr(mainwindow, attr_name, ...)``, so a
+    duplicate silently overwrites the earlier attribute -- Series > Import and
+    Alignments > Import alignments shared "importmenu" until the latter was
+    renamed, leaving ``MainWindow.importmenu`` pointing only at the Alignments
+    submenu. Nothing read it, so nothing broke; this pins the invariant so the
+    next duplicate cannot sit unnoticed."""
+    names = [attr for _d, kind, attr, _t in _rows() if kind != "sep"]
+    dupes = {n for n in names if names.count(n) > 1}
+    assert dupes == set(), f"duplicate menubar attr_names: {sorted(dupes)}"
 
 
 # The two menus in scope, as the user reads them. Frozen so a future pass has to

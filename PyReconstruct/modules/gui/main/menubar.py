@@ -280,7 +280,7 @@ def return_alignments_menu(self):
             ("changealignment_act", "Edit alignments...", self.series, self.modifyAlignments),
             None,
             {
-                "attr_name": "importmenu",
+                "attr_name": "importalignmentsmenu",
                 "text": "Import alignments",
                 "opts":
                 [
