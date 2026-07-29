@@ -672,16 +672,15 @@ class Section():
         """Invert the trace selection: deselect every selected trace and
         select every unselected trace.
 
-        Only traces visible in the field can become selected: hidden and
-        group-hidden traces are skipped unless include_hidden is True (the
-        show-all-traces mode). Locked objects are never selected
-        (addSelectedTrace refuses them). Selected ztrace points and flags are
-        left untouched.
+        Only traces visible in the field can become selected: hidden traces
+        and traces hidden through group visibility are skipped unless
+        include_hidden is True (the show-all-traces mode). Selected ztrace
+        points and flags are left untouched.
 
         (Only meant for GUI use.)
 
             Params:
-                include_hidden (bool): True if hidden traces may be selected
+                include_hidden (bool): True if hidden traces can be selected
         """
         selected = set(self.selected_traces)
         group_hidden = set(self.traces_group_hide)

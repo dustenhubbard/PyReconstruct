@@ -37,21 +37,24 @@ from PyReconstruct.modules.gui.popup import (
 )
 
 
-def invert_object_rows(row_names : list, selected : set):
+def invert_object_rows(row_names : list, selected : set, locked : set):
     """Return the row indices to select when inverting an object selection.
 
-    Every row that is not currently selected becomes selected. Object rows are
-    freely selectable in the list (no lock restriction), so nothing is excluded
-    here -- this matches the object list's existing selection behavior.
+    Every row that is not currently selected becomes selected, except rows
+    whose object is locked (locked objects are never added to the selection,
+    matching how the field refuses to select traces of a locked object).
 
         Params:
-            row_names (list): object name at each row, in row order
+            row_names (list): object name at each table row, in row order
             selected (set): names of the currently selected objects
+            locked (set): names of the locked objects
         Returns:
             (list): the row indices that should end up selected
     """
-    return [r for r, name in enumerate(row_names) if name not in selected]
-
+    return [
+        r for r, name in enumerate(row_names)
+        if name not in selected and name not in locked
+    ]
 
 class ObjectTableWidget(DataTable):
     
@@ -612,8 +615,9 @@ class ObjectTableWidget(DataTable):
         """Invert which objects are selected in the list.
 
         Every object shown in the list that is not currently selected becomes
-        selected, and vice versa. Operates on the rows currently displayed, so
-        with no active filter this inverts against every object in the series.
+        selected and vice versa; locked objects are never selected. Operates on
+        the rows currently displayed, so with no active filter this inverts
+        against every object in the series.
         """
         row_count = self.table.rowCount()
         if not row_count:
@@ -621,7 +625,9 @@ class ObjectTableWidget(DataTable):
 
         row_names = [self.table.item(r, 0).text() for r in range(row_count)]
         selected = set(self.getSelected())
-        to_select = invert_object_rows(row_names, selected)
+        locked = {n for n in row_names if self.series.getAttr(n, "locked")}
+
+        to_select = invert_object_rows(row_names, selected, locked)
 
         model = self.table.model()
         last_col = self.table.columnCount() - 1

@@ -364,41 +364,44 @@ class FieldWidgetObject(FieldWidgetTrace):
 
         return True
 
-    # update_objects=False so the decorator does NOT run its locked-check on the
-    # selection (the SELECTED objects are the ones being kept, not modified) and
-    # does not refresh the wrong rows -- both are handled against the complement
-    # below.
+    # update_objects=False: the objects being modified are the COMPLEMENT of
+    # the selection, not the selection itself, so the decorator's
+    # locked-check and table refresh (both keyed to selected_names) don't
+    # apply here -- both are handled against the complement below.
     @object_function(update_objects=False, reload_field=True)
     def hideUnselectedObjects(self, obj_names : list):
-        """Isolate the selected object(s): hide every OTHER object throughout the
-        whole series, so the isolation persists as sections change.
+        """Isolate the selected object(s): hide every OTHER object throughout
+        the whole series, so the isolation persists as sections change.
 
-        Objects in the complement are hidden regardless of their locked state --
-        locking guards edits and quantification, not visibility. An empty
-        selection is a no-op (the decorator returns before we get here), so this
-        can never blank the series.
+        Locked objects are never hidden (they are left as-is). An empty
+        selection is a no-op (the decorator returns before we get here), so
+        this can never blank the series.
 
             Params:
-                obj_names (list): the objects to keep visible (object-list
-                    selection, or the objects owning the field's selected traces)
+                obj_names (list): the objects to keep visible (from the object
+                    list selection, or the objects owning the field's selected
+                    traces)
             Returns:
                 (bool): True if any object was hidden
         """
         keep = set(obj_names)
-        others = [name for name in self.series.data["objects"] if name not in keep]
-        if not others:  # everything is already selected -> nothing to hide
+        to_hide = [
+            name for name in self.series.data["objects"]
+            if name not in keep and not self.series.getAttr(name, "locked")
+        ]
+        if not to_hide:  # everything is already selected/locked -> nothing to do
             return False
 
-        self.series.hideObjects(others, True, self.series_states)
-        self.table_manager.updateObjects(others)
+        self.series.hideObjects(to_hide, True, self.series_states)
+        self.table_manager.updateObjects(to_hide)
 
         return True
 
     def unhideAllObjects(self):
         """Show all objects: unhide every object throughout the whole series.
 
-        The clear restore for "Hide unselected objects"; undoable series-wide,
-        like the object hide itself.
+        This is the clear restore for "Hide unselected objects" and is
+        undoable series-wide, like the object hide itself.
         """
         all_names = list(self.series.data["objects"].keys())
         if not all_names:
