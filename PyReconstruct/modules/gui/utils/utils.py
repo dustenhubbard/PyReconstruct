@@ -120,15 +120,27 @@ def newMenu(widget : QWidget, container, menu_dict : dict):
 
 def newAction(widget : QWidget, container : QMenu, action_tuple : tuple):
     """Create an action within a menu.
-    
+
         Params:
             widget (QWidget): the widget the action is connected to
             container (QMenu): the menu that contains the action
-            action_tuple (tuple): the tuple describing the action (name, text, keyboard shortcut, function)
+            action_tuple (tuple): the tuple describing the action
+                (name, text, keyboard shortcut, function[, tooltip])
     """
-    act_name, text, kbd, f = action_tuple
+    act_name, text, kbd, f = action_tuple[:4]
+    tooltip = action_tuple[4] if len(action_tuple) > 4 else None
     # create the action attribute
     action : QAction = container.addAction(text, f, "")
+
+    # optional fifth element: a hover tooltip. setToolTip alone does nothing in
+    # a menu -- QMenu only shows action tooltips once the menu itself opts in
+    # via setToolTipsVisible, so the containing menu is switched on here, and
+    # only here. Menus with no tooltipped action are deliberately left opted
+    # out: a QAction's toolTip defaults to its own text, so a blanket opt-in
+    # would echo every label back as a redundant tooltip.
+    if tooltip:
+        action.setToolTip(tooltip)
+        container.setToolTipsVisible(True)
 
     # create the shorcut or checkbox
     if type(kbd) is str:
