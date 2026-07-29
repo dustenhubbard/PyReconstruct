@@ -362,8 +362,9 @@ def test_renamed_label(attr):
 
 
 # The second label pass: the deferred "verb with no object" items from the pass
-# above. Same rules: every label verified against its handler, nothing moved,
-# no shortcut changed.
+# above, plus the maintainer's catch-all name for the former Projects submenu.
+# Same rules: every label verified against its handler, nothing moved, no
+# shortcut changed.
 RENAMED_SECOND_PASS = {
     # attr_name: (old label, new label)
     #
@@ -378,6 +379,13 @@ RENAMED_SECOND_PASS = {
     "importmenu": ("Import", "Import series data"),
     # importFromSeries's own docstring: "Import from another series."
     "importfromseries_act": ("From series...", "From another series..."),
+    # the maintainer's catch-all for rarely used, user-requested functions;
+    # signals where future niche items go
+    "projectsmenu": ("Projects", "Utilities"),
+    # randomize_project acts on a project directory (codes its images and
+    # emits one coded jser); derandomize_project reverses it. The pair now
+    # shares its noun -- "De-randomize project..." is unchanged.
+    "random_act": ("Randomize images...", "Randomize project..."),
 }
 
 
@@ -420,8 +428,8 @@ FILE_MENU_LABELS = [
     "-----",
     "Save",
     "Save as...",
-    "Projects >",
-    "    Randomize images...",
+    "Utilities >",
+    "    Randomize project...",
     "    De-randomize project...",
     "Backup >",
     "    Backup now...",

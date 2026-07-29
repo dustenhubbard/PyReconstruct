@@ -39,10 +39,10 @@ def return_file_menu(self):
             ("saveas_act", "Save as...", "", self.saveAsToJser),
             {
                 "attr_name": "projectsmenu",
-                "text": "Projects",
+                "text": "Utilities",
                 "opts":
                 [
-                    ("random_act", "Randomize images...", "", self.randomizeProject),
+                    ("random_act", "Randomize project...", "", self.randomizeProject),
                     ("derandom_act", "De-randomize project...", "", self.derandomizeProject)
                 ]
             },
