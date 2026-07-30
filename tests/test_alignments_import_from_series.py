@@ -260,6 +260,32 @@ def test_prompt_is_singular_or_plural_to_match_the_collisions(qapp, monkeypatch)
     assert "alignments:" in two[0]
 
 
+def test_prompt_makes_no_claim_about_undo(qapp, monkeypatch):
+    """Importing alignments is undoable, so the prompt must not say otherwise.
+
+    The wording is pinned in full because the claim it must not carry is one
+    sentence long: warning that the old transforms are gone for good would be
+    wrong, and a hedge about undo would be no better. Say what the import
+    replaces and stop.
+    """
+    widget, _notices, prompts = _multi(
+        qapp, monkeypatch, True, [("a", "taken")], {"taken"}
+    )
+    widget.getResponse()
+
+    assert prompts == [
+        "This series already has the following alignment:\n"
+        "\n"
+        "    taken\n"
+        "\n"
+        "Importing under this name will replace the existing alignment on "
+        "every section.\n"
+        "\n"
+        "Continue?"
+    ]
+    assert "undo" not in prompts[0].lower()
+
+
 # --------------------------------------------------------------------------- #
 # ImportAs: the target name prefills from the source
 # --------------------------------------------------------------------------- #

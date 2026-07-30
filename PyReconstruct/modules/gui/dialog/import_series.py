@@ -791,8 +791,7 @@ class MultiImportAs(QWidget):
             f"This series already has the following {self.name}{plural}:\n\n"
             f"{listed}\n\n"
             f"Importing under {'these names' if plural else 'this name'} will "
-            f"replace the existing {self.name}{plural} on every section. Undo "
-            "will not bring the old values back.\n\n"
+            f"replace the existing {self.name}{plural} on every section.\n\n"
             "Continue?",
             yn=True,
             title="Overwrite Existing",
