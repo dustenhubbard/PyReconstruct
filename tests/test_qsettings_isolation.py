@@ -5,15 +5,22 @@ suite in one night and edited the developer's own preferences. The redirect and
 the guard live in `tests/qsettings_isolation.py`; these are the tests that hold
 them in place.
 
-Two things are checked that are easy to conflate:
+Three things are checked that are easy to conflate:
 
   - *isolation*: every route resolves inside the session's throwaway root, so a
     write cannot land on the real store. One test per known route, plus a sweep
     that fails if any imported module still holds the real class.
-  - *the guard*: `RealSettingsGuard` actually notices a change. Tested against
+  - *detection*: `RealSettingsGuard` actually notices a change. Tested against
     files in `tmp_path` rather than the real store, for the obvious reason, and
     including a genuine `QSettings` write through the real Qt machinery so the
     detection path is the real one and not a hand-written file.
+  - *attribution*: a detected change is only the suite's fault if the tripwire
+    recorded the suite making it. These are the tests that keep the run from
+    failing on a write the developer's own application made, while still failing
+    on a write the suite made. They matter because the two are indistinguishable
+    on disk, so getting this wrong in either direction is easy: fail always, and
+    the check becomes noise to be ignored; fail never, and incident four is
+    silent.
 
 The last test is the counterweight: production still resolves to the real
 location. An isolation mechanism that also redirected the shipped app would be a
@@ -336,10 +343,17 @@ def test_guard_matches_the_domain_case_insensitively(tmp_path):
 def test_guard_catches_a_real_qsettings_write(tmp_path):
     """End to end, through Qt rather than a hand-written file.
 
-    The rogue write is a real `QSettings` write to a real settings file that the
-    guard is watching. Pointed at `tmp_path` instead of the developer's
-    Preferences directory, because demonstrating the guard by committing a test
-    that writes the real store would be the fourth incident.
+    This is the proof that a genuine leak from the suite is still caught, and it
+    exercises both halves at once: the digest notices the file changed, and the
+    tripwire attributes the write to this process and to this test.
+
+    The rogue write is a real `QSettings` write, on the real class, to a real
+    settings file that the guard is watching. Pointed at `tmp_path` instead of
+    the developer's Preferences directory, because demonstrating the guard by
+    committing a test that writes the real store would be the fourth incident.
+    `deliberate_bypass` is what stops this proof from failing the session it is
+    proving: the record is asserted against and then dropped, leaving no
+    residue.
     """
     import PySide6.QtCore as qtcore
 
@@ -348,19 +362,20 @@ def test_guard_catches_a_real_qsettings_write(tmp_path):
     real = qi._real_qsettings
     real.setPath(real.Format.IniFormat, real.Scope.UserScope, str(directory))
     try:
-        settings = real(
-            real.Format.IniFormat, real.Scope.UserScope, "Watched", "Domain"
-        )
-        target = os.path.dirname(settings.fileName())
-        guard = qi.RealSettingsGuard(target, "Domain")
-        guard.snapshot()
+        with qi.deliberate_bypass() as recorded:
+            settings = real(
+                real.Format.IniFormat, real.Scope.UserScope, "Watched", "Domain"
+            )
+            target = os.path.dirname(settings.fileName())
+            guard = qi.RealSettingsGuard(target, "Domain")
+            guard.snapshot()
 
-        settings.setValue("username", "clobbered-by-a-test")
-        settings.sync()
+            settings.setValue("username", "clobbered-by-a-test")
+            settings.sync()
 
-        problems = guard.diff()
-        assert problems, f"guard missed a real write to {settings.fileName()}"
-        assert "username" in problems[0]
+            problems = guard.diff()
+            assert problems, f"guard missed a real write to {settings.fileName()}"
+            assert "username" in problems[0]
     finally:
         # restore the session's isolation root, or every later test in this
         # session would resolve into tmp_path and the guard would be armed on it
@@ -369,6 +384,168 @@ def test_guard_catches_a_real_qsettings_write(tmp_path):
         )
         assert _under_root(qi.resolved_path())
     del qtcore
+
+    # the tripwire saw the same write, and knows who did it
+    assert len(recorded) == 1, recorded
+    assert recorded[0].method == "setValue"
+    assert recorded[0].key == "username"
+    assert recorded[0].path == str(directory / "Watched" / "Domain.ini")
+    assert "test_guard_catches_a_real_qsettings_write" in recorded[0].test
+    assert "setValue" in recorded[0].stack
+
+    # and on that evidence the session fails, whatever the digest says
+    level, message = qi.session_report(problems, tuple(recorded), root="/root")
+    assert level == "fail"
+    assert "wrote the real application settings" in message
+    assert "test_guard_catches_a_real_qsettings_write" in message
+
+    # the proof left nothing behind for the session-end check to trip on
+    assert qi.recorded_bypasses() == ()
+
+
+def test_the_tripwire_ignores_ordinary_isolated_writes():
+    """Every settings write in the suite goes through the wrapped methods.
+
+    The isolated subclass inherits them, so the tripwire has to let those
+    through or the session would fail on its own redirect working correctly.
+    """
+    import PySide6.QtCore as qtcore
+
+    with qi.deliberate_bypass() as recorded:
+        settings = qtcore.QSettings(qi.ORG, qi.APP)
+        settings.setValue("isolation_probe_tripwire", "landed")
+        settings.sync()
+        assert _under_root(settings.fileName())
+    assert recorded == [], recorded
+
+
+def test_the_tripwire_ignores_a_bypass_that_still_lands_in_the_root():
+    """Reaching the real class is not itself pollution.
+
+    `_install` also redirects the real class's own `IniFormat` path, so a
+    bypass can still resolve inside the isolation root. Nothing real is written,
+    so there is nothing to report, and reporting it would be a false alarm.
+    """
+    real = qi._real_qsettings
+    with qi.deliberate_bypass() as recorded:
+        settings = real(
+            real.Format.IniFormat, real.Scope.UserScope, qi.ORG, "TripwireInRoot"
+        )
+        assert _under_root(settings.fileName())
+        settings.setValue("probe", "landed")
+        settings.sync()
+    assert recorded == [], recorded
+
+
+def test_the_tripwire_records_every_mutating_method(tmp_path):
+    """`remove` and `clear` pollute as surely as `setValue` does.
+
+    Incident one was a `clear()` plus an `allKeys()` rewrite, so a tripwire that
+    only watched `setValue` would have missed the incident that started this.
+    """
+    real = qi._real_qsettings
+    real.setPath(real.Format.IniFormat, real.Scope.UserScope, str(tmp_path))
+    try:
+        with qi.deliberate_bypass() as recorded:
+            settings = real(
+                real.Format.IniFormat, real.Scope.UserScope, "Watched", "Methods"
+            )
+            settings.setValue("kept", 1)
+            settings.remove("kept")
+            settings.clear()
+            settings.sync()
+    finally:
+        real.setPath(
+            real.Format.IniFormat, real.Scope.UserScope, qi.isolation_root
+        )
+        assert _under_root(qi.resolved_path())
+
+    assert [r.method for r in recorded] == ["setValue", "remove", "clear"]
+
+
+# --- attribution: what the end of the session says ----------------------------
+
+
+def test_an_unattributed_change_warns_instead_of_failing():
+    """The case that made this necessary: the application is open.
+
+    A digest change with no recorded mutation cannot be the suite's doing, and
+    the developer runs the suite with the application open, which writes its own
+    preferences as it goes. Failing the run there blames him for something he
+    did not do and cannot prevent, and a check that cries wolf during ordinary
+    work is a check he will learn to ignore.
+    """
+    problems = [
+        "modified: /Preferences/com.khlab.PyReconstruct.plist "
+        "(same key set, changed values)"
+    ]
+    level, message = qi.session_report(problems, (), root="/root")
+    assert level == "warn"
+    assert "not the writer" in message
+    assert "pgrep -fl PyReconstruct" in message
+    assert "notification, not a" in message
+    # it must not accuse the suite
+    assert "this test session wrote" not in message
+
+
+def test_an_unattributed_change_can_be_made_strict():
+    """CI has no application running, so there any change is worth failing on."""
+    problems = [
+        "modified: /Preferences/com.khlab.PyReconstruct.plist "
+        "(same key set, changed values)"
+    ]
+    level, message = qi.session_report(problems, (), root="/root", strict=True)
+    assert level == "fail"
+    assert qi.STRICT_ENV in message
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [("", False), ("0", False), ("false", False), ("no", False),
+     ("1", True), ("true", True), ("yes", True)],
+)
+def test_strict_is_read_from_the_environment(monkeypatch, value, expected):
+    monkeypatch.setenv(qi.STRICT_ENV, value)
+    assert qi.strict_requested() is expected
+
+
+def test_strict_is_off_when_unset(monkeypatch):
+    monkeypatch.delenv(qi.STRICT_ENV, raising=False)
+    assert qi.strict_requested() is False
+
+
+def test_a_quiet_session_reports_nothing():
+    level, message = qi.session_report([], (), root="/root")
+    assert level == "ok"
+    assert message == ""
+
+
+def test_a_recorded_mutation_fails_even_when_the_digest_is_clean():
+    """`cfprefsd` need not have flushed by the time the session ends.
+
+    The digest can miss a real write that is still sitting in the preferences
+    daemon. The tripwire cannot, because it records the call itself, so a
+    recorded mutation fails on its own evidence.
+    """
+    bypass = qi.Bypass(
+        method="setValue",
+        key="username",
+        path="/Preferences/com.khlab.PyReconstruct.plist",
+        test="tests/test_x.py::test_y (call)",
+        stack="  stack\n",
+    )
+    level, message = qi.session_report([], (bypass,), root="/root")
+    assert level == "fail"
+    assert "tests/test_x.py::test_y" in message
+    assert "username" in message
+
+
+def test_the_session_note_is_printed_by_the_terminal_summary():
+    """conftest reads this module's `terminal_note`, so it has to exist."""
+    import conftest
+
+    assert hasattr(conftest, "pytest_terminal_summary")
+    assert hasattr(qi, "terminal_note")
 
 
 def test_the_session_guard_is_armed_on_the_real_store():

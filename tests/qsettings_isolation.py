@@ -54,24 +54,57 @@ after collection, and collection imports every test module; import-time keeps
 the window closed. `tests/conftest.py` imports this module immediately after it
 defaults `QT_QPA_PLATFORM`, for the same ordering reason that line has.
 
-## The guard
+## The guard, and why it takes two signals rather than one
 
 Redirecting is only half of it. Incident four will arrive by a route this
 module does not anticipate: a test that reaches the real class through a
 reference it captured earlier, a `monkeypatch` teardown that restores the real
-name, a subprocess. So `RealSettingsGuard` fingerprints the real settings
-files on disk at session start and re-checks at session end, and fails the run
-if anything changed or appeared. It watches the whole domain family, not one
-file, so a new per-series domain (`PyReconstruct-<code>`) is caught too.
+name, a subprocess. So the real store is watched as well as avoided.
+
+The first signal is `RealSettingsGuard`, which fingerprints the real settings
+files on disk at session start and re-checks at session end. It watches the
+whole domain family, not one file, so a new per-series domain
+(`PyReconstruct-<code>`) is caught too.
+
+A file digest cannot say *who* wrote the file, and on this platform nothing can
+recover that from the file: `NativeFormat` writes go through `cfprefsd`, so
+neither the suite nor the application writes those bytes itself, and both land
+in the same file at the same mtime with the same key names. The developer
+normally has the application open while running the suite, and the application
+saves its own window state and recent-series list as it goes. A digest change
+is therefore *expected* during an ordinary run and says nothing about the suite.
+
+So the second signal is the one that can be attributed: `_install_tripwire`
+wraps the mutating methods on the real `QSettings` class and records any call
+made on an instance that is not the isolated subclass and does address a file
+outside the isolation root. That is direct, in-process evidence that this
+session wrote the real store, it names the test that did it, and it does not
+depend on `cfprefsd` having flushed by the time the session ends.
+
+The two combine as follows:
+
+- a recorded mutation, digest changed or not: **fail**, and name the test.
+- digest changed, nothing recorded: **warn**, and say that the suite is not the
+  writer and what the likely causes are. Set `PYRECON_TEST_STRICT_SETTINGS=1` to
+  make this a failure too, which is what a CI machine wants, since nothing else
+  should be touching the store there.
+- neither: silent.
+
+A run that fails on something the developer cannot control, in his normal
+working configuration, teaches him to ignore the one message that matters.
 """
 
 import atexit
+import contextlib
 import hashlib
 import os
 import plistlib
 import shutil
 import sys
 import tempfile
+import time
+import traceback
+import warnings
 
 import pytest
 
@@ -80,6 +113,11 @@ import pytest
 # a per-series one is `f"{APP}-{code}"`.
 ORG = "KHLab"
 APP = "PyReconstruct"
+
+#: Set this to make an unattributed change to the real store fail the session
+#: instead of warning. For CI, where the developer's application is not running
+#: and any change to the store really is the suite's fault.
+STRICT_ENV = "PYRECON_TEST_STRICT_SETTINGS"
 
 # Populated by `_install()`; None means Qt was not importable and there is
 # nothing to isolate (see the ImportError branch).
@@ -132,7 +170,11 @@ def _keys(path):
 
 
 class RealSettingsGuard:
-    """Fail the session if the real settings files changed during it.
+    """Describe what changed in the real settings files during the session.
+
+    Detection only. What a change *means* is decided by `session_report`, which
+    weighs this against the tripwire, because a digest cannot say who wrote the
+    file and on macOS the application usually did.
 
     Watches a directory for every file whose name starts with `prefix`, which
     is the whole domain family rather than a single file: on macOS that is
@@ -215,6 +257,239 @@ class RealSettingsGuard:
                     detail.append("same key set, changed values")
                 problems.append(f"modified: {path} ({'; '.join(detail)})")
         return problems
+
+
+# --- attributing a write to this process --------------------------------------
+
+#: The `QSettings` methods that can change stored values. Reads are harmless --
+#: a test that only reads the real store is a bug worth fixing but not
+#: pollution -- so the tripwire ignores them and stays cheap.
+_MUTATORS = ("setValue", "remove", "clear")
+
+#: Every mutation of the real store recorded during this session.
+_bypasses = []
+
+
+class RealSettingsChanged(UserWarning):
+    """The real settings changed and the suite is demonstrably not the writer."""
+
+
+class Bypass:
+    """One recorded mutation of the real store through the real `QSettings`.
+
+        Params:
+            method (str): the `QSettings` method called.
+            key (str): the settings key, when the call named one.
+            path (str): the settings file the instance addresses.
+            test (str): the test that was running, from `PYTEST_CURRENT_TEST`.
+            stack (str): the innermost frames of the call, to find the culprit.
+    """
+
+    def __init__(self, method, key, path, test, stack):
+        self.method = method
+        self.key = key
+        self.path = path
+        self.test = test
+        self.stack = stack
+
+    def describe(self):
+        """A block naming the call, the file, the test, and the call site."""
+        key = "" if self.key is None else f"({self.key!r})"
+        head = f"{self.method}{key} -> {self.path}"
+        where = self.test or "no test (import or session-level code)"
+        return f"{head}\n      during: {where}\n{self.stack}"
+
+
+def recorded_bypasses():
+    """Every mutation of the real store recorded so far this session."""
+    return tuple(_bypasses)
+
+
+@contextlib.contextmanager
+def deliberate_bypass():
+    """Discard the tripwire records made inside the block.
+
+    The tests that prove the tripwire fires have to trip it, and a proof that
+    left a record behind would fail the session it was proving. Yields a list,
+    filled in on exit with what was recorded and removed, so a test can assert
+    against it after the block.
+    """
+    start = len(_bypasses)
+    recorded = []
+    try:
+        yield recorded
+    finally:
+        recorded.extend(_bypasses[start:])
+        del _bypasses[start:]
+
+
+def _install_tripwire(real, isolated, root):
+    """Record mutations that reach the real class and land outside `root`.
+
+    Wraps the mutating methods on the *real* class, which is the one a bypass
+    holds. Two conditions have to hold before a call is recorded, and both
+    matter:
+
+    - the instance is not an `isolated` one. The isolated subclass inherits
+      these methods, so every ordinary settings write in the suite arrives here
+      too, and is not a bypass.
+    - the file it addresses is outside the isolation root. A bypass that still
+      resolves into the root writes nothing real, because `_install` also
+      redirects the real class's `IniFormat` path. Only a call that would touch
+      a file outside the root is pollution.
+
+    This is the only evidence available that *this process* wrote the real
+    store, and unlike the digest it does not need `cfprefsd` to have flushed.
+    """
+    absolute_root = os.path.abspath(root)
+
+    def call_site():
+        """The innermost frames that belong to this repository, as text.
+
+        The raw stack at a settings write is mostly pluggy and `_pytest`
+        plumbing, which tells the reader nothing about which line to change, so
+        framework frames are dropped and the last few of what remains are kept.
+        """
+        frames = [
+            frame
+            for frame in traceback.extract_stack()[:-2]
+            if "/site-packages/" not in frame.filename
+            and "/_pytest/" not in frame.filename
+            and not frame.filename.startswith("<")
+            and frame.filename != __file__
+        ]
+        return "".join(traceback.format_list(frames[-3:]))
+
+    def target_outside_root(instance):
+        """The addressed file, or None when it is inside the isolation root."""
+        try:
+            path = instance.fileName()
+        except Exception:  # pragma: no cover - defensive, a deleted C++ object
+            return None
+        if not path:
+            return None
+        if os.path.abspath(path).startswith(absolute_root):
+            return None
+        return path
+
+    def wrap(name):
+        original = getattr(real, name)
+
+        def tripwire(self, *args, **kwargs):
+            if not isinstance(self, isolated):
+                path = target_outside_root(self)
+                if path is not None:
+                    named = args[0] if args and isinstance(args[0], str) else None
+                    _bypasses.append(
+                        Bypass(
+                            method=name,
+                            key=named,
+                            path=path,
+                            test=os.environ.get("PYTEST_CURRENT_TEST"),
+                            stack=call_site(),
+                        )
+                    )
+            return original(self, *args, **kwargs)
+
+        tripwire.__name__ = name
+        tripwire.__qualname__ = f"{real.__name__}.{name}"
+        setattr(real, name, tripwire)
+
+    for name in _MUTATORS:
+        wrap(name)
+
+
+# --- what the end of the session says -----------------------------------------
+
+
+def _when(path):
+    """Local mtime of a path, for correlating a change with something else."""
+    try:
+        return time.strftime(
+            "%Y-%m-%d %H:%M:%S", time.localtime(os.path.getmtime(path))
+        )
+    except OSError:
+        return "no longer present"
+
+
+def strict_requested():
+    """Whether an unattributed change should fail rather than warn."""
+    value = os.environ.get(STRICT_ENV, "").strip().lower()
+    return value not in ("", "0", "false", "no")
+
+
+def session_report(problems, bypasses, root=None, strict=False):
+    """Decide what the end of the session should report.
+
+        Params:
+            problems (list): `RealSettingsGuard.diff()` output.
+            bypasses (tuple): `recorded_bypasses()` output.
+            root (str): the isolation root, quoted in the failure message.
+            strict (bool): treat an unattributed change as a failure.
+
+        Returns:
+            tuple: `(level, message)`, where level is "ok", "warn" or "fail".
+              The message is empty when the level is "ok".
+    """
+    if bypasses:
+        detail = "\n".join(f"  - {b.describe()}" for b in bypasses)
+        message = (
+            "this test session wrote the real application settings.\n\n"
+            "Attributed, not inferred: the suite called a mutating QSettings "
+            "method on an\ninstance addressing a file outside the isolation "
+            "root.\n\n" + detail + "\n"
+            "Every settings route in the suite is supposed to be redirected to\n"
+            f"  {root}\n"
+            "so the code above is holding a reference to the real QSettings "
+            "class that it\ncaptured before tests/qsettings_isolation.py was "
+            "imported. Look it up on\nPySide6.QtCore at call time instead of "
+            "binding it at import time."
+        )
+        if problems:
+            changed = "\n".join(f"  - {p}" for p in problems)
+            message += (
+                "\n\nThe watched files also changed on disk, consistent with "
+                "the above:\n" + changed
+            )
+        return "fail", message
+
+    if not problems:
+        return "ok", ""
+
+    changed = "\n".join(
+        f"  - {p}\n    last written: {_when(_path_of(p))}" for p in problems
+    )
+    message = (
+        "the real application settings changed while this session was running,\n"
+        "and the suite is not the writer.\n\n" + changed + "\n\n"
+        "The suite records every mutating QSettings call that reaches the real\n"
+        "store, and it recorded none, so these bytes came from another process.\n"
+        "On macOS the native backend writes through cfprefsd rather than from\n"
+        "the writing process, so the file cannot name who changed it. In order of\n"
+        "likelihood:\n\n"
+        "  - the application is open and saved its own preferences, such as "
+        "window\n    state or the recently opened series list. That is normal "
+        "and needs no\n    action. Check with: pgrep -fl PyReconstruct\n"
+        "  - a second checkout is running this suite without this redirect.\n"
+        "  - a subprocess of this run that does not load tests/conftest.py.\n\n"
+        "Nothing in this run is known to be wrong. This is a notification, not a\n"
+        f"failure. Set {STRICT_ENV}=1 to make it a failure, which is\n"
+        "what a CI machine wants: there, nothing else should be writing."
+    )
+    if strict:
+        return "fail", message + f"\n\nFailing because {STRICT_ENV} is set."
+    return "warn", message
+
+
+def _path_of(problem):
+    """Recover the path from a `diff()` line, for its mtime. Best effort."""
+    body = problem.split(": ", 1)[-1]
+    return body.split(" (", 1)[0].strip()
+
+
+#: Set when the session ends with something the developer should read, and
+#: printed by `pytest_terminal_summary` in conftest.py.
+terminal_note = None
 
 
 # --- the redirect -------------------------------------------------------------
@@ -332,6 +607,10 @@ def _install():
     _real_qsettings.setDefaultFormat(ini)
 
     _isolated_qsettings = _build_isolated_class(_real_qsettings, isolation_root)
+    # After the subclass exists, because the tripwire has to be able to tell an
+    # isolated instance from a bypass, and before the rebind, so a module that
+    # kept the real class is instrumented from its first call.
+    _install_tripwire(_real_qsettings, _isolated_qsettings, isolation_root)
     _rebound_modules = _rebind(_real_qsettings, _isolated_qsettings)
     qtcore.QSettings = _isolated_qsettings
 
@@ -381,15 +660,24 @@ installed = _install()
 
 @pytest.fixture(scope="session", autouse=True)
 def isolated_qsettings():
-    """Assert the isolation held and the real settings are untouched.
+    """Assert the isolation held, and report on the real settings.
 
     Autouse and session-scoped, so it is not something a test opts into. Setup
     re-checks the redirect (a `monkeypatch` of `PySide6.QtCore` in some earlier
-    test could have restored the real class on teardown); teardown runs the
-    guard, which is the half that catches a route this module did not predict.
+    test could have restored the real class on teardown); teardown weighs the
+    tripwire against the on-disk digest, which is the half that catches a route
+    this module did not predict.
+
+    Only a mutation the suite can be shown to have made is a failure. A digest
+    change with nothing recorded is reported and does not fail the run: the
+    developer normally has the application open, it writes its own preferences
+    while the suite runs, and failing on that would make the check noise. See
+    the module docstring.
 
     Yields the isolation root, for the isolation tests themselves.
     """
+    global terminal_note
+
     if not installed:
         yield None
         return
@@ -398,15 +686,19 @@ def isolated_qsettings():
     yield isolation_root
     verify_isolated()
 
-    problems = guard.diff()
-    assert not problems, (
-        "the test session modified the real application settings under\n"
-        f"  {guard.directory}/{guard.prefix}*\n"
-        "which is the developer's own preference store, not a test fixture.\n\n"
-        + "\n".join(f"  - {p}" for p in problems)
-        + "\n\nEvery settings route in the suite is supposed to be redirected to\n"
-        f"  {isolation_root}\n"
-        "so this is either a reference to the real QSettings class captured "
-        "before\ntests/qsettings_isolation.py was imported, or a subprocess that "
-        "does not\nload tests/conftest.py. See that module's docstring."
+    level, message = session_report(
+        guard.diff(),
+        recorded_bypasses(),
+        root=isolation_root,
+        strict=strict_requested(),
     )
+    if level == "ok":
+        return
+    if level == "warn":
+        # Stashed for conftest to print under the pass count, which is where it
+        # will be read in a four-thousand-test run. Not stashed for a failure:
+        # pytest already prints that in full, and twice is noise.
+        terminal_note = message
+        warnings.warn(message, RealSettingsChanged, stacklevel=2)
+        return
+    raise AssertionError(message)
