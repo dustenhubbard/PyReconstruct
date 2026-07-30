@@ -31,6 +31,9 @@ full release notes on GitHub (linked from the dialog).
 
 ## [1.21.0-beta-5] - 2026-07-28
 
+- **Your work is better protected.** Fixed several cases where edits could be lost or a file corrupted, including edits made just before flickering between sections, and saves interrupted by a crash or a full disk.
+- **Safer handling of shared files.** Hardened how PyReconstruct opens and converts series files received from others.
+- **Smoother on large, dense series.** The trace under your cursor highlights without lag, the field redraws faster as you pan and zoom, and background jobs like exports and update checks run more reliably.
 - **Changed: Imports now flag disagreements instead of settling them quietly.** "Check series histories" is ticked by default in the import window, so your first import with this version will probably raise more flags than you are used to, some of them named "import-removed" — untick it if you want the old behaviour. Nothing new is wrong: those disagreements were always in your data, the import used to pick a side without telling you, and traces that match on both sides still merge silently as before.
 - **Changed: Saved series files are written in a compact, repeatable form.** Two saves of an unchanged series now produce byte-for-byte identical files, so comparing two copies — or keeping one in version control — shows only what you really changed. A `.jser` is still one long line if you open it in a text editor, and files remain fully compatible in both directions, so nothing changes about what you can open or who you can share with.
 - **New: "Clean up" tools tidy stray traces in your series.** Series ▸ Clean up can remove duplicate traces, empty traces, and tiny "pixel-dust" specks below a size in pixels you choose — you review the list before anything is deleted. Every clean-up is one undo step (Ctrl+Z), and locked objects are never touched.
@@ -42,13 +45,6 @@ full release notes on GitHub (linked from the dialog).
 - **Improved: Converting images to a scaled Zarr no longer takes over your computer.** The conversion no longer grabs every CPU core, so your laptop stays usable while it runs, and the "CPU usage" slider in Series ▸ Options now genuinely controls how much of your processor it uses — with tick marks, a short explanation, and a default of about half your cores. It also suggests a clearer place for the result: a `<series>.zarr` folder right next to your images.
 - **Fixed: Several ways your work could quietly disappear are now closed.** Importing one copy of a series into another could drop a trace with no flag and no log entry — sometimes your own — and the import window's "Overlap threshold" slider was ignored on exactly the traces it mattered for; both are fixed, and where two copies genuinely disagree both traces are now kept and flagged instead of one being chosen silently. The scissors tool no longer destroys a trace when the trace layer is hidden, undo no longer risks an object's traces on Windows when its name contains accents or non-Latin characters, and opening a series no longer discards brightness/contrast profiles you had named.
 - **Also:** a couple of dozen smaller fixes and refinements. Brightness and contrast no longer need a section unlocked; the error window can copy a full problem report to your clipboard; Help ▸ View log file shows messages that used to appear only in a console; Help ▸ What's new reopens these notes on demand; the user guide is now a searchable wiki under Help ▸ Online resources; and the update channels in Series ▸ Options ▸ Updates are now named Stable and Beta. Also fixed: minimum Feret is now a trace's true narrowest width rather than a corner-to-corner distance, occasional "Save failed" hiccups on Windows, the main window opening tiny after a change of monitor, saving a series that has an empty object group, and files saved here opening correctly in the standard PyReconstruct for your collaborators — see the full release notes on GitHub.
-
-## [1.20.5rc1] — 2026-07-04
-
-- **Your work is better protected.** Fixed several cases where edits could be lost or a file corrupted, including edits made just before flickering between sections, and saves interrupted by a crash or a full disk.
-- **Safer handling of shared files.** Hardened how PyReconstruct opens and converts series files received from others.
-- **Align by correlation fixed.** It now applies the correlation shift correctly even when the section is rotated or scaled.
-- **Smoother on large, dense series.** The trace under your cursor highlights without lag, the field redraws faster as you pan and zoom, and background jobs like exports and update checks run more reliably.
 
 ## [1.20.4] — 2026-07-04
 
