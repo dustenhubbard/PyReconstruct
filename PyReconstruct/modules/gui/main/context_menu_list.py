@@ -212,7 +212,19 @@ def get_context_menu_list_obj(self, list_ops=None):
         # Hoisted out of "3D >" (this lab is 3D-heavy): the frequent member
         # leaves the submenu, the rare ones stay. The label gains "3D" because
         # at top level "Add to scene" no longer has the submenu for context.
-        ("addobjto3D_act", "Add to 3D scene", "", self.addTo3D),
+        #
+        # It ALSO stays inside "3D >" below (as "Add to scene"). Hoisting it out
+        # entirely was the wrong trade: the top-level copy sits four rows up in
+        # the frequent-actions strip, far from the "3D >" submenu, so someone
+        # looking for it goes to "3D >" first, does not find it, and hunts. Both
+        # placements is how "Edit object attributes..." already behaves, so this
+        # matches an established pattern rather than inventing one.
+        #
+        # Only THIS copy carries the shortcut. Two actions sharing one shortcut
+        # is an ambiguous binding, and Qt answers an ambiguous shortcut by firing
+        # NEITHER action -- the exact trap that made Ctrl+Shift+C unusable for
+        # copy-to-sections.
+        ("addobjto3D_act", "Add to 3D scene", self.series, self.addTo3D),
         None,
         # The whole visibility family, flat (was a "Visibility >" submenu).
         ("hideobj_act", "Hide", "", self.hideObj),
@@ -250,6 +262,13 @@ def get_context_menu_list_obj(self, list_ops=None):
             "text": "3D",
             "opts":
             [
+                # Mirrors the top-level "Add to 3D scene" so the pair is
+                # discoverable together: someone hunting for "add" naturally
+                # opens "3D >", where previously only "Remove from scene" lived.
+                # No shortcut here on purpose; the top-level copy owns it, and
+                # duplicating a shortcut makes it ambiguous, which Qt resolves
+                # by firing neither action.
+                ("addobjto3Dsub_act", "Add to scene", "", self.addTo3D),
                 ("removeobj3D_act", "Remove from scene", "", self.remove3D),
                 None,
                 {

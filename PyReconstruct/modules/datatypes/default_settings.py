@@ -131,6 +131,17 @@ default_settings = {
     # unused Ctrl+Alt tier instead of displacing a documented binding. Like
     # every key in this dict it is user-configurable in the shortcuts dialog.
     "copytosections_act": "Ctrl+Alt+C",
+    # "Add to 3D scene" is a frequent action in this lab and had no key at all.
+    # Ctrl+Shift+D sits in the tier this dict already uses for feature actions
+    # (objectlist, tracelist, flaglist, mergeobjects, togglecuration) rather
+    # than the bare-letter tier, which is reserved for tool selection.
+    # Ctrl+Shift+D is unused; verified against the whole dict.
+    #
+    # Rejected alternatives, so this is not relitigated: a digit key
+    # (Ctrl+Alt+3) is mnemonic for "3D" but awkward to hit with two modifiers,
+    # and Ctrl+Alt+D would land on Cmd+Opt+D on macOS, since Qt maps Ctrl to
+    # Command there, and the OS owns that one for show/hide Dock.
+    "addobjto3D_act": "Ctrl+Shift+D",
     "cut_act": "Ctrl+X",
     "paste_act": "Ctrl+V",
     "pasteattributes_act": "Ctrl+B",

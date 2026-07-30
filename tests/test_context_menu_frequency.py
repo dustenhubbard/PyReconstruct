@@ -290,6 +290,7 @@ OBJECT_ROWS = [
     "    New...",
     "-----",
     "3D >",
+    "    Add to scene",
     "    Remove from scene",
     "    -----",
     "    Export mesh as >",
@@ -376,18 +377,35 @@ def test_often_used_object_actions_are_zero_hop(label):
     assert label in _top_level(_obj_menu())
 
 
-def test_add_to_3d_scene_left_the_3d_submenu_but_remove_and_export_stayed():
-    """Approved hoist: the frequent member leaves the submenu, the rare ones
-    stay. The label gains the "3D" noun now that it has no submenu for context."""
+def test_add_to_3d_scene_is_at_top_level_AND_in_the_3d_submenu():
+    """Revised 2026-07-29 at the maintainer's request, after using the app.
+
+    The earlier decision hoisted "Add to 3D scene" OUT of "3D >" entirely, on the
+    theory that the frequent member should leave and the rare ones stay. In
+    practice that made it hard to find: the top-level copy sits in the
+    frequent-actions strip, far from "3D >", so someone looking for "add" opens
+    "3D >" first, sees only "Remove from scene", and hunts. His words: "i had to
+    hunt for add to 3D scene menu item in the top level because it was so far
+    from the 3D submenu."
+
+    So it now appears in BOTH places, which is how "Edit object attributes..."
+    already behaves. This test previously asserted the opposite; the product
+    decision changed, the test was not wrong.
+    """
     menu = _obj_menu()
     assert "Add to 3D scene" in _top_level(menu)
     three_d = next(e for e in menu if isinstance(e, dict) and e["text"] == "3D")
     submenu_labels = _rows(three_d["opts"])
-    assert not any(r.strip().startswith("Add to") for r in submenu_labels)
+    assert "Add to scene" in submenu_labels, (
+        'the "3D >" submenu should also offer "Add to scene", beside "Remove from scene"'
+    )
     assert "Remove from scene" in submenu_labels
     assert "Export mesh as >" in submenu_labels
-    # the action itself is unchanged, so its handler/shortcut identity survives
-    assert "addobjto3D_act" in _act_names(menu)
+    # both copies exist as distinct actions; sharing an attr_name would make the
+    # second overwrite the first on the widget
+    names = _act_names(menu)
+    assert "addobjto3D_act" in names
+    assert "addobjto3Dsub_act" in names
 
 
 def test_group_submenu_is_top_level_on_the_object_menu():
