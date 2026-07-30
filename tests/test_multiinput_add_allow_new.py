@@ -26,14 +26,17 @@ layers broke.
 
 import pytest
 
-pytest.importorskip("pytestqt", reason="real-widget tests need pytest-qt")
-
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QFocusEvent
 from PySide6.QtWidgets import QLineEdit, QWidget
 
 from PyReconstruct.modules.gui.dialog.helper import MultiInput
 
+# No `importorskip("pytestqt")` here on purpose. It would drop this whole module
+# in a .venv synced without the `test` extra, and the suite would still say
+# green. The `gui` mark plus the guard in tests/conftest.py
+# (`pytest_collection_modifyitems`) turns that same environment into a hard
+# error, while leaving `-m "not gui"` working.
 pytestmark = pytest.mark.gui
 
 # Deliberately not in sorted order: itemText(0) after CompleterBox's own
