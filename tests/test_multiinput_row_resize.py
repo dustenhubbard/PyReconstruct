@@ -51,8 +51,11 @@ on PySide6 6.5.2:
 
 import pytest
 
-pytest.importorskip("pytestqt", reason="real-widget tests need pytest-qt")
-
+# No `importorskip("pytestqt")` here on purpose. It would drop this whole module
+# in a .venv synced without the `test` extra, and the suite would still say
+# green. The `gui` mark plus the guard in tests/conftest.py
+# (`pytest_collection_modifyitems`) turns that same environment into a hard
+# error, while leaving `-m "not gui"` working.
 pytestmark = pytest.mark.gui
 
 from PySide6.QtCore import QEvent
