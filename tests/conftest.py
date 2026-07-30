@@ -42,6 +42,16 @@ import pytest
 # guarantees: pytest imports this file before it imports any test module.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+# Redirects every `QSettings` in the session to a throwaway location and arms a
+# guard on the real one, so no test can edit the developer's own application
+# preferences. Imported here, next to the line above, because both have to happen
+# before any test module imports PySide6: this one rebinds the `QSettings` name,
+# and a module that already imported it keeps its own reference. `isolated_qsettings`
+# is an autouse session fixture, so importing the name is what registers it -- it
+# is not unused. See tests/qsettings_isolation.py for the mechanism and for the
+# two Qt-sanctioned alternatives that were measured and do not work on macOS.
+from qsettings_isolation import isolated_qsettings  # noqa: E402,F401
+
 # A small, real, multi-section series that ships with the repo (198 sections,
 # used by the checker's own tests). Real enough to exercise loadSection/save
 # round-trips; small enough to copy per test.
