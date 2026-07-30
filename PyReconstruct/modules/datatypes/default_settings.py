@@ -135,12 +135,22 @@ default_settings = {
     # Ctrl+Shift+D sits in the tier this dict already uses for feature actions
     # (objectlist, tracelist, flaglist, mergeobjects, togglecuration) rather
     # than the bare-letter tier, which is reserved for tool selection.
-    # Ctrl+Shift+D is unused; verified against the whole dict.
+    # Unused across all 59 bindings here.
     #
-    # Rejected alternatives, so this is not relitigated: a digit key
-    # (Ctrl+Alt+3) is mnemonic for "3D" but awkward to hit with two modifiers,
-    # and Ctrl+Alt+D would land on Cmd+Opt+D on macOS, since Qt maps Ctrl to
-    # Command there, and the OS owns that one for show/hide Dock.
+    # Checked on every platform we ship, since one settings string means
+    # different physical keys per platform:
+    #   macOS   -- Qt maps Ctrl to Command, so this is Cmd+Shift+D. Not an OS
+    #              binding (Cmd+Shift+3/4/5 are the screenshot keys).
+    #   Windows -- Ctrl stays Ctrl. Not an OS binding; the reserved ones nearby
+    #              are Ctrl+Shift+Esc (Task Manager) and Ctrl+Alt+Del.
+    #   Linux   -- not a common DE binding; the risky tier there is
+    #              Ctrl+Alt+<letter/arrow> (workspace and terminal switching).
+    # Verified by reasoning against documented OS-reserved sequences, NOT by
+    # pressing it on a Windows or Linux box.
+    #
+    # Rejected, so this is not relitigated: a digit key (Ctrl+Alt+3) is mnemonic
+    # for "3D" but awkward with two modifiers, and Ctrl+Alt+D would reach macOS
+    # users as Cmd+Opt+D, which the OS owns for show/hide Dock.
     "addobjto3D_act": "Ctrl+Shift+D",
     "cut_act": "Ctrl+X",
     "paste_act": "Ctrl+V",
