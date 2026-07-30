@@ -28,10 +28,14 @@ Shape of the module:
    series dict) into a canonical, comparable structure. ``state_diff`` reports
    every leaf that differs, by path. Undo is asserted as ``snapshot ==
    pre-operation snapshot``, a deep comparison, not a spot check.
-3. The ``test_teeth_*`` tests deliberately reintroduce a past defect and assert
-   that an invariant *fails*. An invariant nobody has watched fail is an
-   invariant nobody should trust, and keeping the proof as a test means it stays
-   true rather than being a claim in a pull request.
+3. The ``test_teeth_*`` tests put the series into the state a past defect left
+   behind and assert that an invariant *fails*. An invariant nobody has watched
+   fail is an invariant nobody should trust, and keeping the proof as a test
+   means it stays true rather than being a claim in a pull request. Where the
+   defect is still reachable through the code the test drives it; where it has
+   since been fixed at the datatype layer, the test builds the damaged state
+   directly, because what is worth pinning is that the checker catches the
+   damage, not that some particular caller can still cause it.
 
 Invariants asserted, and what each one is for:
 
@@ -871,36 +875,63 @@ def test_destructive_edit_survives_save_and_reopen(tmp_path, rich_series):
 
 
 # ---------------------------------------------------------------------------
-# proof the invariants have teeth: reintroduce the defects
+# proof the invariants have teeth: put the damage in and watch them fire
 # ---------------------------------------------------------------------------
 
-def test_teeth_per_cell_row_selection_is_caught(qapp, rich_series, section_list):
-    """Reintroduce the per-cell section selection and watch I5 fire.
+def test_teeth_a_half_deleted_section_is_caught(rich_series):
+    """Build the wreckage a half-finished section delete leaves and watch I5 fire.
 
-    ``DataTable.selectedRows`` de-duplicates by row; before it existed,
-    ``getSelected`` was built straight on ``selectedIndexes()`` and returned one
-    entry per selected *cell*. Patching that one seam back to the undeduplicated
-    form reproduces the original defect exactly: ``Series.deleteSections``
-    removes the file and the ``sections`` entry for the first copy of the number,
-    raises ``KeyError`` on the second, and never reaches the loop that repoints
-    z-traces off the deleted section.
+    The defect this remembers: the section list reported one entry per selected
+    *cell* rather than per row, so a single selected row asked
+    ``Series.deleteSections`` to delete the same number five times. The first
+    pass removed the file and the ``sections`` entry, the second raised
+    ``KeyError`` on the entry that was already gone, and the z-trace loop at the
+    end of the function never ran. What shipped to the user was a series with a
+    section deleted from disk and from the index while four z-traces still
+    carried points on it, with no undo, because the no-undo warning had already
+    been accepted.
+
+    That end state is what this builds, and it builds it directly rather than
+    driving a caller into it. Two reasons. The datatype now collapses repeats
+    and validates the whole request before it deletes anything, so no caller can
+    reach the half-deleted state any more, and the tests next to that change own
+    the proof that it cannot; and the property worth pinning here was never that
+    a particular caller can commit the violation, it is that ``check_series``
+    *notices* one. Reconstructing the state costs no duplicated production code
+    and does not care how a series came to be corrupt, which is the point of a
+    whole-series invariant. The two lines below are the definition of "the
+    section is gone" -- the same ``sections`` dict and working directory that
+    ``check_series`` itself reads -- not a copy of any algorithm.
+
+    Kept surgical on purpose: the assertion is that I5 and *only* I5 fires, so
+    the test cannot pass on the strength of some unrelated violation if the I5
+    check is ever weakened or dropped.
     """
-    widget, _window = section_list
-    widget.table.clearSelection()
-    widget.table.selectRow(2)
+    snum = 2
+    assert not check_series(rich_series), "the fixture was not coherent to begin with"
+    assert any(
+        pt[2] == snum for ztrace in rich_series.ztraces.values()
+        for pt in ztrace.points
+    ), f"fixture has no z-trace point on section {snum}"
 
-    widget.selectedRows = lambda: [i.row() for i in widget.table.selectedIndexes()]
-    assert widget.getSelected() == [2, 2, 2, 2, 2], \
-        "the per-cell selection was not reproduced"
-
-    with pytest.raises(KeyError):
-        widget.deleteSections()
+    # Exactly what the loop had done when it raised: the file and the index
+    # entry for section 2 are gone, and nothing has repointed the z-traces.
+    os.remove(os.path.join(rich_series.getwdir(), rich_series.sections[snum]))
+    del rich_series.sections[snum]
 
     problems = check_series(rich_series)
-    assert any(p.startswith("I5 ztrace/sections") for p in problems), problems
-    assert all(
-        f"section(s) [2]" in p for p in problems if p.startswith("I5")
-    ), problems
+    i5 = [p for p in problems if p.startswith("I5 ztrace/sections")]
+    assert i5, (
+        "I5 did not fire on a series whose z-traces point at a section it no "
+        f"longer has; check_series reported {problems}"
+    )
+    assert len(i5) == len(rich_series.ztraces), \
+        f"expected every z-trace to be reported, got {i5}"
+    assert all(f"section(s) [{snum}]" in p for p in i5), i5
+    assert problems == i5, (
+        "the reconstruction was meant to break I5 and nothing else, but "
+        f"check_series also reported {[p for p in problems if p not in i5]}"
+    )
 
 
 def test_teeth_tag_wiping_sentinel_is_caught(rich_series, monkeypatch):
