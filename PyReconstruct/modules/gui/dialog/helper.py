@@ -162,6 +162,20 @@ class MultiInput(QWidget):
         w = self.inputs.pop(self.currentIndex())
         self.input_layout.removeWidget(w)
         w.deleteLater()
+
+        # Give the row's height back on this press rather than the next one.
+        # removeWidget() only marks the layouts dirty and posts a layout
+        # request, so both this field's size hint and the container's still
+        # describe the layout with the removed row in it until that request is
+        # delivered, which is after this slot has returned. adjustSize() on its
+        # own therefore resizes to the previous row count's hint and leaves the
+        # dialog one row too tall, showing a band of unused space. Activating
+        # both layouts first makes the hints current: this field's so its own
+        # hint drops, the container's so the window minimum drops with it.
+        self.layout().activate()
+        container_layout = self.container.layout()
+        if container_layout is not None:
+            container_layout.activate()
         self.container.adjustSize()
 
     def getEntries(self):
