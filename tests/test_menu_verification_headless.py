@@ -326,7 +326,7 @@ def test_a_trace_row_in_the_menubar_is_gated_by_the_selection(main_window):
 
 
 def test_an_export_format_with_no_backing_library_is_disabled(main_window):
-    """A mesh format whose optional dependency is missing is greyed out.
+    """A mesh format whose optional dependency is missing is grayed out.
 
     `disable_unavailable_export_formats` runs inside `createContextMenus`, so it
     has no effect on the menu definition and nothing short of the real widget
