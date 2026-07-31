@@ -139,10 +139,18 @@ def test_operations_grabbag_is_dissolved():
 
 def test_visibility_actions_are_top_level_and_keep_their_order():
     """The visibility family is one flat top-level group (was "Visibility >");
-    Hide/Unhide keep their pairing and the group keeps its order."""
+    Hide/Unhide keep their pairing and the group keeps its order.
+
+    Six members as of 2026-07-31, not five: `restorevisibility_act` was added as
+    the inverse "Hide other objects" never had, and it sits immediately after the
+    isolate so the group reads as three hide/unhide pairs. The labels and the full
+    order are pinned in test_context_menu_frequency.py; what this guards is that
+    the group stays flat, contiguous and in order.
+    """
     menu = get_context_menu_list_obj(_ObjMenuStub())
     top = [e[0] for e in menu if isinstance(e, tuple)]
-    vis = ["hideobj_act", "unhideobj_act", "hideotherobj_act",
+    vis = ["hideobj_act", "unhideobj_act",
+           "hideotherobj_act", "restorevisibility_act",
            "hideallobj_act", "showallobj_act"]
     for act in vis:
         assert act in top, f"{act} is not a top-level object-menu action"

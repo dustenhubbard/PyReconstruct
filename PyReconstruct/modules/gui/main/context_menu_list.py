@@ -47,6 +47,29 @@ def disable_unavailable_export_formats(widget):
         act.setEnabled(False)
 
 
+def sync_restore_visibility_action(widget, has_snapshot):
+    """Enable "Restore previous visibility" only when there is one to restore.
+
+    The snapshot is taken by "Hide other objects" and consumed by the restore, so
+    with no isolate behind it the command has nothing to do. Disabling it is the
+    honest state: an enabled row that no-ops teaches nothing, and one that guesses
+    at a state it never recorded would be worse.
+
+    Both surfaces build the object menu ONCE and reuse it, so neither can rely on
+    the build-time state. ``MainWindow.checkActions`` calls this for the field
+    menu (which is populated onto the main window) on every context-menu open,
+    and ``ObjectTableWidget.contextMenuEvent`` calls it for the object list's own
+    copy. No-op when the action isn't on this widget.
+
+        Params:
+            widget (QWidget): the widget the object menu was populated onto
+            has_snapshot: truthy when a visibility snapshot exists
+    """
+    act = getattr(widget, "restorevisibility_act", None)
+    if act is not None:
+        act.setEnabled(bool(has_snapshot))
+
+
 def edit_selected_label(active):
     """Resolve the Q8 top-level edit action's (label, enabled) for a selection.
 
@@ -102,7 +125,10 @@ def get_hoisted_trace_actions(field):
     return [
         ("mergetraces_act", "Merge traces", field.series, field.mergeTraces),
         ("mergeobjects_act", "Merge attributes only", field.series, lambda : field.mergeTraces(merge_attrs_only=True)),
-        ("hidetraces_act", "Hide traces", field.series, field.hideTraces),
+        # "Hide selected traces": same act_name and same command as the copy in
+        # the trace submenu, so the two labels have to move together. See the
+        # note beside that copy for why the scope word was added.
+        ("hidetraces_act", "Hide selected traces", field.series, field.hideTraces),
     ]
 
 
@@ -293,26 +319,52 @@ def get_context_menu_list_obj(self, list_ops=None):
         },
         None,
         # The whole visibility family, flat (was a "Visibility >" submenu), in
-        # its own section and in its established order. Members, order and
-        # section boundaries are left alone on purpose ("the view section with
-        # the various Hide options is good").
+        # its own section. Members and section boundaries were left alone in the
+        # first pass on purpose ("the view section with the various Hide options
+        # is good"); the section was completed on 2026-07-31 after the
+        # scope-by-action matrix of every visibility command was put in front of
+        # the maintainer. His call: "build the restore, skip the blanket
+        # unhide-other."
         #
-        # The one exception, approved 2026-07-31: "Unhide" was a FOURTH instance
-        # of the shared-label collision the three renames below fix, and it was
-        # deliberately left alone in the first pass because this section was out
-        # of scope. The maintainer's call on being shown it: "Make it 'Unhide
-        # object' and 'Unhide selected traces', consistent with the three
-        # renames [...] Touches the visibility section, but leaving one collision
-        # unfixed is the inconsistency users actually hit." So the scope is in
-        # the label here too, and nothing else in this section moved.
+        # It now reads as three hide/unhide pairs, one per scope of action:
         #
-        # "Hide" needs no such treatment: the trace menu's counterpart is already
-        # labeled "Hide traces", so the two never collided.
-        ("hideobj_act", "Hide", "", self.hideObj),
+        #   Hide object                    Unhide object                 object
+        #   Hide other objects             Restore previous visibility   isolate
+        #   Hide all objects               Unhide all objects            series
+        #
+        # Each rename, and the one addition:
+        #
+        #   * "Hide" -> "Hide object", his words: "yes make it Hide object". Row
+        #     one is symmetric with "Unhide object" now. It never collided with
+        #     the trace menu (that copy reads "Hide selected traces"), so this is
+        #     symmetry rather than the collision fix.
+        #   * "Show all objects" -> "Unhide all objects", so one verb means one
+        #     thing. The View submenu's "Show all traces (ignore hidden)" keeps
+        #     its verb deliberately: that one is a view mode that overrides the
+        #     hidden flag without clearing it, so it genuinely is not an unhide.
+        #   * "Restore previous visibility" is new, and is the inverse
+        #     "Hide other objects" never had. See
+        #     FieldWidgetObject.restorePreviousVisibility. It sits directly under
+        #     the isolate it undoes, and it is disabled until an isolate has taken
+        #     a snapshot (see sync_restore_visibility_action below).
+        #
+        # NOT added, and rejected explicitly rather than overlooked: "Unhide other
+        # objects". After isolating {A}, unhiding the complement of the selection
+        # leaves everything visible, which is what "Unhide all objects" already
+        # does; its only distinct behavior needs the selection to have changed
+        # since the isolate, and then it surprises. A row that duplicates an
+        # existing command is not discoverability.
+        ("hideobj_act", "Hide object", "", self.hideObj),
         ("unhideobj_act", "Unhide object", "", lambda : self.hideObj(False)),
         ("hideotherobj_act", "Hide other objects", "", self.hideOtherObjects),
+        ("restorevisibility_act", "Restore previous visibility", "",
+         self.restorePreviousVisibility),
         ("hideallobj_act", "Hide all objects", "", self.hideAllObjects),
-        ("showallobj_act", "Show all objects", "", self.unhideAllObjects),
+        # act_name kept as showallobj_act on purpose: it is the key a
+        # user-configurable shortcut would be stored under, so renaming it to
+        # match the new label would silently drop any stored binding. Only the
+        # label changed.
+        ("showallobj_act", "Unhide all objects", "", self.unhideAllObjects),
         None,
         # Object-level settings, one section, ordered most used first. Approved
         # 2026-07-31, and three things changed at once:
@@ -492,7 +544,17 @@ def get_context_menu_list_trace(self, is_in_field=True, list_ops=None, find_in_f
         ("mergetraces_act", "Merge traces", sc, self.mergeTraces),
         ("mergeobjects_act", "Merge attributes only", sc, lambda : self.mergeTraces(merge_attrs_only=True)),
         None,
-        ("hidetraces_act", "Hide traces", sc, self.hideTraces),
+        # "Hide selected traces", not "Hide traces". This one never collided by
+        # label (the object copy read "Hide" until 2026-07-31), which is why the
+        # first pass left it alone -- the collision rule had nothing to say about
+        # it. The scope-by-action matrix did: the object copy walks every section
+        # the object appears on (Series.hideObjects) and this one hides the
+        # traces selected in this table, on this section (Section.hideTraces),
+        # exactly the asymmetry the other four pairs have. Renamed with the
+        # unhide row below so the pair reads the same way in both directions.
+        # The hoisted copy on the field menu's top strip carries the same
+        # act_name and the same label; see get_hoisted_trace_actions.
+        ("hidetraces_act", "Hide selected traces", sc, self.hideTraces),
         # "Unhide selected traces", not "Unhide": the object menu's unhide read
         # "Unhide" too, and the two did different amounts of work. This one
         # unhides the traces selected in this table, on this section

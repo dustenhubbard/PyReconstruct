@@ -1,19 +1,26 @@
-- **Four right-click commands that appeared on two menus under the same label
-  now say which one they are.** `Smooth traces`, `Edit radius...`, `Edit
-  shape...` and `Unhide` each existed twice, once on the object menu and once on
-  the trace menu, with nothing in either label to tell them apart. The object
-  copies walked every section the object appears on and changed every trace of
-  the contour (`Series.smoothObject`, `Series.editObjectRadius`,
-  `Series.editObjectShape`, `Series.hideObjects`); the trace copies changed the
-  traces you had selected, on the section in front of you
-  (`Section.editTraceRadius`, `Section.editTraceShape`, `Trace.smooth`,
-  `Section.hideTraces`). Picking the wrong one on a large series meant a
-  series-wide change where you wanted a local one, and the only way to tell them
-  apart was to run one. The object copies are now `Smooth object`, `Edit object
-  radius...`, `Edit object shape...` and `Unhide object`; the trace copies are
-  `Smooth selected traces`, `Edit selected radius...`, `Edit selected shape...`
-  and `Unhide selected traces`. The commands themselves are unchanged, so
-  anything you were doing still works. Only the labels moved.
+- **Five right-click commands that exist on both the object menu and the trace
+  menu now say which one they are.** `Smooth traces`, `Edit radius...`, `Edit
+  shape...`, `Unhide` and `Hide` each existed twice, once per menu, with nothing
+  in either label to tell them apart. The object copies walked every section the
+  object appears on and changed every trace of the contour
+  (`Series.smoothObject`, `Series.editObjectRadius`, `Series.editObjectShape`,
+  `Series.hideObjects`); the trace copies changed the traces you had selected, on
+  the section in front of you (`Section.editTraceRadius`,
+  `Section.editTraceShape`, `Trace.smooth`, `Section.hideTraces`). Picking the
+  wrong one on a large series meant a series-wide change where you wanted a local
+  one, and the only way to tell them apart was to run one. The object copies are
+  now `Smooth object`, `Edit object radius...`, `Edit object shape...`, `Unhide
+  object` and `Hide object`; the trace copies are `Smooth selected traces`, `Edit
+  selected radius...`, `Edit selected shape...`, `Unhide selected traces` and
+  `Hide selected traces`. The commands themselves are unchanged, so anything you
+  were doing still works. Only the labels moved.
+
+- **`Show all objects` is now `Unhide all objects`, so one verb means one
+  thing.** It was the only command in the object menu's visibility group that
+  said "show" for what every other row calls unhiding, and it is the exact
+  complement of `Hide all objects`. `Show all traces (ignore hidden)` under
+  `View` keeps its verb on purpose: that one is a display mode that overrides the
+  hidden flag without clearing it, so it genuinely is not an unhide.
 
 - **The object menu's `Geometry ▸` submenu is gone and its four commands are
   top-level.** `Smooth object` is promoted because smoothing is frequent and did
@@ -29,8 +36,11 @@
   backs both surfaces, so the object list's menu and the field menu's `Object ▸`
   submenu change together.
 
-- **The visibility group keeps its members and its order.** `Unhide object` is
-  the only label in it that changed, and nothing moved: `Hide`, `Unhide object`,
-  `Hide other objects`, `Hide all objects`, `Show all objects`, one
-  uninterrupted section, same as before. `Hide` needed no scope word because the
-  trace menu's counterpart already reads `Hide traces`.
+- **The object menu's visibility group now reads as three pairs, one per scope
+  of action.** `Hide object` / `Unhide object` act on the selected object across
+  the whole series; `Hide other objects` / `Restore previous visibility` isolate
+  and un-isolate; `Hide all objects` / `Unhide all objects` act on everything. It
+  is still one uninterrupted section in its established order, with one row added
+  and none removed or moved. `Unhide other objects` is deliberately absent: after
+  isolating, unhiding everything that is not selected leaves the whole series
+  visible, which `Unhide all objects` already does.

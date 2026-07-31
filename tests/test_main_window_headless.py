@@ -211,6 +211,58 @@ def test_check_actions_is_inert_before_actions_exist(main_window):
     main_window.actions_initialized = True
 
 
+def test_restore_previous_visibility_is_disabled_until_an_isolate_runs(main_window):
+    """"Restore previous visibility" is unreachable with no snapshot behind it.
+
+    Only reachable on a real window: the action object is created by
+    `createContextMenus`, and the field object menu is populated onto the window,
+    so `mainwindow.restorevisibility_act` is the copy the field's right-click
+    shows. `checkActions` runs on every context-menu open, which is what makes a
+    build-once menu track runtime state.
+
+    The alternative to disabling is an enabled row that silently does nothing,
+    which teaches the user the command is broken rather than that it is not
+    applicable yet.
+    """
+    field = main_window.field
+    assert field.visibility_snapshot is None, "a fresh field has no snapshot"
+
+    main_window.checkActions()
+    assert not main_window.restorevisibility_act.isEnabled()
+
+    ## the shape hideOtherObjects leaves behind, without driving the isolate
+    field.visibility_snapshot = {"whatever": {field.section.n: [False]}}
+    main_window.checkActions()
+    assert main_window.restorevisibility_act.isEnabled()
+
+    ## and the restore consumes it, so the row goes back to disabled
+    field.visibility_snapshot = None
+    main_window.checkActions()
+    assert not main_window.restorevisibility_act.isEnabled()
+
+
+def test_the_object_list_gets_its_own_copy_of_the_restore_action(main_window):
+    """Two surfaces, two QAction objects, one for each widget the menu is
+    populated onto -- so the list's copy needs its own resync and gets it from
+    `ObjectTableWidget.contextMenuEvent`.
+
+    Pinned because the failure mode is invisible: the field copy would track state
+    correctly while the list copy stayed at whatever it was built with.
+    """
+    from PyReconstruct.modules.gui.main.context_menu_list import (
+        sync_restore_visibility_action,
+    )
+    main_window.field.openList("object")
+    table = main_window.field.table_manager.tables["object"][-1]
+
+    assert table.restorevisibility_act is not main_window.restorevisibility_act
+
+    sync_restore_visibility_action(table, None)
+    assert not table.restorevisibility_act.isEnabled()
+    sync_restore_visibility_action(table, {"a": {0: [True]}})
+    assert table.restorevisibility_act.isEnabled()
+
+
 # --- the recent-series submenu ------------------------------------------------
 
 @pytest.fixture

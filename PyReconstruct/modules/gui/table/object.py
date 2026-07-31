@@ -248,6 +248,26 @@ class ObjectTableWidget(DataTable):
         )
         disable_unavailable_export_formats(self)
 
+    def contextMenuEvent(self, event=None):
+        """Resync the runtime-dependent object actions, then open the menu.
+
+        This menu is built once in createMenus and reused, so an action whose
+        enabled state depends on live state has to be resynced on every open.
+        "Restore previous visibility" is the only one so far: it needs a snapshot
+        from "Hide other objects" and is disabled without one. The field menu's
+        copy gets the same treatment from MainWindow.checkActions, which runs on
+        every field right-click.
+        """
+        # Local import for the same reason createMenus uses one: gui.main imports
+        # gui.table, so a module-level import here would be circular.
+        from PyReconstruct.modules.gui.main.context_menu_list import (
+            sync_restore_visibility_action,
+        )
+        sync_restore_visibility_action(
+            self, self.mainwindow.field.visibility_snapshot
+        )
+        super().contextMenuEvent(event)
+
     def updateTitle(self):
         """Update the title of the table."""
         is_regex = tuple(self.re_filters) != (".*",)

@@ -195,7 +195,7 @@ FIELD_TOP_LEVEL = [
     "Edit attributes...",
     "Merge traces",
     "Merge attributes only",
-    "Hide traces",
+    "Hide selected traces",
     "-----",
     # clipboard, uninterrupted muscle-memory order; "Copy to sections..."
     # directly under "Copy"
@@ -232,7 +232,7 @@ def test_field_top_strip_is_exactly_four_actions():
     strip = rows[: rows.index("-----")]
     assert strip == [
         "Edit attributes...", "Merge traces",
-        "Merge attributes only", "Hide traces",
+        "Merge attributes only", "Hide selected traces",
     ]
     # "Smooth traces" until 2026-07-31, when the label gained its scope; the
     # old string would have satisfied this assertion forever without biting.
@@ -296,12 +296,13 @@ OBJECT_ROWS = [
     "    -----",
     "    Edit 3D settings...",
     "-----",
-    # the whole visibility family, flat, in its established order
-    "Hide",
+    # the whole visibility family, flat, three hide/unhide pairs by scope
+    "Hide object",
     "Unhide object",
     "Hide other objects",
+    "Restore previous visibility",
     "Hide all objects",
-    "Show all objects",
+    "Unhide all objects",
     "-----",
     # object-level settings, one section, most used first (2026-07-31)
     "Object attributes >",
@@ -376,13 +377,13 @@ def test_object_menu_list_variant_adds_utilities_second_from_bottom():
 def test_object_list_utilities_are_below_the_domain_actions():
     rows = _rows(_obj_menu(list_ops=OBJ_LIST_OPS))
     assert rows.index("Invert selection") > rows.index("Edit object attributes...")
-    assert rows.index("Invert selection") > rows.index("Hide")
+    assert rows.index("Invert selection") > rows.index("Hide object")
     assert rows.index("Copy object values") < rows.index("Delete objects")
 
 
 @pytest.mark.parametrize("label", [
     "Leave object comment...", "Duplicate object", "Add to 3D scene",
-    "Hide", "Hide other objects",
+    "Hide object", "Hide other objects",
     # 2026-07-31: "smoothing is frequent", so it left "Geometry >" for the top
     # level. The two edit rows followed when that left the submenu at two items.
     "Smooth object", "Edit object radius...", "Edit object shape...",
@@ -463,19 +464,28 @@ def test_object_menu_row_order_is_the_approved_one():
     that instruction rather than keeping it: "Make it 'Unhide object' and 'Unhide
     selected traces', consistent with the three renames [...] Touches the
     visibility section, but leaving one collision unfixed is the inconsistency
-    users actually hit." The section's membership, order and boundaries are still
-    untouched; one label carries its scope now.
+    users actually hit."
+
+    Amended again the same day, once the whole visibility section was put in
+    front of him as a scope-by-action matrix. "The view section is good" had
+    stopped being the operative instruction after the fourth rename entered it,
+    and the matrix showed the section was incomplete rather than merely uneven.
+    His call: "build the restore, skip the blanket unhide-other." So the section
+    grew one row and lost none, and its order now expresses three hide/unhide
+    pairs -- object, isolate, series. See
+    test_the_visibility_section_completes_the_scope_matrix.
     """
     assert _top_level(_obj_menu()) == [
         "Edit object attributes...",
         "Add to 3D scene",
         "3D >",
         "-----",
-        "Hide",
+        "Hide object",
         "Unhide object",
         "Hide other objects",
+        "Restore previous visibility",
         "Hide all objects",
-        "Show all objects",
+        "Unhide all objects",
         "-----",
         "Object attributes >",
         "Smooth object",
@@ -587,39 +597,87 @@ def test_comment_and_duplicate_are_below_the_top_spots():
     assert "Duplicate object" not in strip
 
 
-def test_the_visibility_section_was_left_alone():
-    """"The view section with the various Hide options is good" -- unchanged
-    members, unchanged order, still one uninterrupted section.
+def test_the_visibility_section_completes_the_scope_matrix():
+    """Three hide/unhide pairs, one per scope of action, and nothing else.
 
-    Still the rule, and it is deliberately asserted twice over: once by
-    `act_name`, which is what "unchanged members" actually means, and once by
-    label, so a relabel cannot happen unnoticed.
+    This test was `test_the_visibility_section_was_left_alone` until 2026-07-31,
+    guarding "the view section with the various Hide options is good" as an
+    instruction to change nothing. That instruction is spent: the fourth rename
+    entered the section earlier the same day with his explicit go-ahead, and once
+    the whole section was laid out as a scope-by-action matrix he asked for it to
+    be finished -- "build the restore, skip the blanket unhide-other."
 
-    One label inside the section did change, on 2026-07-31 and only because he
-    asked for it after being shown that "Unhide" was a fourth instance of the
-    shared-label collision this file guards. The instruction was narrowed, not
-    dropped: the five members, their order, and the separators either side are
-    exactly as approved. Nothing else in the section may move; if a future change
-    wants to, it needs his call, the same way this one did.
+    So the rule it pins is now positive rather than negative, which is the
+    stronger form: every hide has the unhide at its own scope beside it.
+
+        Hide object                    Unhide object                 object
+        Hide other objects             Restore previous visibility   isolate
+        Hide all objects               Unhide all objects            series
+
+    The three approved changes, with his words:
+
+      * "Hide" -> "Hide object": "yes make it Hide object". Symmetry with row
+        one's unhide; it never collided with the trace menu.
+      * "Show all objects" -> "Unhide all objects", so one verb means one thing.
+      * "Restore previous visibility" added, the inverse "Hide other objects"
+        never had.
+
+    Deliberately NOT here, and rejected rather than forgotten: "Unhide other
+    objects". Unhiding the complement of the selection after an isolate leaves
+    everything visible, which is "Unhide all objects"; see
+    test_no_blanket_unhide_other_objects_row.
+
+    Still asserted twice over, once by label and once by `act_name`, because that
+    is what "unchanged members" means and a relabel cannot satisfy the second
+    half by accident. Nothing in this section moves without his call, the same
+    way both of these did.
     """
     rows = _top_level(_obj_menu())
-    start = rows.index("Hide")
+    start = rows.index("Hide object")
     assert rows[start - 1] == "-----"
-    assert rows[start:start + 5] == [
-        "Hide", "Unhide object", "Hide other objects", "Hide all objects",
-        "Show all objects",
+    assert rows[start:start + 6] == [
+        "Hide object", "Unhide object",
+        "Hide other objects", "Restore previous visibility",
+        "Hide all objects", "Unhide all objects",
     ]
-    assert rows[start + 5] == "-----"
+    assert rows[start + 6] == "-----"
 
     # membership and order by act_name, which no relabel can satisfy by accident.
     # Top-level entries only: a visibility action that fell into a submenu must
     # fail here rather than be found by a recursive walk.
+    #
+    # showallobj_act keeps its name against the new "Unhide all objects" label on
+    # purpose: act_name is the key a user-configurable shortcut is stored under
+    # (series.getOption(act_name)), so renaming it would drop any stored binding.
     acts = [e[0] for e in _obj_menu() if isinstance(e, tuple)]
     first = acts.index("hideobj_act")
-    assert acts[first:first + 5] == [
-        "hideobj_act", "unhideobj_act", "hideotherobj_act",
+    assert acts[first:first + 6] == [
+        "hideobj_act", "unhideobj_act",
+        "hideotherobj_act", "restorevisibility_act",
         "hideallobj_act", "showallobj_act",
     ]
+
+
+def test_the_restore_sits_directly_under_the_isolate_it_undoes():
+    """"Restore previous visibility" is the inverse of "Hide other objects", and
+    the only way a user learns that from a menu is adjacency."""
+    rows = _top_level(_obj_menu())
+    assert rows.index("Restore previous visibility") == \
+        rows.index("Hide other objects") + 1
+
+
+def test_no_blanket_unhide_other_objects_row():
+    """Rejected explicitly, and worth a test so it is not re-derived.
+
+    After isolating {A}, unhiding the complement of the selection leaves
+    everything visible -- byte for byte what "Unhide all objects" already does.
+    Its only distinct behavior needs the selection to have changed since the
+    isolate, and then it surprises. A row that duplicates an existing command is
+    not discoverability.
+    """
+    rows = _rows(_obj_menu(list_ops=OBJ_LIST_OPS))
+    assert "Unhide other objects" not in rows
+    assert "unhideotherobj_act" not in _act_names(_obj_menu())
 
 
 def test_group_submenu_is_top_level_on_the_object_menu():
@@ -747,6 +805,25 @@ SCOPE_PAIRS = [
     #                       table's selection or section.selected_traces]
     #                    -> Section.hideTraces(traces, False), on self.section only.
     ("Unhide object", "Unhide selected traces"),
+    # The fifth pair, added later on 2026-07-31, and the only one the collision
+    # rule below could never have found: these two labels never collided. The
+    # object copy read "Hide" and the trace copy read "Hide traces", so
+    # test_no_label_is_shared_between_the_object_and_trace_menus was satisfied
+    # while the pair stayed asymmetric -- one label named no scope and the other
+    # named the wrong axis. The scope-by-action matrix is what found it:
+    #
+    #   hideobj_act    -> FieldWidgetObject.hideObj(hide=True) [object_function]
+    #                  -> Series.hideObjects(names, True), enumerateSections over
+    #                     getObjectSections(names), sets `hidden` on every trace
+    #                     of the contour, section.save() per section.
+    #   hidetraces_act -> FieldWidgetTrace.hideTraces(hide=True)
+    #                     [visibility_trace_function, which supplies the trace
+    #                     table's selection or section.selected_traces]
+    #                  -> Section.hideTraces(traces, True), on self.section only.
+    #
+    # Identical asymmetry to the unhide pair above, which is the point: a pair
+    # cannot be scoped in one direction and unscoped in the other.
+    ("Hide object", "Hide selected traces"),
 ]
 
 
@@ -833,7 +910,7 @@ TRACE_LIST_ROWS = [
     "Merge traces",
     "Merge attributes only",
     "-----",
-    "Hide traces",
+    "Hide selected traces",
     "Unhide selected traces",
     "-----",
     "Set open",
