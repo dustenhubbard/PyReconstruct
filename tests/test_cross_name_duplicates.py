@@ -782,6 +782,105 @@ def test_nothing_is_logged_when_nothing_was_deleted(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# an OPEN cross-name pair, all the way through the removal half
+#
+# The scan compares an open pair curve-to-curve, which needs the section's
+# magnification, and getOverlapRatio raises rather than guess one. The removal
+# half arrived after that threading, so
+# the question is whether it can reach a comparison of its own without a mag.
+# It cannot -- deleteDifferentlyNamedDuplicates works from the record the scan
+# already produced and re-finds each trace by its color+points signature, never
+# measuring anything -- but "cannot" is worth a test rather than a reading, since
+# an open pair reaching a comparison without a tolerance would raise DURING a
+# user-initiated deletion.
+# ---------------------------------------------------------------------------
+
+OPEN_LINE = [(0.0, 0.0), (2.0, 0.1), (4.0, 0.0), (6.0, 0.1), (8.0, 0.0)]
+
+## the same path, sampled at twice the density: every added point sits exactly on
+## a segment of OPEN_LINE, so the two curves coincide while the point sequences
+## differ in length
+OPEN_LINE_DENSE = [(0.0, 0.0), (1.0, 0.05), (2.0, 0.1), (3.0, 0.05),
+                   (4.0, 0.0), (5.0, 0.05), (6.0, 0.1), (7.0, 0.05),
+                   (8.0, 0.0)]
+
+
+def _one_open_pair(series, name_a="OPEN_A", name_b="OPEN_B"):
+    """One open path traced twice, at two point densities.
+
+    The densities have to differ. An identical point sequence short-circuits in
+    Trace.overlaps' pointsMatch test and never reaches getOverlapRatio, so an
+    identical pair could not detect a missing magnification at all -- and a small
+    offset is no good either, because anything inside
+    Trace.POINTS_MATCH_TOLERANCE (1e-2) short-circuits as well while anything
+    outside it starts eating into the open tolerance. Two samplings of one path
+    is what a person actually produces, and it defeats pointsMatch outright.
+    """
+    snum = _snum_with_closed(series)
+    section = series.loadSection(snum)
+    _make(section, name_a, OPEN_LINE, closed=False)
+    _make(section, name_b, OPEN_LINE_DENSE, closed=False)
+    section.save()
+
+    from PyReconstruct.modules.datatypes.trace import Trace
+    a, b = section.contours[name_a][0], section.contours[name_b][0]
+    assert not a.pointsMatch(b), "premise: the pair must be MEASURED, not matched"
+    assert Trace.ratioIsOverlap(a.getOverlapRatio(b, section.mag), 0.95)
+
+    records = series.findDifferentlyNamedDuplicates(0.95)
+    assert _pairs(records) == {frozenset((name_a, name_b))}, records
+    return snum, records[0]
+
+
+def test_an_open_pair_is_found_and_can_be_resolved(tmp_path):
+    """The whole flow for an open pair: scan, then delete the unkept side."""
+    series = _load_series(tmp_path)
+    snum, record = _one_open_pair(series)
+    kept, gone = record["name"], record["other_name"]
+
+    applied = series.deleteDifferentlyNamedDuplicates(
+        [(record, "first")], series_states=_states(series)
+    )
+
+    assert applied == [(record, "first")]
+    assert _count(series, snum, kept) == 1
+    assert _count(series, snum, gone) == 0
+
+
+def test_the_removal_half_never_measures_an_overlap(tmp_path):
+    """So it cannot raise for the want of a magnification.
+
+    Make getOverlapRatio explode and delete an open pair through it. If the
+    removal half ever grows a comparison of its own -- to re-check the pair
+    before deleting, say -- this fails here rather than in front of a user
+    halfway through a deletion.
+    """
+    series = _load_series(tmp_path)
+    snum, record = _one_open_pair(series)
+
+    from PyReconstruct.modules.datatypes.trace import Trace
+
+    def boom(*args, **kwargs):
+        raise AssertionError(
+            "the removal half must not measure an overlap: it has no section "
+            "mag to hand an open pair"
+        )
+
+    original = Trace.getOverlapRatio
+    Trace.getOverlapRatio = boom
+    try:
+        applied = series.deleteDifferentlyNamedDuplicates(
+            [(record, "other")], series_states=_states(series)
+        )
+    finally:
+        Trace.getOverlapRatio = original
+
+    assert applied == [(record, "other")]
+    assert _count(series, snum, record["other_name"]) == 1
+    assert _count(series, snum, record["name"]) == 0
+
+
+# ---------------------------------------------------------------------------
 # the field layer, and the wiring that reaches it
 #
 # FieldWidgetObject.deleteDifferentlyNamedDuplicates is the dialog's callback.

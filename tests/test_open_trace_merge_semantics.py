@@ -659,8 +659,9 @@ def test_the_threshold_zero_verdict_is_exactly_mains(sep_px, area_before):
     they part company: main still measures 0.28 of area and destroys the donor, while
     the curve metric measures 0 and would have saved it. Keeping main's answer means
     keeping that loss, and saying so is the point of this test. It is a pre-existing
-    defect of the area metric at ``threshold=0``, it is not the bug #199 set out to
-    fix, and it is not #199's to change on the strength of a metric measured for a
+    defect of the area metric at ``threshold=0``, it is not the bug the open-curve
+    change set out to fix, and not its to alter on the strength of a metric measured
+    for a
     different question.
 
     51 px is the closest approach between distinct members of her ``SF1_Wh`` fiducial
@@ -922,7 +923,8 @@ def test_mains_own_silent_loss_at_threshold_zero_is_kept_as_it_was():
 
     Preserving the existing behavior at this site preserves that loss too. It is a
     real defect, it is ``origin/main``'s and every release before it, and it is not
-    what #199 is for: fixing it means deciding what "overlaps at all" should mean for
+    what the open-curve change is for: fixing it means deciding what "overlaps at
+    all" should mean for
     a curve, on evidence gathered for that question. Pinned so that whoever takes
     that decision finds the case already written down.
     """

@@ -72,8 +72,8 @@ def tracesWithoutCounterpart(donor : Contour, keeper : Contour) -> list:
     Note the area comparison is not a good answer to this question either -- it
     reports a pair of open traces whose closing chords cross as overlapping even
     when the curves run 49 px apart, which is a silent loss of its own. It is
-    simply the answer this call site has always given, and the one #199 is not
-    entitled to change.
+    simply the answer this call site has always given, and the one the open-curve
+    change is not entitled to alter.
 
         Params:
             donor (Contour): the contour whose traces are at risk
