@@ -20,6 +20,7 @@ from packaging.version import Version, InvalidVersion
 from PyReconstruct.modules.datatypes.default_settings import get_username
 from PyReconstruct.modules.constants.locations import assets_dir, src_dir
 from PyReconstruct.modules.backend.updater.updater import GITHUB_REPO
+from PyReconstruct.modules.backend.updater.install_info import install_kind
 
 WHATSNEW_KEY = "last_whatsnew_version"
 
@@ -224,6 +225,14 @@ GENERIC_NOTES = (
     "changed in this version."
 )
 
+# The same fallback under the welcome framing, where thanking the reader for
+# updating addresses the wrong person: nobody updated, this is a first run.
+GENERIC_WELCOME_NOTES = (
+    "Welcome to PyReconstruct.\n\n"
+    "Click **Full release notes on GitHub** below to see what is in this "
+    "version."
+)
+
 
 # Appended to the welcome framing only -- the one showing that greets someone
 # who has never run PyReconstruct before. The app checks for updates on its own,
@@ -233,12 +242,34 @@ GENERIC_NOTES = (
 #
 # Deliberately not shown across an update -- someone updating already knows the
 # check exists, having just used it -- nor on the Help-menu re-open, where the
-# reader went looking for the notes rather than needing to be oriented.
+# reader went looking for the notes rather than needing to be oriented. Nor on
+# an install that does not run the check at all; see ``_is_installed_app``.
 WELCOME_UPDATE_NOTE = (
     "PyReconstruct checks once a day for a new version and tells you when one "
     "is out. You can turn this off under Series ▸ Options, where you can also "
     "switch to the Beta channel to get fixes and new features sooner."
 )
+
+
+def _is_installed_app():
+    """True in the installed app, the only place that checks for updates.
+
+    ``MainWindow.checkForUpdatesStartup`` returns early unless
+    ``install_kind() == "frozen"``, so when running from source the note would
+    be describing something that does not happen. Compares against that one
+    value rather than testing for "not source", so a kind added later is
+    excluded until someone decides otherwise: ``install_kind`` today answers
+    ``"source"`` for a git checkout and a pip install alike, and that set can
+    grow.
+
+    Reads the module-level ``install_kind`` so a test can rebind it, the way the
+    other collaborators in this module are rebound. Never raises: a first-launch
+    convenience must not be able to break the dialog.
+    """
+    try:
+        return install_kind() == "frozen"
+    except Exception:
+        return False
 
 
 def _with_welcome_note(body):
@@ -281,7 +312,8 @@ def _render_sections(sections, truncated):
     return body
 
 
-def whats_new_content(current, last_seen=None, cap=5, text=None, on_demand=False):
+def whats_new_content(current, last_seen=None, cap=5, text=None, on_demand=False,
+                      installed_app=None):
     """Build what the What's-new dialog renders (offline-safe, never raises).
 
     Returns a dict:
@@ -293,9 +325,11 @@ def whats_new_content(current, last_seen=None, cap=5, text=None, on_demand=False
       * ``body``      -- markdown: each shown section as ``### <version> —
                          <friendly date>`` plus its bullets, newest first. Falls
                          back to a friendly generic note when the running version
-                         has no section at all. Under the welcome framing, and
-                         only there, ``WELCOME_UPDATE_NOTE`` is appended to
-                         whichever of those two bodies was built.
+                         has no section at all, which under the welcome framing
+                         greets rather than thanks. In the installed app under
+                         the welcome framing, and only there,
+                         ``WELCOME_UPDATE_NOTE`` is appended to whichever of
+                         those two bodies was built.
       * ``truncated`` -- True when more than ``cap`` missed sections existed.
 
     Sections shown: when ``last_seen`` is a valid version older than ``current``,
@@ -306,9 +340,13 @@ def whats_new_content(current, last_seen=None, cap=5, text=None, on_demand=False
     recent release history regardless of ``last_seen``, since a returning user is
     browsing rather than catching up across an update. ``text`` overrides the
     bundled notes (for testing); by default the bundled ``WHATS_NEW.md`` is read.
+    ``installed_app`` overrides the install-kind check that gates the
+    update-checks note (for testing); by default ``install_kind()`` answers it.
     """
     if text is None:
         text = _read_whats_new()
+    if installed_app is None:
+        installed_app = _is_installed_app()
     sections = parse_all_sections(text)
 
     cur_v = _safe_version(current)
@@ -323,6 +361,13 @@ def whats_new_content(current, last_seen=None, cap=5, text=None, on_demand=False
     # install), and the few strays that reach it the same way -- an unreadable
     # stored version, or a stored version not older than the running one.
     welcoming = not on_demand and not updating
+
+    # The note is a welcome-framing thing *and* an installed-app thing: only
+    # the installed app runs the startup check the note describes, so anywhere
+    # else it would be telling the reader about something that never happens. The
+    # framing on its own still decides which generic fallback body to use, which
+    # is a question about who is reading rather than about what they installed.
+    show_update_note = welcoming and installed_app
 
     if on_demand:
         orienter = "Recent releases"
@@ -349,9 +394,10 @@ def whats_new_content(current, last_seen=None, cap=5, text=None, on_demand=False
     # be determined) instead falls through to the recent-history view below,
     # so the dialog still shows the notes it has.
     if current_section is None and not (cur_v is None and sections):
-        body = _with_welcome_note(GENERIC_NOTES) if welcoming else GENERIC_NOTES
+        body = GENERIC_WELCOME_NOTES if welcoming else GENERIC_NOTES
         return {"version": current, "date": friendly, "orienter": orienter,
-                "body": body, "truncated": False}
+                "body": _with_welcome_note(body) if show_update_note else body,
+                "truncated": False}
 
     truncated = False
     if updating:
@@ -379,5 +425,5 @@ def whats_new_content(current, last_seen=None, cap=5, text=None, on_demand=False
 
     body = _render_sections(shown, truncated)
     return {"version": current, "date": friendly, "orienter": orienter,
-            "body": _with_welcome_note(body) if welcoming else body,
+            "body": _with_welcome_note(body) if show_update_note else body,
             "truncated": truncated}

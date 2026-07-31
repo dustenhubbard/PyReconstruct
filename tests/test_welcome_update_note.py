@@ -12,6 +12,8 @@ what reads it. All three framings are walked here from the same window API a
 user reaches: a first launch with nothing stored, an update, and the Help-menu
 re-open with nothing stored -- the last being the combination most likely to
 leak the note, since only the on-demand flag separates it from a first launch.
+The first launch is walked twice, once as the installed app and once as the
+source checkout that never runs the update check the note describes.
 
 The settings store is the suite's redirected one (see tests/conftest.py and
 tests/qsettings_isolation.py); nothing here touches real user preferences.
@@ -56,6 +58,17 @@ def running_version(monkeypatch):
     monkeypatch.setattr(W, "current_version_str", lambda: "1.21.0")
 
 
+@pytest.fixture
+def installed_app(monkeypatch):
+    """Answer the install-kind question the way the installed app would.
+
+    The note only applies where the startup update check actually runs, and the
+    suite runs from a source checkout, so without this the dialog is right to
+    stay quiet and there would be nothing to assert on.
+    """
+    monkeypatch.setattr(F, "install_kind", lambda: "frozen")
+
+
 def _stored(value=None):
     """Set (or clear) the last-seen record in the redirected settings store."""
     settings = QSettings(W.ORG, W.APP)
@@ -85,7 +98,7 @@ def _opened(window, open_it):
 
 
 def test_first_launch_dialog_renders_the_update_checks_note(
-    main_window, running_version
+    main_window, running_version, installed_app
 ):
     """Nothing stored: the newcomer is told the app checks, and where to change it."""
     _stored(None)
@@ -104,7 +117,29 @@ def test_first_launch_dialog_renders_the_update_checks_note(
     main_window._whatsnew_dialog.close()
 
 
-def test_update_dialog_does_not_render_the_note(main_window, running_version):
+def test_running_from_source_first_launch_is_welcomed_without_the_note(
+    main_window, running_version
+):
+    """A source checkout never runs the startup check, so it is never promised one.
+
+    No `installed_app` fixture here: this is the install the developer and every
+    user running from source actually has. The welcome and the release notes are
+    unaffected; only the claim about update checking is withheld.
+    """
+    _stored(None)
+    labels, notes = _opened(main_window, lambda w: w.showWhatsNewStartup())
+
+    assert "Welcome to PyReconstruct" in labels          # still welcomed
+    assert "Added the shiny new thing." in notes         # still shown the notes
+    assert "checks once a day" not in notes
+    assert "Beta channel" not in notes
+
+    main_window._whatsnew_dialog.close()
+
+
+def test_update_dialog_does_not_render_the_note(
+    main_window, running_version, installed_app
+):
     """Someone arriving from an update has just used the check; do not explain it."""
     _stored("1.20.3")
     labels, notes = _opened(main_window, lambda w: w.showWhatsNewStartup())
@@ -117,7 +152,9 @@ def test_update_dialog_does_not_render_the_note(main_window, running_version):
     main_window._whatsnew_dialog.close()
 
 
-def test_help_menu_reopen_does_not_render_the_note(main_window, running_version):
+def test_help_menu_reopen_does_not_render_the_note(
+    main_window, running_version, installed_app
+):
     """The leak case: the Help-menu re-open with no stored version.
 
     Nothing is stored, so the only thing telling this apart from a first launch
