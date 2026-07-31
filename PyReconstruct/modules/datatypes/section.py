@@ -25,8 +25,7 @@ from PyReconstruct.modules.constants import (
 from PyReconstruct.modules.backend.exports import export_svg, export_png
 
 
-def tracesWithoutCounterpart(donor : Contour, keeper : Contour,
-                             mag : float = None) -> list:
+def tracesWithoutCounterpart(donor : Contour, keeper : Contour) -> list:
     """Return the traces in donor that overlap nothing at all in keeper.
 
     This is the distinction an import needs before it discards a contour. A
@@ -37,38 +36,48 @@ def tracesWithoutCounterpart(donor : Contour, keeper : Contour,
     independent annotation work, and discarding it destroys a trace a human drew
     and cannot get back.
 
-    ``threshold=0`` means "overlap at all", and that question does not survive the
-    change of metric intact for a pair of OPEN traces. It used to mean "the two
-    rasterized regions share a pixel"; it now means "some sample of one curve lies
-    within a few image pixels of the other". Two consequences, both measured on
-    the reporting user's series and neither of them fixed here:
+    **``open_curve=False`` keeps this site on the area comparison, deliberately,
+    so that the open-trace curve metric changes nothing here.** ``threshold=0``
+    asks a categorically different question from the threshold the import dialog
+    asks: "do these two traces overlap at all", not "are these two traces the same
+    trace". The curve metric was designed and measured for the second one. On the
+    import merge at 0.95 it is measured clean on real data -- 264 of 264 genuine
+    duplicate open pairs detected, 0 different-structure collapses at every
+    threshold the slider can reach. At ``threshold=0`` it was neither, and the
+    predicate there reduces to ``r > 0``, which accepts any positive ratio at all:
 
-      * Two open traces that merely cross or touch score a small nonzero ratio
-        (0.006 for a T junction), and ``r > 0`` accepts it. Bounding the tolerance
-        shrinks that ratio but cannot make it zero, and no coverage measure taken
-        at a positive tolerance can. Pairs that are merely *separated* are
-        answered correctly -- anything more than the tolerance apart scores 0, so
-        two structures 20 px apart are independent where an unbounded tolerance
-        called them counterparts.
-      * On her series that turns 487 of 979 donor open traces from orphans into
-        counterparts, and an orphan is what makes the history shortcut in
-        Section.importTraces back off. The traces driving it are her fiducial and
-        calibration marks (``SF1_Wh``, ``grid``), whose members genuinely
-        intersect: their mean deviation is 1,118 px but their closest approach is
-        0.67 px at the median, and it is the closest approach a tolerance tests.
-      * It cuts the other way too, in her favour: a pair whose closing-chord
-        slivers intersected while the curves ran 49 px apart used to count as
-        counterparts and no longer does.
+      * Two open traces that merely cross or touch score a small positive ratio
+        (0.0064 for a T junction), about the tolerance over the shorter arc
+        length. Bounding the tolerance shrinks that number and cannot zero it; no
+        coverage measure taken at a positive tolerance can.
+      * On the reporting user's series that turned 487 of 979 donor open traces
+        from orphans into counterparts, and an orphan is what makes the history
+        shortcut in Section.importTraces back off. 618 of the 664 newly matched
+        pairs were her fiducial and calibration marks (``SF1_Wh``, ``grid``,
+        ``Wh*_Dim``), whose members genuinely intersect -- their mean deviation is
+        1,118 px but their closest approach is 0.67 px at the median, and a
+        tolerance tests the closest approach. **46 were biological objects across
+        22 contours**, and losing orphan status is what lets the shortcut discard a
+        whole donor contour with no flag and no log entry, so those 46 were a
+        silent-loss risk.
 
-    Deciding what "overlaps at all" should mean for a curve is a semantic choice
-    about this call site rather than about the metric, so it is named here and left
-    alone. See Trace._openCurveRatio.
+    So the metric goes where it was validated and nowhere else. The alternatives
+    considered were a positive floor on the ratio at this site, and a minimum
+    contact length below which the curve metric reports 0; both are new rules
+    invented for an untested question, where preserving the existing answer is a
+    rule that already has years of use behind it. If the meaning of "overlaps at
+    all" for a curve is ever worth revisiting, it should be revisited on its own
+    evidence rather than inherited as a side effect of fixing duplicate detection.
+
+    Note the area comparison is not a good answer to this question either -- it
+    reports a pair of open traces whose closing chords cross as overlapping even
+    when the curves run 49 px apart, which is a silent loss of its own. It is
+    simply the answer this call site has always given, and the one #199 is not
+    entitled to change.
 
         Params:
             donor (Contour): the contour whose traces are at risk
             keeper (Contour): the contour that would survive
-            mag (float): the section's magnification (Section.mag), required to
-                compare two open traces
         Returns:
             (list): the donor traces with no counterpart in keeper
     """
@@ -80,7 +89,8 @@ def tracesWithoutCounterpart(donor : Contour, keeper : Contour,
     return [
         d_trace for d_trace in donor
         if not any(
-            d_trace.overlaps(k_trace, threshold=0, mag=mag) for k_trace in keeper
+            d_trace.overlaps(k_trace, threshold=0, open_curve=False)
+            for k_trace in keeper
         )
     ]
 
@@ -1325,7 +1335,7 @@ class Section():
                     donor = self.contours[cname] if take_other else other.contours[cname]
 
                     # the traces the shortcut would destroy outright
-                    orphans = tracesWithoutCounterpart(donor, keeper, self.mag)
+                    orphans = tracesWithoutCounterpart(donor, keeper)
 
                     # only ask the log about a removal if something is at stake:
                     # the scan is linear in the log length
@@ -1394,7 +1404,12 @@ class Section():
                 removed_by_policy = []
                 for trace1 in traces1:
                     for trace2 in traces2.copy():
-                        if trace1.overlaps(trace2, threshold=0, mag=self.mag):
+                        ## open_curve=False for the same reason as
+                        ## tracesWithoutCounterpart above, which is written out
+                        ## there: threshold=0 asks "do these overlap at all", the
+                        ## curve metric was measured for "are these the same
+                        ## trace", and this site deletes a trace on the answer.
+                        if trace1.overlaps(trace2, threshold=0, open_curve=False):
                             traces2.remove(trace2)
                             self.contours[cname].remove(trace2)
                             removed_by_policy.append(trace2)

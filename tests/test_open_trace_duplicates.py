@@ -436,7 +436,7 @@ def test_the_ceiling_is_load_bearing_for_that_pair(monkeypatch):
 def test_open_ratio_refuses_to_guess_a_magnification():
     """A caller that omits mag is refused rather than quietly given a tolerance.
 
-    The alternative -- falling back to the unbounded fraction -- is the behaviour
+    The alternative -- falling back to the unbounded fraction -- is the behavior
     the two tests above show to be wrong, and a call site that forgot would get it
     silently. Loud instead. Closed pairs never need it.
     """

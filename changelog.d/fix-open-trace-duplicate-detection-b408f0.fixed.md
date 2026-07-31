@@ -49,6 +49,13 @@
   points. For an open pair, 1.0 means the two lines stay within a few image
   pixels of each other from end to end.
 
+  The curve comparison is confined to the operations that ask whether two traces
+  are the same trace. Importing one series into another also asks a different
+  question in two places, whether two traces overlap at all, and uses the answer
+  to work out which of a colleague's traces are independent work rather than
+  another version of something already there. That question keeps the measure it
+  has always used, so those decisions come out exactly as they did before.
+
   Closed traces keep the area comparison unchanged, which is the right measure
   for them, and a pair with one open and one closed trace was never compared at
   all. The cross-name scan needed a second change to benefit: it skips pairs

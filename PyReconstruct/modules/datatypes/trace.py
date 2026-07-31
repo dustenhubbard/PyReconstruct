@@ -220,17 +220,21 @@ class Trace():
             return bool(r > threshold)
         return bool(threshold == r == 1)
 
-    def overlaps(self, other, threshold=0.99, mag=None):
+    def overlaps(self, other, threshold=0.99, mag=None, open_curve=True):
         """Check if trace points overlap.
 
-        ``mag`` is passed straight through to getOverlapRatio, which requires it
-        for a pair of open traces and ignores it otherwise. See there.
+        ``mag`` and ``open_curve`` are passed straight through to
+        getOverlapRatio. See there: ``mag`` is required for a pair of open traces
+        and ignored otherwise, and ``open_curve=False`` measures an open pair by
+        enclosed area instead, which needs no ``mag``.
 
             Params:
                 other (Trace): the trace to compare
                 threshold (float): the threshold overlap ratio to define overlapping (exclusive)
                 mag (float): the section's magnification (Section.mag); required
-                    if both traces are open
+                    if both traces are open and open_curve is True
+                open_curve (bool): whether an open pair is compared
+                    curve-to-curve; False asks for the area comparison instead
             Returns:
                 (bool): whether or not trace traces overlap
         """
@@ -242,7 +246,9 @@ class Trace():
             return True
 
         # compare amount of overlap
-        return self.ratioIsOverlap(self.getOverlapRatio(other, mag), threshold)
+        return self.ratioIsOverlap(
+            self.getOverlapRatio(other, mag, open_curve), threshold
+        )
 
     def setHidden(self, hidden=True):
         """Set whether the trace is hidden.
@@ -705,14 +711,15 @@ class Trace():
         a disc of radius d around each curve and a transversal crossing passes
         through it. That is far below any threshold the import dialog can ask for
         (0.9 at the lowest), but a caller passing ``threshold=0`` -- meaning "do
-        these overlap at all" -- reads it as an overlap where the old area metric
+        these overlap at all" -- would read it as an overlap where the area metric
         read a crossing pair of open traces as no overlap whatever. Bounding d
         shrinks that ratio and cannot make it zero: no coverage measure taken at a
-        positive tolerance can. Named here because two call sites do pass zero
-        (Section.tracesWithoutCounterpart and the keep_below loop in
-        Section.importTraces, the first of which is live by default), and because
-        it is why degenerate two-point traces no longer score exactly 0 the way
-        the area path made them (#167).
+        positive tolerance can. **That is why the two call sites which do pass zero
+        opt out of this measure entirely** (Section.tracesWithoutCounterpart and
+        the keep_below loop in Section.importTraces, via ``open_curve=False``): the
+        question they ask is not the one this measure answers. It is also why
+        degenerate two-point traces no longer score exactly 0 for the callers that
+        do use it, the way the area path made them (#167).
 
             Params:
                 pts1 (list): the first trace's points
@@ -789,7 +796,7 @@ class Trace():
             fraction_within(resample(b, spacing), a),
         )
 
-    def getOverlapRatio(self, other, mag=None):
+    def getOverlapRatio(self, other, mag=None, open_curve=True):
         """Get the amount of intersection between two traces.
 
         Closed traces are compared by area: both are rasterized and the ratio is
@@ -828,14 +835,28 @@ class Trace():
         Series.findDifferentlyNamedDuplicates) pass ``section.mag`` from the
         section they are walking.
 
+        ``open_curve=False`` sends an open pair down the area path instead, byte
+        for byte as it was before the curve metric existed, and needs no ``mag``.
+        It is not a fallback and not a preference: it exists because two callers
+        ask ``overlaps(threshold=0)``, which is the question "do these two traces
+        overlap at all" rather than "are these two traces the same trace". The
+        curve metric was designed and measured for the second question, at the
+        import dialog's own thresholds, and ``ratioIsOverlap(r, 0)`` reduces to
+        ``r > 0``, which accepts the small positive ratio any two curves that meet
+        produce. Both those callers can delete a trace on the answer, so they keep
+        the answer they have always given. The reasoning is written out at
+        Section.tracesWithoutCounterpart, which is one of them.
+
             Params:
                 other (Trace): the trace to compare against
                 mag (float): the section's magnification, series units per image
-                    pixel; required if both traces are open
+                    pixel; required if both traces are open and open_curve is True
+                open_curve (bool): whether an open pair is compared
+                    curve-to-curve; False asks for the area comparison instead
             Returns:
                 (float): the overlap ratio, in [0, 1]
         """
-        if not self.closed and not other.closed:
+        if open_curve and not self.closed and not other.closed:
             if mag is None:
                 raise ValueError(
                     "getOverlapRatio needs the section's mag to compare two "
