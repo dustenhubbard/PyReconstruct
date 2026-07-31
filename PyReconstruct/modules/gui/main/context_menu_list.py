@@ -206,15 +206,26 @@ def get_context_menu_list_obj(self, list_ops=None):
         the whole visibility family, "Group >" and "Set curation >" between them
         -- "the 3D scene menu item is too far from the 3D submenu".
       * "Group >" and "Set curation >" dropped out of the upper half to join
-        "Object attributes >" and "Geometry >": "since these are object-level
-        settings they should be in the same section as Object attributes and
-        Geometry". "Comment..." and "Duplicate object" came down with them,
-        because they "deserve" a place but not one of "the frequently used top
-        spots".
+        "Object attributes >" and the old "Geometry >": "since these are
+        object-level settings they should be in the same section as Object
+        attributes and Geometry". The comment action and "Duplicate object" came
+        down with them, because they "deserve" a place but not one of "the
+        frequently used top spots".
 
     The visibility family keeps its existing order and its own section ("the
     view section with the various Hide options is good"), and the destructive
-    row stays last. Nothing was renamed, added or removed.
+    row stays last.
+
+    Revised again 2026-07-31, this time renaming rather than only reordering.
+    Three commands appeared on both this menu and the trace menu under identical
+    labels with different scope ("Smooth traces", "Edit radius...", "Edit
+    shape..."), so the label told a user nothing about how much of the series the
+    command would touch. The object copies now name the object, the trace copies
+    name the selection, "Smooth object" is promoted to top level, "Geometry >" is
+    dissolved under the maintainer's two-item rule, "Split into separate objects"
+    joins "Duplicate object", and "Comment..." becomes "Leave object comment..."
+    at the end of its section. See the section comment below for the reasoning
+    per item.
 
         Params:
             list_ops (list): list-only table utilities ("Invert selection",
@@ -289,36 +300,33 @@ def get_context_menu_list_obj(self, list_ops=None):
         ("hideallobj_act", "Hide all objects", "", self.hideAllObjects),
         ("showallobj_act", "Show all objects", "", self.unhideAllObjects),
         None,
-        # Object-level settings, one section. "Comment..." and "Duplicate
-        # object" lead it: still top-level (one click, no submenu), but below
-        # the two rows that earned the top spots. "Group >", "Set curation >"
-        # and the custom-category columns join "Object attributes >" and
-        # "Geometry >" here because they are all per-object settings.
-        ("editobjcomment_act", "Comment...", "", self.editComment),
-        ("copyobj_act", "Duplicate object", "", self.copyObjects),
-        {
-            # Hoisted to top level (was inside "Object attributes >"); mirrors
-            # the z-trace menu's "Group >", so there is one pattern to learn.
-            "attr_name": "objgroupmenu",
-            "text": "Group",
-            "opts":
-            [
-                ("addobjgroup_act", "Add to group...", "", self.addToGroup),
-                ("removeobjgroup_act", "Remove from group...", "", self.removeFromGroup),
-                ("removeobjallgroups_act", "Remove from all groups", "", self.removeFromAllGroups),
-            ]
-        },
-        {
-            "attr_name": "curatemenu",
-            "text": "Set curation",
-            "opts":
-            [
-                ("needscuration_act", "Needs curation", "", lambda : self.bulkCurate("Needs curation")),
-                ("curated_act", "Curated", "", lambda : self.bulkCurate("Curated")),
-                ("blankcurate_act", "Clear status", "", lambda : self.bulkCurate("")),
-            ]
-        },
-        getUserColsMenu(self.series, self.addUserCol, self.setUserCol, self.editUserCol),
+        # Object-level settings, one section, ordered most used first. Approved
+        # 2026-07-31, and three things changed at once:
+        #
+        #   * The labels of the three commands that also exist on the trace menu
+        #     now name their SCOPE, because the old shared labels did not.
+        #     "Smooth traces" on this menu smoothed every trace of the object on
+        #     every section it appears on (Series.smoothObject); "Smooth traces"
+        #     on the trace menu smooths the current selection on the current
+        #     section (FieldWidgetTrace.smoothTraces). Same for the radius and
+        #     shape pairs. The axis that separates them is scope, not shape, so
+        #     the object copies say "object" and the trace copies say "selected".
+        #   * "Smooth object" is promoted out of the old "Geometry >" submenu to
+        #     top level: smoothing is frequent enough that it should not cost a
+        #     hop.
+        #   * "Geometry >" is dissolved rather than renamed. With "Smooth object"
+        #     promoted and "Split into separate objects" moved beside "Duplicate
+        #     object" (it is structural, not a trace operation), the submenu was
+        #     down to two edit rows, which is the maintainer's own bar for asking
+        #     whether a submenu earns its place. It did not, so its two rows are
+        #     top-level too and the container is gone. There is nothing left for a
+        #     more descriptive title to describe: the scope now lives in the
+        #     labels.
+        #
+        # "Object attributes >" leads the section, and "Leave object comment..."
+        # closes it (both his). The comment action keeps its ellipsis and gains
+        # the noun, so that it reads as an object-level action rather than as an
+        # unscoped "Comment..." next to five trace-shaped rows.
         {
             # Stored OBJECT attributes only. Trace-level actions do not belong
             # here (see the bulk trace group at the bottom of this menu).
@@ -343,21 +351,49 @@ def get_context_menu_list_obj(self, list_ops=None):
                 ("unlockobj_act", "Unlock", "", lambda : self.lockObjects(False))
             ]
         },
+        # Distinct attr_name from the field Trace submenu's "smoothtraces_act":
+        # both menus are populated onto the same widget, so a shared name meant
+        # one silently shadowed the other (same class of bug as the old
+        # export3D_act). The LABELS used to collide the same way, with nothing
+        # for the user to tell them apart by; the widget collision was fixed
+        # long before the label one was.
+        ("smoothobj_act", "Smooth object", "", self.smoothObject),
+        # The two structural commands, together, more used first.
+        ("copyobj_act", "Duplicate object", "", self.copyObjects),
+        ("splitobj_act", "Split into separate objects", "", self.splitObject),
+        # Was "Geometry > Edit radius..." / "Edit shape...". Object-wide: both
+        # walk every section the object appears on (Series.editObjectRadius /
+        # editObjectShape), unlike the trace menu's selection-scoped pair.
+        ("editobjradius_act", "Edit object radius...", "", self.editRadius),
+        ("editobjshape_act", "Edit object shape...", "", self.editShape),
         {
-            "attr_name": "objgeometrymenu",
-            "text": "Geometry",
+            # Hoisted to top level (was inside "Object attributes >"); mirrors
+            # the z-trace menu's "Group >", so there is one pattern to learn.
+            "attr_name": "objgroupmenu",
+            "text": "Group",
             "opts":
             [
-                ("editobjradius_act", "Edit radius...", "", self.editRadius),
-                ("editobjshape_act", "Edit shape...", "", self.editShape),
-                # Distinct attr_name from the field Trace submenu's
-                # "smoothtraces_act": both menus are populated onto the same
-                # widget, so a shared name meant one silently shadowed the
-                # other (same class of bug as the old export3D_act).
-                ("smoothobj_act", "Smooth traces", "", self.smoothObject),
-                ("splitobj_act", "Split into separate objects", "", self.splitObject),
+                ("addobjgroup_act", "Add to group...", "", self.addToGroup),
+                ("removeobjgroup_act", "Remove from group...", "", self.removeFromGroup),
+                ("removeobjallgroups_act", "Remove from all groups", "", self.removeFromAllGroups),
             ]
         },
+        {
+            "attr_name": "curatemenu",
+            "text": "Set curation",
+            "opts":
+            [
+                ("needscuration_act", "Needs curation", "", lambda : self.bulkCurate("Needs curation")),
+                ("curated_act", "Curated", "", lambda : self.bulkCurate("Curated")),
+                ("blankcurate_act", "Clear status", "", lambda : self.bulkCurate("")),
+            ]
+        },
+        getUserColsMenu(self.series, self.addUserCol, self.setUserCol, self.editUserCol),
+        # Closes the object-settings section. Was "Comment...", which said
+        # nothing about what it comments on; the comment is stored on the object
+        # (series.obj_attrs[name]["comment"]), and on a menu whose neighbors are
+        # trace-shaped that needed saying. Ellipsis kept: it opens a dialog.
+        ("editobjcomment_act", "Leave object comment...", "", self.editComment),
         None,
         {
             "attr_name": "objztracemenu",
@@ -380,8 +416,8 @@ def get_context_menu_list_obj(self, list_ops=None):
         # menu this action strips the tags off EVERY trace of the selected
         # objects, series-wide (series.removeAllTraceTags -> "Remove all trace
         # tags" in the log). Filing it under "Object attributes >" -- or under
-        # "Geometry >", where it used to live -- misrepresents what it does, so
-        # it gets its own bulk/destructive group instead.
+        # the old "Geometry >", where it used to live -- misrepresents what it
+        # does, so it gets its own bulk/destructive group instead.
         ("removealltags_act", "Remove all tags", "", self.removeAllTags),
         None,
         ("deleteobj_act", "Delete objects", "", self.deleteObjects)
@@ -418,9 +454,15 @@ def get_context_menu_list_trace(self, is_in_field=True, list_ops=None, find_in_f
     if is_in_field:
 
         # Long tail only: merge / hide / edit are on the field menu's top strip.
+        #
+        # "Smooth selected traces", not "Smooth traces": the object menu carries
+        # a smooth action too, and until now both read "Smooth traces" while
+        # doing different amounts of work. This one smooths the current selection
+        # on the current section; the object one walks every section the object
+        # appears on. The label is the only place a user can see the difference.
         context_menu += [
             None,
-            ("smoothtraces_act", "Smooth traces", "", self.smoothTraces),
+            ("smoothtraces_act", "Smooth selected traces", "", self.smoothTraces),
             ("makenegative_act", "Make negative", "", self.makeNegative),
             ("makepositive_act", "Make positive", "", lambda : self.makeNegative(False)),
             None,
@@ -444,9 +486,14 @@ def get_context_menu_list_trace(self, is_in_field=True, list_ops=None, find_in_f
         ("closedtraces_act", "Set closed", "", self.closeTraces),
         ("makenegative_act", "Make negative", "", self.makeNegative),
         ("makepositive_act", "Make positive", "", lambda : self.makeNegative(False)),
-        ("edittraceradius_act", "Edit radius...", "", self.editTraceRadius),
-        ("edittraceshape_act", "Edit shape...", "", self.editTraceShape),
-        ("smoothtraces_act", "Smooth traces", "", self.smoothTraces),
+        # Selection-scoped, and now labeled that way. The object menu's
+        # "Edit object radius..." / "Edit object shape..." / "Smooth object" are
+        # the object-wide counterparts; all three pairs used to share a label.
+        # These three act on the traces selected in this table, on this section
+        # (Section.editTraceRadius / editTraceShape, Trace.smooth).
+        ("edittraceradius_act", "Edit selected radius...", "", self.editTraceRadius),
+        ("edittraceshape_act", "Edit selected shape...", "", self.editTraceShape),
+        ("smoothtraces_act", "Smooth selected traces", "", self.smoothTraces),
         None,
         ("copytosections_act", "Copy to sections...", "", self.copyTracesToSections),
         ("createtraceflag_act", "Create flag...", "", self.createTraceFlag),
