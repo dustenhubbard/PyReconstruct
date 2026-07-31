@@ -225,6 +225,38 @@ GENERIC_NOTES = (
 )
 
 
+# Appended to the welcome framing only -- the one showing that greets someone
+# who has never run PyReconstruct before. The app checks for updates on its own,
+# and the switches for that (including the Beta channel) live in Series ▸
+# Options, where nothing points a newcomer at them. Saying it here is the honest
+# moment: it is the first thing the app says to them.
+#
+# Deliberately not shown across an update -- someone updating already knows the
+# check exists, having just used it -- nor on the Help-menu re-open, where the
+# reader went looking for the notes rather than needing to be oriented.
+WELCOME_UPDATE_NOTE = (
+    "PyReconstruct checks once a day for a new version and tells you when one "
+    "is out. You can turn this off under Series ▸ Options, where you can also "
+    "switch to the Beta channel to get fixes and new features sooner."
+)
+
+
+def _with_welcome_note(body):
+    """Append the update-checks note to a welcome body, set off by a rule.
+
+    The rule and the trailing paragraph are both conventions the notes already
+    use (``WHATS_NEW.md`` separates its own blocks with ``---``, and the
+    truncation hint is a paragraph after the bullets), so the note reads as an
+    aside rather than as another release bullet. Works on either body the
+    builder can produce: the rendered release history, or the generic fallback
+    shown when the running version has no section bundled -- a first-run reader
+    on such a build is exactly who most needs the orienting.
+    """
+    if not body:
+        return WELCOME_UPDATE_NOTE
+    return f"{body}\n\n---\n\n{WELCOME_UPDATE_NOTE}"
+
+
 def _read_whats_new():
     """Read the bundled ``WHATS_NEW.md``, or ``""`` if missing (never raises)."""
     path = find_whats_new_path()
@@ -261,7 +293,9 @@ def whats_new_content(current, last_seen=None, cap=5, text=None, on_demand=False
       * ``body``      -- markdown: each shown section as ``### <version> —
                          <friendly date>`` plus its bullets, newest first. Falls
                          back to a friendly generic note when the running version
-                         has no section at all.
+                         has no section at all. Under the welcome framing, and
+                         only there, ``WELCOME_UPDATE_NOTE`` is appended to
+                         whichever of those two bodies was built.
       * ``truncated`` -- True when more than ``cap`` missed sections existed.
 
     Sections shown: when ``last_seen`` is a valid version older than ``current``,
@@ -283,6 +317,12 @@ def whats_new_content(current, last_seen=None, cap=5, text=None, on_demand=False
         not on_demand
         and prev_v is not None and cur_v is not None and prev_v < cur_v
     )
+
+    # The welcome framing is every showing that is neither a catch-up across an
+    # update nor a Help-menu re-open: no stored last-seen version (the fresh
+    # install), and the few strays that reach it the same way -- an unreadable
+    # stored version, or a stored version not older than the running one.
+    welcoming = not on_demand and not updating
 
     if on_demand:
         orienter = "Recent releases"
@@ -309,8 +349,9 @@ def whats_new_content(current, last_seen=None, cap=5, text=None, on_demand=False
     # be determined) instead falls through to the recent-history view below,
     # so the dialog still shows the notes it has.
     if current_section is None and not (cur_v is None and sections):
+        body = _with_welcome_note(GENERIC_NOTES) if welcoming else GENERIC_NOTES
         return {"version": current, "date": friendly, "orienter": orienter,
-                "body": GENERIC_NOTES, "truncated": False}
+                "body": body, "truncated": False}
 
     truncated = False
     if updating:
@@ -336,5 +377,7 @@ def whats_new_content(current, last_seen=None, cap=5, text=None, on_demand=False
         if len(shown) > cap:
             shown, truncated = shown[:cap], True
 
+    body = _render_sections(shown, truncated)
     return {"version": current, "date": friendly, "orienter": orienter,
-            "body": _render_sections(shown, truncated), "truncated": truncated}
+            "body": _with_welcome_note(body) if welcoming else body,
+            "truncated": truncated}
