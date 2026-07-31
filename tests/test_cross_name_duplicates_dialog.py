@@ -24,11 +24,45 @@ pytestmark = pytest.mark.gui
 
 from PySide6.QtWidgets import QDialogButtonBox
 
+from conftest import menu_action, same_action
+
 from PyReconstruct.modules.gui.dialog import (
     DifferentlyNamedDuplicatesDialog,
     MalformedContoursDialog,
     PixelDustDialog,
 )
+
+MENU_PATH = "Series > Clean up > Find duplicates named differently..."
+
+
+def test_the_menu_row_is_the_action_the_window_names(main_window):
+    """The row is in the real widget tree, as the action the window holds.
+
+    The frozen menu lists in test_menubar_labels.py read the nested dicts
+    `return_menubar` returns, against a stub whose `__getattr__` answers for any
+    handler name at all. So they cannot tell a wired row from one naming a method
+    that does not exist. This walks a real MainWindow's menubar instead.
+    """
+    expected = main_window.finddiffnamedduplicates_act  # read before the walk
+    row = menu_action(main_window.menubar, MENU_PATH)
+    assert row is not None, f"no row at {MENU_PATH!r}"
+    assert same_action(row, expected)
+
+
+def test_the_menu_row_reaches_this_operations_slot(main_window,
+                                                   main_window_dialogs):
+    """Triggering the row opens this operation's dialog, not a neighbor's.
+
+    A stronger claim than the one above: `newAction` names the action from the
+    same tuple that carries the handler, so a row can be the action the window
+    names and still be connected to the wrong slot. The threshold prompt's title
+    is what tells them apart, and cancelling it leaves the series alone.
+    """
+    row = menu_action(main_window.menubar, MENU_PATH)
+    row.trigger()
+    assert main_window_dialogs.dialogs[-1] == (
+        "Find duplicates named differently"
+    )
 
 
 def _record(name="OBJ_A", other="OBJ_B", section=3, ratio=0.97):
