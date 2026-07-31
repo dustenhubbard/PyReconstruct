@@ -88,7 +88,10 @@ class MainWindow(QMainWindow):
         ## Resolve the username silently -- no prompt on launch
         self.resolveUsernameStartup()
 
-        ## Opt-in background update check (frozen builds), once the window is up
+        ## One-time settings correction, before anything reads the option below
+        self.applyUpdateCheckDefaultStartup()
+
+        ## Background update check (frozen builds), once the window is up
         from PySide6.QtCore import QTimer
         QTimer.singleShot(2500, self.checkForUpdatesStartup)
 
@@ -574,6 +577,27 @@ class MainWindow(QMainWindow):
         from PyReconstruct.modules.gui.main.first_launch import resolve_username
         resolve_username(QSettings("KHLab", "PyReconstruct"), self.series)
         self.notifyNewEditor()
+
+    def applyUpdateCheckDefaultStartup(self):
+        """Apply the launch-time update check's on-by-default, once per machine.
+
+        ``update_check_on_startup`` shipped off, and `Series.getOption` wrote
+        that off into the settings of every machine that has ever opened the
+        app, as a side effect of reading it. Turning the default on therefore
+        reaches nobody who already has the app until the inherited value is
+        corrected, which is what this does -- once, recording that it has, so
+        a user who turns the check off afterwards keeps it off.
+
+        Called from ``__init__`` rather than from ``openSeries``: this is a
+        machine-wide setting, so it belongs to launching the app and not to
+        opening a series. It runs synchronously, before the timer that
+        dispatches ``checkForUpdatesStartup`` is even scheduled, so the first
+        read of the option in the running app already sees the corrected value.
+        """
+        from PyReconstruct.modules.backend.settings_migrations import (
+            apply_update_check_on_startup_default,
+        )
+        apply_update_check_on_startup_default()
 
     def showWhatsNewStartup(self):
         """Show the 'What's new' dialog once per version (fresh install/upgrade).
