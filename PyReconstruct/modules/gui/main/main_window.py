@@ -2971,11 +2971,17 @@ class MainWindow(QMainWindow):
             self.close()
 
     def checkForUpdatesStartup(self):
-        """Opt-in background check on launch; quietly surfaces a genuine upgrade.
+        """Background check on launch; quietly surfaces a genuine upgrade.
 
         Frozen builds only, gated to once per 24h via QSettings so it never burns
         the anonymous GitHub rate limit. Any failure is swallowed — a background
-        convenience must never disrupt startup.
+        convenience must never disrupt startup. On by default, and switchable in
+        Series > Options > Updates.
+
+        The stamp is written *before* the check is dispatched, deliberately: a
+        check that fails has still spent the day, so a refused connection or a
+        403 cannot turn into a launch-after-launch retry against an API that
+        allows 60 anonymous requests an hour per address.
         """
         try:
             if install_kind() != "frozen" or self.series is None:
@@ -2988,7 +2994,16 @@ class MainWindow(QMainWindow):
                 last = float(settings.value("last_update_check_epoch", 0) or 0)
             except (TypeError, ValueError):
                 last = 0
-            if time.time() - last < 24 * 3600:
+            # A stamp ahead of now is not a recent check. It is a clock that was
+            # wrong when the stamp was written (a machine that syncs its time
+            # only after login, a restored VM snapshot) or a corrupt stored
+            # value. Reading it as recent would hold the check off until the
+            # clock caught up, which for a large enough value is permanently,
+            # and silently: the option still reads as on and nothing ever
+            # checks. So anything ahead of now counts as stale -- the check runs
+            # and rewrites the stamp, which heals the stored value in one launch.
+            elapsed = time.time() - last
+            if 0 <= elapsed < 24 * 3600:
                 return
             settings.setValue("last_update_check_epoch", time.time())
             channel = self.series.getOption("update_channel")
