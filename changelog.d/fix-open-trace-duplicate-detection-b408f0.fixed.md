@@ -30,12 +30,24 @@
   their lengths and is not called a duplicate of it. Because segments are
   measured and not points, how densely each trace was clicked no longer changes
   the answer, and a trace redrawn from end to start reads as the duplicate it is.
-  The tolerance is 2% of the shorter trace's length, a fraction rather than a
-  fixed distance because series differ in scale by orders of magnitude; on a
-  typical 0.00254 um/pixel section that is about two pixels for a profile the
-  size of the one reported. The result is still a ratio from 0 to 1, so the
-  **Overlap threshold** each of these operations asks for means what it always
-  meant and needs no adjusting.
+  The tolerance is 2% of the shorter trace's length, bounded at both ends by an
+  absolute distance in image pixels: never less than one pixel, never more than
+  five. The fraction has the right shape, since a longer structure is clicked
+  more coarsely and two tracings of it disagree by more, but on its own it goes
+  wrong at both ends. On the reported series the shortest genuine duplicate pair
+  is a 29 pixel line whose two tracings differ by 0.72 of a pixel, and 2% of 29
+  pixels is 0.58, so the pair was missed; the longest traces run to 6,846 pixels,
+  where 2% is 137 pixels and two unrelated structures ten pixels apart would have
+  been called the same one. Five pixels is the distance PyReconstruct already
+  treats as the same point when it compares two traces point by point.
+
+  The result is still a ratio from 0 to 1, so the **Overlap threshold** each of
+  these operations asks for keeps its scale and its direction, and a setting that
+  worked before still works. What it means for an open pair has changed, though,
+  and the tooltips now say so: it is no longer an area shared over an area
+  covered, and a threshold of 1.0 no longer implies the two traces have identical
+  points. For an open pair, 1.0 means the two lines stay within a few image
+  pixels of each other from end to end.
 
   Closed traces keep the area comparison unchanged, which is the right measure
   for them, and a pair with one open and one closed trace was never compared at

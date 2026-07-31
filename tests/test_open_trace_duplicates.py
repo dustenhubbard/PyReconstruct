@@ -49,6 +49,15 @@ THRESHOLD = 0.95
 ## Her scale: a cfa profile about 0.25 um long.
 SCALE = 0.25
 
+## The magnification every ratio here is measured at, in um per image pixel. The
+## open-trace tolerance is bounded in image pixels, so a ratio for an open pair is
+## only defined relative to one (see Trace.getOverlapRatio). 0.00254 is the
+## checker fixture's own mag, so the unit cases and the end-to-end cases below are
+## measured on the same scale. At this mag the bounds are 0.00254 and 0.0127 um,
+## which bracket 2% of a 0.25 um profile (0.005) -- the fraction is what decides
+## for a trace this size, and the constructions keep the ratios they had.
+MAG = 0.00254
+
 
 def mk(points, closed=False):
     trace = Trace("cfa", (255, 0, 0), closed=closed)
@@ -134,11 +143,11 @@ UNEQUAL_COUNT_CASES = [
 def test_open_duplicate_detected(a, b):
     """Each construction is a duplicate at a 95% threshold."""
     A, B = mk(a), mk(b)
-    ratio = A.getOverlapRatio(B)
+    ratio = A.getOverlapRatio(B, MAG)
     assert ratio > THRESHOLD, f"ratio {ratio:.4f} does not clear {THRESHOLD}"
-    assert A.overlaps(B, THRESHOLD) is True
+    assert A.overlaps(B, THRESHOLD, MAG) is True
     ## symmetric: which trace the scan happens to ask from must not matter
-    assert B.overlaps(A, THRESHOLD) is True
+    assert B.overlaps(A, THRESHOLD, MAG) is True
 
 
 @pytest.mark.parametrize(
@@ -155,8 +164,8 @@ def test_open_duplicate_detected_unequal_point_counts(a, b):
     A, B = mk(a), mk(b)
     if len(a) != len(b):
         assert A.pointsMatch(B) is False, "premise: pointsMatch cannot settle this"
-    assert A.overlaps(B, THRESHOLD) is True
-    assert B.overlaps(A, THRESHOLD) is True
+    assert A.overlaps(B, THRESHOLD, MAG) is True
+    assert B.overlaps(A, THRESHOLD, MAG) is True
 
 
 def test_area_metric_measured_these_below_threshold():
@@ -213,9 +222,9 @@ def test_genuinely_different_open_traces_not_flagged():
         (0.05 + 0.02 * np.cos(5 * t)).tolist(),
     ))
     A, B = mk(curve(np.linspace(0, 1, 30))), mk(other)
-    assert A.getOverlapRatio(B) < THRESHOLD
-    assert A.overlaps(B, THRESHOLD) is False
-    assert B.overlaps(A, THRESHOLD) is False
+    assert A.getOverlapRatio(B, MAG) < THRESHOLD
+    assert A.overlaps(B, THRESHOLD, MAG) is False
+    assert B.overlaps(A, THRESHOLD, MAG) is False
 
 
 def test_partial_overlap_is_not_a_duplicate():
@@ -227,9 +236,9 @@ def test_partial_overlap_is_not_a_duplicate():
     """
     A = mk(curve(np.linspace(0, 1, 30)))
     B = mk(curve(np.linspace(0, 0.5, 15)))
-    ratio = A.getOverlapRatio(B)
+    ratio = A.getOverlapRatio(B, MAG)
     assert 0.4 < ratio < 0.6, f"expected about the length ratio, got {ratio:.4f}"
-    assert A.overlaps(B, THRESHOLD) is False
+    assert A.overlaps(B, THRESHOLD, MAG) is False
 
 
 def test_crossing_open_traces_not_flagged():
@@ -237,16 +246,16 @@ def test_crossing_open_traces_not_flagged():
     t = np.linspace(-0.1, 0.1, 20)
     crossing = list(zip([SCALE / 2] * 20, t.tolist()))
     A, B = mk(curve(np.linspace(0, 1, 30))), mk(crossing)
-    assert A.getOverlapRatio(B) < 0.2
-    assert A.overlaps(B, THRESHOLD) is False
+    assert A.getOverlapRatio(B, MAG) < 0.2
+    assert A.overlaps(B, THRESHOLD, MAG) is False
 
 
 def test_open_traces_far_apart_score_zero():
     """No shared geometry at all."""
     A = mk(curve(np.linspace(0, 1, 30)))
     B = mk([(x + 100, y + 100) for x, y in curve(np.linspace(0, 1, 30))])
-    assert A.getOverlapRatio(B) == 0
-    assert A.overlaps(B, THRESHOLD) is False
+    assert A.getOverlapRatio(B, MAG) == 0
+    assert A.overlaps(B, THRESHOLD, MAG) is False
 
 
 # ---------------------------------------------------------------------------
@@ -261,8 +270,8 @@ def test_reversed_open_trace_is_a_duplicate():
     """
     A = mk(curve(np.linspace(0, 1, 30)))
     B = mk(curve(np.linspace(1, 0, 25)))
-    assert A.getOverlapRatio(B) == pytest.approx(1.0)
-    assert A.overlaps(B, THRESHOLD) is True
+    assert A.getOverlapRatio(B, MAG) == pytest.approx(1.0)
+    assert A.overlaps(B, THRESHOLD, MAG) is True
 
 
 def test_ratio_stays_in_unit_interval_and_keeps_threshold_semantics():
@@ -279,25 +288,35 @@ def test_ratio_stays_in_unit_interval_and_keeps_threshold_semantics():
     )))
 
     for other in (identical, different):
-        r = A.getOverlapRatio(other)
+        r = A.getOverlapRatio(other, MAG)
         assert 0 <= r <= 1
         assert Trace.ratioIsOverlap(r, 0.5) is (r > 0.5)
 
-    assert Trace.ratioIsOverlap(A.getOverlapRatio(identical), 1) is True
-    assert Trace.ratioIsOverlap(A.getOverlapRatio(different), 1) is False
+    assert Trace.ratioIsOverlap(A.getOverlapRatio(identical, MAG), 1) is True
+    assert Trace.ratioIsOverlap(A.getOverlapRatio(different, MAG), 1) is False
 
 
 def test_scale_invariance():
-    """The same shapes at 100x the size give the same answer.
+    """The same shapes at 100x the size, on a series whose pixels are 100x bigger.
 
-    The point of expressing the tolerance as a fraction of arc length: a series
-    in different units must not get a different verdict.
+    What has to be scale-free is the *physical* judgment: the same structures,
+    traced on the same images, must get the same verdict whatever units the series
+    records them in -- and a series in units 100x larger has a mag 100x larger
+    too, which is exactly the pair of quantities Trace.magScale converts between.
+    Both parts of the tolerance are then scaled: the fraction of arc length by the
+    geometry, the pixel bounds by the mag.
+
+    Not tested here, because it is deliberately false: scaling the coordinates
+    while holding the mag fixed. That is a different physical claim -- structures
+    100x larger on the same images -- and the bounds are there precisely so that
+    the tolerance does not grow with it without limit. test_tolerance_is_bounded
+    _above_at_five_pixels covers that direction.
     """
     a = noisy_curve(30, 1)
     b = noisy_curve(25, 2)
-    small = mk(a).getOverlapRatio(mk(b))
+    small = mk(a).getOverlapRatio(mk(b), MAG)
     big = mk([(x * 100, y * 100) for x, y in a]).getOverlapRatio(
-        mk([(x * 100, y * 100) for x, y in b])
+        mk([(x * 100, y * 100) for x, y in b]), MAG * 100
     )
     assert small == pytest.approx(big)
 
@@ -318,10 +337,118 @@ def test_point_density_does_not_change_the_answer():
         dense.append(((x1 + x2) / 2, (y1 + y2) / 2))
     dense.append(fine_pts[-1])
     assert arc_length(dense) == pytest.approx(arc_length(fine_pts))
-    assert A.getOverlapRatio(dense_trace := mk(dense)) == pytest.approx(
-        A.getOverlapRatio(coarse), abs=0.02
+    assert A.getOverlapRatio(dense_trace := mk(dense), MAG) == pytest.approx(
+        A.getOverlapRatio(coarse, MAG), abs=0.02
     )
     assert dense_trace.closed is False
+
+
+# ---------------------------------------------------------------------------
+# The tolerance, and its two bounds.
+#
+# d = clamp(OPEN_TRACE_MATCH_FRACTION * min(arc length),
+#           OPEN_TRACE_MATCH_MIN_PIXELS * mag,
+#           OPEN_TRACE_MATCH_MAX_PIXELS * mag)
+#
+# The two cases below are the two real traces from her series that the fraction
+# alone gets wrong, one at each end. Both are quoted in image pixels at her own
+# magnification, which is the only unit in which they mean anything.
+# ---------------------------------------------------------------------------
+
+LK_MAG = 0.00204508     # um/px, the reporting user's series
+
+
+def line_px(length_px, y_px, n, mag=LK_MAG):
+    """A straight open trace `length_px` long at height `y_px`, in series units."""
+    return [(i * length_px * mag / (n - 1), y_px * mag) for i in range(n)]
+
+
+def test_tolerance_is_the_fraction_between_the_two_bounds():
+    """Where the fraction lies inside the bounds, nothing has changed.
+
+    A 123 px trace is the median open trace in her series: 2% of it is 2.5 px,
+    comfortably between 1 and 5, so the clamp is inert and the fraction decides.
+    """
+    d = Trace.openCurveTolerance(LK_MAG, 123 * LK_MAG, 130 * LK_MAG)
+    assert d / LK_MAG == pytest.approx(2.46, abs=0.01)
+    assert Trace.OPEN_TRACE_MATCH_MIN_PIXELS < d / LK_MAG < Trace.OPEN_TRACE_MATCH_MAX_PIXELS
+
+
+def test_tolerance_is_bounded_below_at_one_pixel():
+    """Her shortest genuine duplicate pair, which the fraction alone missed.
+
+    ``s195 d000cfa052axi011`` traces #0 and #1: a 29 px arc traced twice, the two
+    tracings 0.72 px apart at worst. 2% of 29 px is 0.58 px, so an unbounded
+    fraction scored the pair 0 and the duplicate scan did not report it. One image
+    pixel is the floor, and it is what catches this.
+    """
+    A, B = mk(line_px(29, 0.0, 3)), mk(line_px(29, 0.6, 4))
+    assert A.pointsMatch(B) is False, "premise: unequal point counts"
+
+    d = Trace.openCurveTolerance(LK_MAG, arc_length(A.points), arc_length(B.points))
+    assert d / LK_MAG == pytest.approx(1.0, abs=0.01), "the floor is binding here"
+    assert 0.02 * 29 == pytest.approx(0.58, abs=0.01), "what the fraction alone gives"
+
+    assert A.getOverlapRatio(B, LK_MAG) == pytest.approx(1.0)
+    assert A.overlaps(B, THRESHOLD, LK_MAG) is True
+
+
+def test_the_floor_is_load_bearing_for_that_pair(monkeypatch):
+    """Premise, pinned: without the floor the same pair scores 0."""
+    monkeypatch.setattr(Trace, "OPEN_TRACE_MATCH_MIN_PIXELS", 0.0)
+    A, B = mk(line_px(29, 0.0, 3)), mk(line_px(29, 0.6, 4))
+    assert A.getOverlapRatio(B, LK_MAG) == 0
+    assert A.overlaps(B, THRESHOLD, LK_MAG) is False
+
+
+def test_tolerance_is_bounded_above_at_five_pixels():
+    """Two DIFFERENT structures 10 px apart along a 6,846 px trace.
+
+    6,846 px is the 95th percentile open trace in her series, so 2% of it is
+    137 px: at an unbounded fraction two unrelated profiles running 10 px apart
+    lie within tolerance of each other everywhere, and the ratio is exactly 1.0.
+    The ceiling of 5 px is what refuses them.
+    """
+    A, B = mk(line_px(6846, 0.0, 3)), mk(line_px(6846, 10.0, 4))
+
+    d = Trace.openCurveTolerance(LK_MAG, arc_length(A.points), arc_length(B.points))
+    assert d / LK_MAG == pytest.approx(5.0, abs=0.01), "the ceiling is binding here"
+    assert 0.02 * 6846 == pytest.approx(136.92, abs=0.01), "what the fraction gives"
+
+    assert A.getOverlapRatio(B, LK_MAG) == 0
+    for threshold in (0.9, 0.92, THRESHOLD, 0.99, 0.999, 1.0):
+        assert A.overlaps(B, threshold, LK_MAG) is False, threshold
+
+
+def test_the_ceiling_is_load_bearing_for_that_pair(monkeypatch):
+    """Premise, pinned: without the ceiling the pair saturates at exactly 1.0.
+
+    Exactly 1.0 matters, and not merely "above 0.95": ratioIsOverlap reads a
+    threshold of 1 as "demand an exact match", so a saturated ratio is collapsed
+    at every setting the import dialog can produce, the strictest one included.
+    """
+    monkeypatch.setattr(Trace, "OPEN_TRACE_MATCH_MAX_PIXELS", 1e9)
+    A, B = mk(line_px(6846, 0.0, 3)), mk(line_px(6846, 10.0, 4))
+    assert A.getOverlapRatio(B, LK_MAG) == 1.0
+    assert A.overlaps(B, 1.0, LK_MAG) is True
+
+
+def test_open_ratio_refuses_to_guess_a_magnification():
+    """A caller that omits mag is refused rather than quietly given a tolerance.
+
+    The alternative -- falling back to the unbounded fraction -- is the behaviour
+    the two tests above show to be wrong, and a call site that forgot would get it
+    silently. Loud instead. Closed pairs never need it.
+    """
+    A, B = mk(line_px(6846, 0.0, 3)), mk(line_px(6846, 10.0, 4))
+    with pytest.raises(ValueError, match="mag"):
+        A.getOverlapRatio(B)
+    with pytest.raises(ValueError, match="mag"):
+        A.overlaps(B, THRESHOLD)
+
+    closed_a, closed_b = mk(line_px(6846, 0.0, 3), closed=True), mk(
+        line_px(6846, 10.0, 4), closed=True)
+    assert 0 <= closed_a.getOverlapRatio(closed_b) <= 1, "no mag needed when closed"
 
 
 # ---------------------------------------------------------------------------
@@ -339,9 +466,9 @@ def test_degenerate_open_traces_do_not_crash(points):
     """Zero length means no tolerance to measure against; answer 0, never raise."""
     A = mk(points)
     B = mk(curve(np.linspace(0, 1, 30)))
-    assert A.getOverlapRatio(B) == 0
-    assert B.getOverlapRatio(A) == 0
-    assert A.getOverlapRatio(mk(list(points))) == 0
+    assert A.getOverlapRatio(B, MAG) == 0
+    assert B.getOverlapRatio(A, MAG) == 0
+    assert A.getOverlapRatio(mk(list(points)), MAG) == 0
 
 
 def test_identical_degenerate_open_traces_still_match_on_points():
@@ -353,19 +480,58 @@ def test_identical_degenerate_open_traces_still_match_on_points():
     """
     A = mk([(1.0, 1.0), (1.0, 1.0)])
     B = mk([(1.0, 1.0), (1.0, 1.0)])
-    assert A.getOverlapRatio(B) == 0
+    assert A.getOverlapRatio(B, MAG) == 0
     assert A.pointsMatch(B) is True
-    assert A.overlaps(B, THRESHOLD) is True
+    assert A.overlaps(B, THRESHOLD, MAG) is True
 
 
 def test_collinear_open_traces_do_not_crash():
     """A straight line has no area at all, which is what broke before PR #167."""
     A = mk([(0.0, 0.0), (0.0, 1.0), (0.0, 2.0)])
     B = mk([(0.0, 0.0), (0.0, 1.0), (0.0, 2.0), (0.0, 3.0)])
-    ratio = A.getOverlapRatio(B)
+    ratio = A.getOverlapRatio(B, MAG)
     assert 0 <= ratio <= 1
     ## A is two thirds of B and lies exactly on it, so the min direction caps it
     assert ratio < THRESHOLD
+
+
+@pytest.mark.parametrize("label,a_pts,b_pts", [
+    ("overlapping halves", [(0, 0), (1, 0)], [(0.5, 0), (1.5, 0)]),
+    ("one inside the other", [(0, 0), (2, 0)], [(0.5, 0), (1.5, 0)]),
+    ("vertical, offset along the line", [(0, 0), (0, 1)], [(0, 0.2), (0, 1.2)]),
+])
+def test_degenerate_open_pairs_are_compared_not_exempted(label, a_pts, b_pts):
+    """The decision on pixel dust, pinned deliberately in both directions.
+
+    Fork PR #167 gave a pair of traces with no area between them a ratio of 0 at
+    every threshold, because the area comparison could not say anything else about
+    them. That guarantee does NOT carry over to open pairs, and it is not restored
+    here. Two reasons:
+
+      * A two-point open trace is not pixel dust in this data. 695 of the 3,974
+        open traces in the reporting user's series have exactly two points --
+        short straight profiles -- and Section.__init__ forces every two-point
+        trace open. Refusing to compare them would re-break the case reported.
+      * "No enclosed area" is a fact about the area metric, not about the curves.
+        Two collinear segments lying on top of each other are the same annotation
+        by any reading; scoring them 0 was the area metric's limitation showing.
+
+    So a degenerate open pair is measured like any other, and what the bounds buy
+    is that the number means something: the tolerance is a few image pixels rather
+    than a few percent of an arbitrary length. A partial overlap still scores about
+    the shared fraction, which is below anything the import dialog can ask for; it
+    is above zero, so a caller passing threshold=0 reads it as an overlap. Both
+    halves of that are asserted, because both are consequences worth noticing if
+    they change.
+    """
+    A, B = mk(a_pts), mk(b_pts)
+    ratio = A.getOverlapRatio(B, MAG)
+    assert 0 < ratio < THRESHOLD, f"{label}: measured, and not a duplicate"
+    assert A.overlaps(B, THRESHOLD, MAG) is False, f"{label}: not at the import range"
+    assert A.overlaps(B, 0.9, MAG) is False, f"{label}: nor at the lowest setting"
+    assert A.overlaps(B, 0, MAG) is True, (
+        f"{label}: but threshold=0 asks only whether they meet at all, and they do"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -380,7 +546,7 @@ def test_closed_traces_still_use_the_area_metric():
     """
     for name, a, b, expected in EQUAL_COUNT_CASES:
         A, B = mk(a, closed=True), mk(b, closed=True)
-        measured = A.getOverlapRatio(B)
+        measured = A.getOverlapRatio(B, MAG)
         assert measured == pytest.approx(expected, abs=5e-4), (
             f"{name}: closed ratio changed to {measured:.4f}, expected {expected}"
         )
@@ -390,8 +556,8 @@ def test_mixed_open_and_closed_never_overlap():
     """overlaps() refuses a mixed pair before any ratio is measured."""
     A = mk(curve(np.linspace(0, 1, 30)), closed=False)
     B = mk(curve(np.linspace(0, 1, 30)), closed=True)
-    assert A.overlaps(B, THRESHOLD) is False
-    assert B.overlaps(A, THRESHOLD) is False
+    assert A.overlaps(B, THRESHOLD, MAG) is False
+    assert B.overlaps(A, THRESHOLD, MAG) is False
 
 
 # ---------------------------------------------------------------------------
@@ -565,11 +731,14 @@ def test_overlap_ceiling_margin_is_pinned():
     assert Series._OVERLAP_CEILING_MARGIN == 0.05
 
 
-def test_open_trace_match_fraction_is_pinned():
-    """The open-trace tolerance is a calibrated constant.
+def test_open_trace_tolerance_constants_are_pinned():
+    """The three numbers that decide how far apart two curves may be.
 
-    2% of the shorter arc length. Pinned for the same reason as the margin above:
-    it is the one number that decides how far apart two curves may be, and it
-    should not drift without a deliberate edit here.
+    Pinned for the same reason as the margin above: each was measured, none is a
+    free parameter, and none should drift without a deliberate edit here. The two
+    pixel bounds are load-bearing in both directions and each has its own
+    revert-and-fail test above.
     """
     assert Trace.OPEN_TRACE_MATCH_FRACTION == 0.02
+    assert Trace.OPEN_TRACE_MATCH_MIN_PIXELS == 1.0
+    assert Trace.OPEN_TRACE_MATCH_MAX_PIXELS == 5.0

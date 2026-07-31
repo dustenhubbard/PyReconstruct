@@ -2020,7 +2020,7 @@ class Series():
     _OVERLAP_CEILING_MARGIN = 0.05
 
     @classmethod
-    def _duplicatePairs(cls, entries : list, threshold : float):
+    def _duplicatePairs(cls, entries : list, threshold : float, mag : float = None):
         """Yield every pair of differently-named traces on a section that overlap.
 
         ``entries`` is one tuple per trace,
@@ -2056,17 +2056,19 @@ class Series():
              ceiling itself, and Trace.getOverlapRatio.
 
         One limit worth naming, since the sweep decides what can be found at all:
-        every bounding-box test here is slack by Trace.POINTS_MATCH_TOLERANCE,
-        which covers the point-match case exactly. An open pair, though, is
-        measured against a tolerance of
-        ``Trace.OPEN_TRACE_MATCH_FRACTION * min(arc length)``, and where that
-        exceeds the point-match tolerance -- arc lengths beyond about 0.5 in trace
-        coordinates -- two curves could in principle sit within tolerance of each
-        other while their boxes miss by more than the slack, and the pair would
-        not be enumerated. Widening the sweep to cover it needs a bound over every
-        entry, which would loosen the termination test for every pair on the
-        section and give back the sweep's whole benefit, so it is deliberately not
-        done. Such a pair is nearly disjoint and would score low anyway.
+        every bounding-box test here is slack by Trace.POINTS_MATCH_TOLERANCE
+        (1e-2), which covers the point-match case exactly. An open pair is
+        measured against Trace.openCurveTolerance instead, which is at most
+        ``Trace.OPEN_TRACE_MATCH_MAX_PIXELS * mag``, so the two agree whenever
+        ``mag`` is at or below 2e-3 series units per pixel -- and on a coarser
+        section the open tolerance can exceed the slack, leaving a pair that sits
+        within tolerance while its boxes miss by more than the slack unenumerated.
+        Widening the sweep to cover it needs a bound over every entry, which would
+        loosen the termination test for every pair on the section and give back
+        the sweep's whole benefit, so it is deliberately not done. Such a pair is
+        nearly disjoint and would score low anyway. (Before the tolerance was
+        bounded this gap opened at an arc length of about 0.5 regardless of mag,
+        which on a real series meant most of the long traces on it.)
 
         Point-for-point matches are settled before either filter can reach them,
         because a trace with no area at all (a straight line, say) is still a
@@ -2086,6 +2088,8 @@ class Series():
                 entries (list): per-trace tuples, described above
                 threshold (float): the overlap ratio above which two traces
                     count as duplicates, as in Trace.overlaps
+                mag (float): the section's magnification, passed on to
+                    Trace.getOverlapRatio, which requires it for an open pair
             Yields:
                 (tuple): (entry_a, entry_b, ratio, points_match)
         """
@@ -2153,7 +2157,7 @@ class Series():
                     if ceiling <= ceiling_floor:
                         continue
 
-                ratio = atrace.getOverlapRatio(btrace)
+                ratio = atrace.getOverlapRatio(btrace, mag)
                 if Trace.ratioIsOverlap(ratio, threshold):
                     yield first, second, ratio, False
 
@@ -2217,7 +2221,7 @@ class Series():
                     )
 
             for first, second, ratio, points_match in self._duplicatePairs(
-                entries, threshold
+                entries, threshold, section.mag
             ):
                 fname, findex, ftrace = first[5], first[6], first[7]
                 sname, sindex, strace = second[5], second[6], second[7]
@@ -3147,7 +3151,8 @@ class Series():
                     for j in range(i-1, -1, -1):
                         trace2 = section.contours[cname][j]
                         # if overlaps, remove trace and break
-                        if trace1.overlaps(trace2, threshold=threshold):
+                        if trace1.overlaps(trace2, threshold=threshold,
+                                           mag=section.mag):
                             if snum not in removed:
                                 removed[snum] = set()
                             removed[snum].add(cname)

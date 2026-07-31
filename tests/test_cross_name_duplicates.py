@@ -350,7 +350,14 @@ def test_scan_never_modifies_the_series(tmp_path):
 # ---------------------------------------------------------------------------
 
 def _brute_force(section, series, threshold, include_locked=False):
-    """Every unordered cross-name pair, straight into Trace.overlaps."""
+    """Every unordered cross-name pair, straight into Trace.overlaps.
+
+    ``section.mag`` is handed to overlaps() for the same reason
+    Series.findDifferentlyNamedDuplicates does it: an open pair's tolerance is
+    bounded in image pixels, so the comparison is only defined relative to one.
+    Brute force has to ask the question the same way the fast path asks it or the
+    agreement being tested would be an agreement about two different questions.
+    """
     flat = []
     for cname in section.contours:
         if not include_locked and series.getAttr(cname, "locked"):
@@ -364,7 +371,8 @@ def _brute_force(section, series, threshold, include_locked=False):
             bname, _bi, btrace = flat[j]
             if aname == bname:
                 continue
-            if atrace.overlaps(btrace, threshold=threshold):
+            if atrace.overlaps(btrace, threshold=threshold,
+                               mag=section.mag):
                 found.add(frozenset((aname, bname)))
     return found
 

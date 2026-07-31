@@ -25,7 +25,8 @@ from PyReconstruct.modules.constants import (
 from PyReconstruct.modules.backend.exports import export_svg, export_png
 
 
-def tracesWithoutCounterpart(donor : Contour, keeper : Contour) -> list:
+def tracesWithoutCounterpart(donor : Contour, keeper : Contour,
+                             mag : float = None) -> list:
     """Return the traces in donor that overlap nothing at all in keeper.
 
     This is the distinction an import needs before it discards a contour. A
@@ -36,9 +37,38 @@ def tracesWithoutCounterpart(donor : Contour, keeper : Contour) -> list:
     independent annotation work, and discarding it destroys a trace a human drew
     and cannot get back.
 
+    ``threshold=0`` means "overlap at all", and that question does not survive the
+    change of metric intact for a pair of OPEN traces. It used to mean "the two
+    rasterized regions share a pixel"; it now means "some sample of one curve lies
+    within a few image pixels of the other". Two consequences, both measured on
+    the reporting user's series and neither of them fixed here:
+
+      * Two open traces that merely cross or touch score a small nonzero ratio
+        (0.006 for a T junction), and ``r > 0`` accepts it. Bounding the tolerance
+        shrinks that ratio but cannot make it zero, and no coverage measure taken
+        at a positive tolerance can. Pairs that are merely *separated* are
+        answered correctly -- anything more than the tolerance apart scores 0, so
+        two structures 20 px apart are independent where an unbounded tolerance
+        called them counterparts.
+      * On her series that turns 487 of 979 donor open traces from orphans into
+        counterparts, and an orphan is what makes the history shortcut in
+        Section.importTraces back off. The traces driving it are her fiducial and
+        calibration marks (``SF1_Wh``, ``grid``), whose members genuinely
+        intersect: their mean deviation is 1,118 px but their closest approach is
+        0.67 px at the median, and it is the closest approach a tolerance tests.
+      * It cuts the other way too, in her favour: a pair whose closing-chord
+        slivers intersected while the curves ran 49 px apart used to count as
+        counterparts and no longer does.
+
+    Deciding what "overlaps at all" should mean for a curve is a semantic choice
+    about this call site rather than about the metric, so it is named here and left
+    alone. See Trace._openCurveRatio.
+
         Params:
             donor (Contour): the contour whose traces are at risk
             keeper (Contour): the contour that would survive
+            mag (float): the section's magnification (Section.mag), required to
+                compare two open traces
         Returns:
             (list): the donor traces with no counterpart in keeper
     """
@@ -49,7 +79,9 @@ def tracesWithoutCounterpart(donor : Contour, keeper : Contour) -> list:
 
     return [
         d_trace for d_trace in donor
-        if not any(d_trace.overlaps(k_trace, threshold=0) for k_trace in keeper)
+        if not any(
+            d_trace.overlaps(k_trace, threshold=0, mag=mag) for k_trace in keeper
+        )
     ]
 
 
@@ -1293,7 +1325,7 @@ class Section():
                     donor = self.contours[cname] if take_other else other.contours[cname]
 
                     # the traces the shortcut would destroy outright
-                    orphans = tracesWithoutCounterpart(donor, keeper)
+                    orphans = tracesWithoutCounterpart(donor, keeper, self.mag)
 
                     # only ask the log about a removal if something is at stake:
                     # the scan is linear in the log length
@@ -1325,7 +1357,12 @@ class Section():
                         continue
 
             # import the contour
-            conflict_traces_s, conflict_traces_o = self.contours[cname].importTraces(other.contours[cname], threshold, keep_above)
+            ## self.mag, not other.mag: the loop above has already brought the
+            ## other series' traces onto this section's magnification with
+            ## Trace.magScale, so the comparison happens entirely in these units.
+            conflict_traces_s, conflict_traces_o = self.contours[cname].importTraces(
+                other.contours[cname], threshold, keep_above, self.mag
+            )
 
             # A history shortcut was declined above because it would have
             # destroyed traces with no counterpart on the surviving side. The
@@ -1357,7 +1394,7 @@ class Section():
                 removed_by_policy = []
                 for trace1 in traces1:
                     for trace2 in traces2.copy():
-                        if trace1.overlaps(trace2, threshold=0):
+                        if trace1.overlaps(trace2, threshold=0, mag=self.mag):
                             traces2.remove(trace2)
                             self.contours[cname].remove(trace2)
                             removed_by_policy.append(trace2)
