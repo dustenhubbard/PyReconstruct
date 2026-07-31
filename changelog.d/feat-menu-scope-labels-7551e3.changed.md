@@ -20,7 +20,8 @@
   said "show" for what every other row calls unhiding, and it is the exact
   complement of `Hide all objects`. `Show all traces (ignore hidden)` under
   `View` keeps its verb on purpose: that one is a display mode that overrides the
-  hidden flag without clearing it, so it genuinely is not an unhide.
+  hidden flag without clearing it, so it genuinely is not an unhide. The object
+  list's own `Selection` menu offers the same command and now reads the same way.
 
 - **The object menu's `Geometry ▸` submenu is gone and its four commands are
   top-level.** `Smooth object` is promoted because smoothing is frequent and did

@@ -47,27 +47,44 @@ def disable_unavailable_export_formats(widget):
         act.setEnabled(False)
 
 
+# Every attribute a "Restore previous visibility" QAction can be stored under.
+# Three surfaces offer the command and each gets its own QAction object: the
+# field menu's Object submenu and the object list's context menu both use
+# restorevisibility_act (on different widgets), and the object list's own menubar
+# uses restorevisibility_act1, the same _act1 convention its other duplicated
+# visibility entries follow.
+RESTORE_VISIBILITY_ACT_NAMES = (
+    "restorevisibility_act",
+    "restorevisibility_act1",
+)
+
+
 def sync_restore_visibility_action(widget, has_snapshot):
     """Enable "Restore previous visibility" only when there is one to restore.
 
     The snapshot is taken by "Hide other objects" and consumed by the restore, so
     with no isolate behind it the command has nothing to do. Disabling it is the
-    honest state: an enabled row that no-ops teaches nothing, and one that guesses
+    honest state: an enabled row that no-ops teaches nothing, and one that guessed
     at a state it never recorded would be worse.
 
-    Both surfaces build the object menu ONCE and reuse it, so neither can rely on
-    the build-time state. ``MainWindow.checkActions`` calls this for the field
-    menu (which is populated onto the main window) on every context-menu open,
-    and ``ObjectTableWidget.contextMenuEvent`` calls it for the object list's own
-    copy. No-op when the action isn't on this widget.
+    Every surface builds its menu ONCE and reuses it, so none can rely on the
+    build-time state. Callers, each on the event that precedes the menu appearing:
+    ``MainWindow.checkActions`` for the field menu (populated onto the main
+    window), ``ObjectTableWidget.contextMenuEvent`` for the object list's context
+    menu, and the ``aboutToShow`` of the object list's own ``Selection`` menu.
+
+    Syncs whichever of RESTORE_VISIBILITY_ACT_NAMES the widget actually has, so
+    one call covers a widget carrying two copies and is a no-op on one carrying
+    none (a window whose menus are not built yet, for instance).
 
         Params:
-            widget (QWidget): the widget the object menu was populated onto
+            widget (QWidget): the widget the menu was populated onto
             has_snapshot: truthy when a visibility snapshot exists
     """
-    act = getattr(widget, "restorevisibility_act", None)
-    if act is not None:
-        act.setEnabled(bool(has_snapshot))
+    for act_name in RESTORE_VISIBILITY_ACT_NAMES:
+        act = getattr(widget, act_name, None)
+        if act is not None:
+            act.setEnabled(bool(has_snapshot))
 
 
 def edit_selected_label(active):

@@ -790,24 +790,33 @@ def test_restore_puts_back_a_single_hidden_trace_not_the_whole_object(tmp_path):
     There is no object-level `hidden` attribute: the flag lives on `Trace.hidden`,
     and the trace menu's "Hide selected traces" can hide ONE trace of a contour on
     ONE section. An object-level snapshot would record "square was not fully
-    hidden" and restore it by unhiding all of it, quietly undoing that hide.
+    hidden on this section" and restore it by unhiding all of it, quietly undoing
+    that hide.
+
+    The fixture ships one trace per contour per section, where object-level and
+    per-trace snapshots are indistinguishable -- so this test BUILDS the
+    two-trace contour it needs. Without that, an object-atomic snapshot passes
+    the whole suite (measured).
     """
     series = _open_shapes(tmp_path)
     states = SeriesStates(series)
     stub = _real_field_stub(series, states, ["star"])
 
-    ## hide exactly one trace of "square", on the first section only
+    ## give "square" a second trace on the first section, then hide only the first
     snum = sorted(series.sections)[0]
     section = series.loadSection(snum)
+    section.addTrace(section.contours["square"][0].copy(), log_event=False)
+    assert len(section.contours["square"]) == 2
     section.hideTraces([section.contours["square"][0]], True)
     section.save()
 
     before = _any_hidden(series, "square")
-    assert before[snum][0] is True
-    assert any(h is False for flags in before.values() for h in flags), \
-        "fixture cannot express a partial hide; test is meaningless"
+    assert before[snum] == [True, False], \
+        f"setup failed to produce a partially hidden contour: {before[snum]}"
 
     fwo.FieldWidgetObject.hideOtherObjects(stub)
+    assert _any_hidden(series, "square")[snum] == [True, True], "isolate hid both"
+
     fwo.FieldWidgetObject.restorePreviousVisibility(stub)
 
     assert _any_hidden(series, "square") == before
