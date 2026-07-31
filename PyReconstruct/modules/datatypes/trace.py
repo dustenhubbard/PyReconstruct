@@ -104,6 +104,36 @@ class Trace():
     ## see Series._duplicatePairs.
     POINTS_MATCH_TOLERANCE = 1e-2
 
+    ## How far apart two *open* traces may sit and still count as the same curve,
+    ## as a fraction of the shorter one's arc length. Open traces are compared
+    ## curve-to-curve rather than by enclosed area (see getOverlapRatio), and that
+    ## comparison needs a distance tolerance.
+    ##
+    ## Expressed as a fraction of arc length rather than as an absolute distance
+    ## because series differ in scale by orders of magnitude: an absolute
+    ## tolerance that suits a 0.25 um profile is meaningless on a 50 um one. A
+    ## fraction is also scale-free without having to reach the section's
+    ## magnification, which is not available where the comparison happens --
+    ## getOverlapRatio sees two traces and nothing else, and Contour.getDuplicates
+    ## (an import-time caller) has no section at all. Threading a magnification
+    ## through every caller would leave any site that forgot it silently falling
+    ## back to the wrong tolerance.
+    ##
+    ## 0.02 corroborates against pixel size rather than being tuned blind: on a
+    ## typical mag of 0.00254 um/pixel, 2% of a 0.25 um profile is 0.005 um, about
+    ## two pixels -- the order of a hand-tracing discrepancy. Measured over the
+    ## regression cases in tests/test_open_trace_duplicates.py, 0.02 puts every
+    ## real duplicate at 0.9856 or above while the nearest false positive (a trace
+    ## covering half of another) sits at 0.51, so the choice is not near a cliff.
+    OPEN_TRACE_MATCH_FRACTION = 0.02
+
+    ## Ceiling on how many arc-length samples either open trace is reduced to in
+    ## _openCurveRatio. The sampling it actually asks for is four per tolerance
+    ## band, which works out near 200 samples for a pair of comparable length; the
+    ## cap only binds when one trace is many times longer than the other, and
+    ## bounds the cost of the distance comparison for that case.
+    _OPEN_CURVE_MAX_SAMPLES = 1024
+
     def pointsMatch(self, other) -> bool:
         """Check if two traces are the same point sequence, within a tolerance.
 
@@ -571,12 +601,133 @@ class Trace():
         """
         self.tags = self.tags.union(other.tags)
     
+    @staticmethod
+    def _openCurveRatio(pts1, pts2, fraction=None):
+        """How much of two open polylines lie on top of each other, in [0, 1].
+
+        The open-trace half of getOverlapRatio. Both polylines are resampled at
+        uniform arc-length spacing, and each resampled point is measured against
+        the *segments* of the other polyline, so the answer depends on where the
+        curves lie and not on how many points were clicked along them. Returns
+
+            min(fraction of A within d of B, fraction of B within d of A)
+
+        with ``d = OPEN_TRACE_MATCH_FRACTION * min(arc length A, arc length B)``.
+
+        The min of the two directions makes it symmetric and conservative: a
+        short trace lying along part of a long one scores about the length ratio
+        rather than 1, so a trace covering half of another is not called a
+        duplicate of it. Because it compares point sets and not paired-up points,
+        it is also indifferent to which direction each trace was drawn in, and a
+        trace redrawn end-to-start still reads as a duplicate.
+
+            Params:
+                pts1 (list): the first trace's points
+                pts2 (list): the second trace's points
+                fraction (float): tolerance as a fraction of the shorter arc
+                    length; defaults to OPEN_TRACE_MATCH_FRACTION
+            Returns:
+                (float): the overlap ratio, in [0, 1]
+        """
+        if fraction is None:
+            fraction = Trace.OPEN_TRACE_MATCH_FRACTION
+
+        a = np.asarray(pts1, dtype=float)
+        b = np.asarray(pts2, dtype=float)
+
+        ## A single point has no curve to compare. As with the zero-area case
+        ## below, identical traces are already settled by pointsMatch in
+        ## overlaps(), which never asks for a ratio.
+        if len(a) < 2 or len(b) < 2:
+            return 0
+
+        def arc_length(p):
+            return float(np.hypot(np.diff(p[:, 0]), np.diff(p[:, 1])).sum())
+
+        len_a, len_b = arc_length(a), arc_length(b)
+
+        ## Every point in the same place: no length to take a fraction of, so no
+        ## tolerance to measure against. Mirrors the zero-area guard.
+        if len_a <= 0 or len_b <= 0:
+            return 0
+
+        d = fraction * min(len_a, len_b)
+
+        def resample(p, spacing):
+            """Points at uniform arc-length spacing along the polyline p."""
+            steps = np.hypot(np.diff(p[:, 0]), np.diff(p[:, 1]))
+            travelled = np.concatenate([[0.0], np.cumsum(steps)])
+            total = travelled[-1]
+            ## Capped so a pair of wildly mismatched lengths cannot blow up the
+            ## comparison. Hitting the cap coarsens the sampling of the longer
+            ## trace, which can only lower its measured fraction -- and a pair
+            ## that far apart in length is not a duplicate at any threshold.
+            count = int(min(
+                Trace._OPEN_CURVE_MAX_SAMPLES,
+                max(2, int(np.ceil(total / spacing)) + 1),
+            ))
+            at = np.linspace(0.0, total, count)
+            return np.column_stack([
+                np.interp(at, travelled, p[:, 0]),
+                np.interp(at, travelled, p[:, 1]),
+            ])
+
+        def fraction_within(samples, polyline):
+            """Fraction of `samples` within d of any segment of `polyline`."""
+            starts = polyline[:-1]
+            ends = polyline[1:]
+            seg = ends - starts                          # (S, 2)
+            rel = samples[:, None, :] - starts[None, :, :]   # (N, S, 2)
+            seg_sq = np.einsum("sj,sj->s", seg, seg)     # (S,)
+            along = np.einsum("nsj,sj->ns", rel, seg)    # (N, S)
+            ## Zero-length segments (repeated points) project to their start
+            ## point, which is the right answer and avoids dividing by zero.
+            safe = np.where(seg_sq > 0, seg_sq, 1.0)
+            t = np.clip(np.where(seg_sq > 0, along / safe, 0.0), 0.0, 1.0)
+            offset = rel - t[:, :, None] * seg[None, :, :]
+            nearest = np.sqrt(np.einsum("nsj,nsj->ns", offset, offset)).min(axis=1)
+            return float(np.mean(nearest <= d))
+
+        ## Sampled finer than the tolerance so that a curve cannot slip between
+        ## samples: the gap contributes at most a quarter of d to the distance.
+        spacing = d / 4
+        return min(
+            fraction_within(resample(a, spacing), b),
+            fraction_within(resample(b, spacing), a),
+        )
+
     def getOverlapRatio(self, other):
         """Get the amount of intersection between two traces.
-        
+
+        Closed traces are compared by area: both are rasterized and the ratio is
+        the intersection over the union.
+
+        Open traces cannot be, and comparing them that way is what made
+        duplicate open lines undetectable. Rasterizing an open trace fills the
+        region between the polyline and the straight chord from its last point
+        back to its first, so the shape being measured is a sliver whose form is
+        governed by the trace's own wiggle rather than by where the curve
+        actually lies. Two independent tracings of one structure have independent
+        wiggle, so their slivers disagree even when the curves sit on top of each
+        other: two near-straight profiles differing by 0.08% in length measured
+        an area ratio of 0.19. Lowering the threshold cannot fix that, because
+        the quantity being measured is not the one the user is asking about. Open
+        traces are therefore compared curve-to-curve by _openCurveRatio, which
+        returns the same 0-to-1 ratio, so the user-facing overlap threshold keeps
+        its meaning and ratioIsOverlap is unchanged.
+
+        A pair with one open and one closed trace keeps the area comparison.
+        Trace.overlaps and Series._duplicatePairs both refuse such a pair before
+        asking for a ratio, so this only affects a direct caller.
+
             Params:
                 other (Trace): the trace to compare against
+            Returns:
+                (float): the overlap ratio, in [0, 1]
         """
+        if not self.closed and not other.closed:
+            return self._openCurveRatio(self.points, other.points)
+
         xmin1, ymin1, xmax1, ymax1 = self.getBounds()
         xmin2, ymin2, xmax2, ymax2 = other.getBounds()
 

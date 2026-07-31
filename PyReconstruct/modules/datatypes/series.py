@@ -2043,15 +2043,30 @@ class Series():
              remaining entry can touch it and the inner loop stops. Pairs whose
              bounding boxes are disjoint are therefore never even enumerated,
              and Trace.getOverlapRatio would have answered 0 for all of them.
-          2. **A ceiling on the ratio.** The overlap ratio is an
-             intersection-over-union, so it is at most
-             ``min(box_intersection, area_a, area_b) / max(area_a, area_b)``:
+          2. **A ceiling on the ratio, for closed pairs.** A closed pair's
+             overlap ratio is an intersection-over-union of areas, so it is at
+             most ``min(box_intersection, area_a, area_b) / max(area_a, area_b)``:
              the shapes cannot share more than the overlap of their bounding
              boxes, nor more than the smaller of them, and their union is at
              least the larger of them. Two traces of the same structure have
              nearly the same area and nearly the same bounding box, which puts
              that ceiling near 1; two neighboring autosegmented traces whose
-             boxes merely touch put it near 0.
+             boxes merely touch put it near 0. **Open pairs are exempt**, because
+             their ratio is not an area ratio at all -- see the comment at the
+             ceiling itself, and Trace.getOverlapRatio.
+
+        One limit worth naming, since the sweep decides what can be found at all:
+        every bounding-box test here is slack by Trace.POINTS_MATCH_TOLERANCE,
+        which covers the point-match case exactly. An open pair, though, is
+        measured against a tolerance of
+        ``Trace.OPEN_TRACE_MATCH_FRACTION * min(arc length)``, and where that
+        exceeds the point-match tolerance -- arc lengths beyond about 0.5 in trace
+        coordinates -- two curves could in principle sit within tolerance of each
+        other while their boxes miss by more than the slack, and the pair would
+        not be enumerated. Widening the sweep to cover it needs a bound over every
+        entry, which would loosen the termination test for every pair on the
+        section and give back the sweep's whole benefit, so it is deliberately not
+        done. Such a pair is nearly disjoint and would score low anyway.
 
         Point-for-point matches are settled before either filter can reach them,
         because a trace with no area at all (a straight line, say) is still a
@@ -2110,8 +2125,23 @@ class Series():
                 ## The box overlap is clamped at zero because the tests above are
                 ## slack by the point-match tolerance, so a pair whose boxes miss
                 ## each other by less than that reaches here.
+                ##
+                ## Only for closed pairs. The ceiling bounds an
+                ## intersection-over-union of areas, which is what
+                ## getOverlapRatio measures for closed traces and precisely what
+                ## it does not measure for open ones: an open pair is compared
+                ## curve-to-curve, and the "area" of an open trace is the sliver
+                ## between the polyline and its own closing chord, a quantity
+                ## with no bearing on whether the two curves coincide. Applying
+                ## the ceiling to open pairs discards real duplicates before they
+                ## are ever measured -- two near-straight profiles 0.28% apart in
+                ## length, the reported case, ceiling at 0.63 and were dropped at
+                ## a 0.95 threshold. Open pairs are filtered by the sweep and the
+                ## bounding-box tests above and then measured; _openCurveRatio is
+                ## several times cheaper than rasterizing, so the pairs that now
+                ## reach it cost less each than the closed pairs always did.
                 larger = aarea if aarea > barea else barea
-                if larger > 0:
+                if larger > 0 and atrace.closed:
                     box_intersection = max(
                         0.0,
                         min(axmax, bxmax) - max(axmin, bxmin)
