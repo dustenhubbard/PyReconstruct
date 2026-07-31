@@ -293,9 +293,23 @@ def get_context_menu_list_obj(self, list_ops=None):
         },
         None,
         # The whole visibility family, flat (was a "Visibility >" submenu), in
-        # its own section and in its established order -- left alone on purpose.
+        # its own section and in its established order. Members, order and
+        # section boundaries are left alone on purpose ("the view section with
+        # the various Hide options is good").
+        #
+        # The one exception, approved 2026-07-31: "Unhide" was a FOURTH instance
+        # of the shared-label collision the three renames below fix, and it was
+        # deliberately left alone in the first pass because this section was out
+        # of scope. The maintainer's call on being shown it: "Make it 'Unhide
+        # object' and 'Unhide selected traces', consistent with the three
+        # renames [...] Touches the visibility section, but leaving one collision
+        # unfixed is the inconsistency users actually hit." So the scope is in
+        # the label here too, and nothing else in this section moved.
+        #
+        # "Hide" needs no such treatment: the trace menu's counterpart is already
+        # labeled "Hide traces", so the two never collided.
         ("hideobj_act", "Hide", "", self.hideObj),
-        ("unhideobj_act", "Unhide", "", lambda : self.hideObj(False)),
+        ("unhideobj_act", "Unhide object", "", lambda : self.hideObj(False)),
         ("hideotherobj_act", "Hide other objects", "", self.hideOtherObjects),
         ("hideallobj_act", "Hide all objects", "", self.hideAllObjects),
         ("showallobj_act", "Show all objects", "", self.unhideAllObjects),
@@ -479,7 +493,15 @@ def get_context_menu_list_trace(self, is_in_field=True, list_ops=None, find_in_f
         ("mergeobjects_act", "Merge attributes only", sc, lambda : self.mergeTraces(merge_attrs_only=True)),
         None,
         ("hidetraces_act", "Hide traces", sc, self.hideTraces),
-        ("unhidetraces_act", "Unhide", "", lambda : self.hideTraces(hide=False)),
+        # "Unhide selected traces", not "Unhide": the object menu's unhide read
+        # "Unhide" too, and the two did different amounts of work. This one
+        # unhides the traces selected in this table, on this section
+        # (Section.hideTraces, reached through visibility_trace_function, which
+        # supplies the selection); the object one walks every section the object
+        # appears on (Series.hideObjects). Fourth pair of the same collision,
+        # renamed on 2026-07-31 with the maintainer's explicit go-ahead to touch
+        # the visibility section for this one label.
+        ("unhidetraces_act", "Unhide selected traces", "", lambda : self.hideTraces(hide=False)),
         None,
         # the shape-editing tail, one group
         ("opentraces_act", "Set open", "", lambda : self.closeTraces(closed=False)),

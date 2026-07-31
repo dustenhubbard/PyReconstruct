@@ -22,9 +22,12 @@ Also guarded here:
   * SCOPE HONESTY -- tags are trace-level, comments are object-level, so the
     object menu's bulk tag action must not live under "Object attributes >".
     Widened 2026-07-31: no label may appear on both the object menu and the
-    trace menu unless the two do the same amount of work. Three did ("Smooth
-    traces", "Edit radius...", "Edit shape..."), one object-wide and one
-    selection-scoped, and nothing in either label said which. See
+    trace menu unless the two do the same amount of work. Four did ("Smooth
+    traces", "Edit radius...", "Edit shape...", "Unhide"), one object-wide and
+    one selection-scoped, and nothing in either label said which. The fourth was
+    found by the standing rule rather than by reading the menu, and was fixed
+    a few hours after the other three once the maintainer chose to narrow his
+    "leave the visibility section alone" instruction for it. See
     test_no_label_is_shared_between_the_object_and_trace_menus.
 
 The definitions are built against light stubs (no Qt loop), matching the idiom
@@ -295,7 +298,7 @@ OBJECT_ROWS = [
     "-----",
     # the whole visibility family, flat, in its established order
     "Hide",
-    "Unhide",
+    "Unhide object",
     "Hide other objects",
     "Hide all objects",
     "Show all objects",
@@ -453,6 +456,15 @@ def test_object_menu_row_order_is_the_approved_one():
     rather than a trace operation, "Geometry >" is gone, and the comment action
     closes the section as "Leave object comment...". His words: "Dissolve the
     Geometry name. Split object location you suggested makes sense."
+
+    Amended later the same day with the fourth rename. "Unhide" was the one
+    remaining shared label, and it lives in the visibility section that the
+    2026-07-29 pass was told to leave alone. Shown the collision, he narrowed
+    that instruction rather than keeping it: "Make it 'Unhide object' and 'Unhide
+    selected traces', consistent with the three renames [...] Touches the
+    visibility section, but leaving one collision unfixed is the inconsistency
+    users actually hit." The section's membership, order and boundaries are still
+    untouched; one label carries its scope now.
     """
     assert _top_level(_obj_menu()) == [
         "Edit object attributes...",
@@ -460,7 +472,7 @@ def test_object_menu_row_order_is_the_approved_one():
         "3D >",
         "-----",
         "Hide",
-        "Unhide",
+        "Unhide object",
         "Hide other objects",
         "Hide all objects",
         "Show all objects",
@@ -577,15 +589,37 @@ def test_comment_and_duplicate_are_below_the_top_spots():
 
 def test_the_visibility_section_was_left_alone():
     """"The view section with the various Hide options is good" -- unchanged
-    members, unchanged order, still one uninterrupted section."""
+    members, unchanged order, still one uninterrupted section.
+
+    Still the rule, and it is deliberately asserted twice over: once by
+    `act_name`, which is what "unchanged members" actually means, and once by
+    label, so a relabel cannot happen unnoticed.
+
+    One label inside the section did change, on 2026-07-31 and only because he
+    asked for it after being shown that "Unhide" was a fourth instance of the
+    shared-label collision this file guards. The instruction was narrowed, not
+    dropped: the five members, their order, and the separators either side are
+    exactly as approved. Nothing else in the section may move; if a future change
+    wants to, it needs his call, the same way this one did.
+    """
     rows = _top_level(_obj_menu())
     start = rows.index("Hide")
     assert rows[start - 1] == "-----"
     assert rows[start:start + 5] == [
-        "Hide", "Unhide", "Hide other objects", "Hide all objects",
+        "Hide", "Unhide object", "Hide other objects", "Hide all objects",
         "Show all objects",
     ]
     assert rows[start + 5] == "-----"
+
+    # membership and order by act_name, which no relabel can satisfy by accident.
+    # Top-level entries only: a visibility action that fell into a submenu must
+    # fail here rather than be found by a recursive walk.
+    acts = [e[0] for e in _obj_menu() if isinstance(e, tuple)]
+    first = acts.index("hideobj_act")
+    assert acts[first:first + 5] == [
+        "hideobj_act", "unhideobj_act", "hideotherobj_act",
+        "hideallobj_act", "showallobj_act",
+    ]
 
 
 def test_group_submenu_is_top_level_on_the_object_menu():
@@ -701,6 +735,18 @@ SCOPE_PAIRS = [
     ("Smooth object", "Smooth selected traces"),
     ("Edit object radius...", "Edit selected radius..."),
     ("Edit object shape...", "Edit selected shape..."),
+    # The fourth pair, added 2026-07-31 after the standing rule below found it.
+    # Same asymmetry as the three above, verified by reading each implementation:
+    #
+    #   unhideobj_act    -> FieldWidgetObject.hideObj(hide=False) [object_function]
+    #                    -> Series.hideObjects(names, False), which walks
+    #                       enumerateSections over getObjectSections(names) and
+    #                       clears `hidden` on every trace of the contour.
+    #   unhidetraces_act -> FieldWidgetTrace.hideTraces(hide=False)
+    #                       [visibility_trace_function, which supplies the trace
+    #                       table's selection or section.selected_traces]
+    #                    -> Section.hideTraces(traces, False), on self.section only.
+    ("Unhide object", "Unhide selected traces"),
 ]
 
 
@@ -728,25 +774,17 @@ KNOWN_SHARED_LABELS = {
     # The table utility every list shares by design, and it does the same thing
     # on both surfaces. Not a scope collision.
     "Invert selection",
-    # A REAL fourth instance of the collision this file now guards, left alone on
-    # purpose and recorded here rather than fixed quietly.
+    # "Unhide" was listed here for exactly one day. This test found it as a real
+    # fourth instance of the collision, and it was recorded rather than fixed
+    # because the object copy sits in the visibility section that was out of
+    # scope. Shown the entry, the maintainer chose to fix it: "Make it 'Unhide
+    # object' and 'Unhide selected traces' [...] leaving one collision unfixed is
+    # the inconsistency users actually hit." It is now the fourth row of
+    # SCOPE_PAIRS above, so the exception is gone rather than permanent.
     #
-    #   object menu "Unhide"  -> unhideobj_act   -> Series.hideObjects(names,
-    #                            False), which walks every section the object
-    #                            appears on.
-    #   trace list  "Unhide"  -> unhidetraces_act -> Section.hideTraces(traces,
-    #                            False), the current selection on this section.
-    #
-    # Same shape as the smooth / radius / shape trio that was renamed on
-    # 2026-07-31, and found by this test rather than by reading the menu. It was
-    # NOT renamed with them for two reasons: it was not among the three the
-    # maintainer reviewed, and the object copy sits in the visibility section he
-    # asked to be left alone ("the view section with the various Hide options is
-    # good"). Renaming one member of that section without the others would split
-    # a group he approved as it stands, and "Unhide" pairs visually with "Hide"
-    # directly above it. It needs his call on the whole Hide/Unhide family, not a
-    # one-line fix. Remove this entry when that lands.
-    "Unhide",
+    # The set is the right shape for that outcome and worth keeping at one entry:
+    # a recorded exception is a decision someone can overturn, where a collision
+    # absorbed by a loose assertion is invisible.
 }
 
 
@@ -796,7 +834,7 @@ TRACE_LIST_ROWS = [
     "Merge attributes only",
     "-----",
     "Hide traces",
-    "Unhide",
+    "Unhide selected traces",
     "-----",
     "Set open",
     "Set closed",
