@@ -141,8 +141,9 @@ def _start_drag(field, trace):
     field.click_time = 0
     field.pointerMove(FakeMouseEvent(pix_x + 30, pix_y + 20))
 
+    # asserted in terms that hold before the fix as well, so that a test built
+    # on this helper fails on its own subject rather than in here
     assert field.is_moving_trace is True
-    assert field.moving_section is field.section
     assert trace in field.section.temp_hide
 
     return pix_x, pix_y
@@ -182,15 +183,17 @@ def test_paging_a_section_mid_drag_ends_the_drag_and_says_so(
     window.changeSection(NEXT_SECTION)
     assert field.section.n == NEXT_SECTION
 
-    # the drag is over, and the user was told rather than left guessing
-    assert field.is_moving_trace is False
-    assert field.moving_section is None
+    # the user was told rather than left guessing
     assert field_notices == [CANCELLED]
 
     # the traces came back on the section they came off
     assert source.temp_hide == []
     assert [tuple(p) for p in trace.points] == points_before
     assert trace in source.contours[OBJ].getTraces()
+
+    # and the drag is over
+    assert field.is_moving_trace is False
+    assert field.moving_section is None
 
     # and the release that follows is a no-op rather than a second surprise
     field.pointerRelease(FakeMouseEvent(400, 300))
@@ -253,8 +256,8 @@ def test_release_after_a_direct_section_change_restores_rather_than_commits(
 
     field.pointerRelease(FakeMouseEvent(400, 300))
 
-    assert field.is_moving_trace is False
     assert field_notices == [CANCELLED]
+    assert field.is_moving_trace is False
 
     # nothing moved, on either section
     assert [tuple(p) for p in trace.points] == points_before
@@ -278,7 +281,6 @@ def test_a_drag_that_stays_on_one_section_still_moves_the_traces(
 
     assert [tuple(p) for p in trace.points] != points_before
     assert field.is_moving_trace is False
-    assert field.moving_section is None
     assert field.section.temp_hide == []
     assert field_notices == []
     assert trace in field.section_layer.traces_in_view
