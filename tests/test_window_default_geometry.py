@@ -140,6 +140,35 @@ def _rect(window):
 
 
 @pytest.mark.gui
+def test_first_launch_falls_back_to_the_centered_default(
+    qapp, series_jser, qsettings_snapshot, main_window_dialogs,
+    isolated_geometry_settings,
+):
+    """The constructor's own fallback, not just the helper it calls.
+
+    Built here rather than through the `main_window` fixture because the
+    geometry store has to be empty *before* `MainWindow.__init__` reads it, and
+    the fixture builds the window itself. The teardown mirrors that fixture's.
+    """
+    import sys as _sys
+
+    from PyReconstruct.modules.gui.main import MainWindow
+
+    assert isolated_geometry_settings().value("window/geometry") is None
+
+    previous_excepthook = _sys.excepthook
+    window = MainWindow(str(series_jser))
+    try:
+        assert _rect(window) == _expected_default(window)
+        assert window._restoredGeometryIsUsable()
+    finally:
+        _sys.excepthook = previous_excepthook
+        window.series.modified = False
+        window.close()
+        window.deleteLater()
+
+
+@pytest.mark.gui
 def test_reset_recovers_a_window_that_is_off_screen_and_tiny(
     main_window, isolated_geometry_settings
 ):
@@ -199,7 +228,13 @@ def test_reset_overwrites_the_saved_geometry(
 def test_reset_leaves_maximized_before_resizing(
     main_window, isolated_geometry_settings
 ):
-    """`setGeometry` on a maximized window moves nothing the user can see."""
+    """`setGeometry` on a maximized window moves nothing the user can see.
+
+    The bad rect is set *before* maximizing, so `showNormal` alone cannot
+    produce the answer: it restores the window to the rect it was maximized
+    from, which here is the broken one.
+    """
+    main_window.setGeometry(*BAD_GEOMETRY)
     main_window.showMaximized()
     assert main_window.isMaximized()
 
@@ -207,6 +242,37 @@ def test_reset_leaves_maximized_before_resizing(
 
     assert not main_window.isMaximized()
     assert _rect(main_window) == _expected_default(main_window)
+
+
+@pytest.mark.gui
+def test_reset_calls_show_normal_before_setting_the_geometry(
+    main_window, isolated_geometry_settings, monkeypatch
+):
+    """The `showNormal` call is asserted directly, because offscreen it is a
+    no-op difference: with no window manager, `setGeometry` on a maximized
+    window moves it anyway, so the end state alone cannot prove the guard is
+    there. On a real platform `setGeometry` would change only the stored normal
+    geometry and the window would stay maximized -- verified by removing the
+    call, which the assertion above does not notice and this one does.
+    """
+    main_window.setGeometry(*BAD_GEOMETRY)
+    main_window.showMaximized()
+    assert main_window.isMaximized()
+
+    calls = []
+    real_show_normal = main_window.showNormal
+
+    def spy():
+        calls.append(_rect(main_window))
+        real_show_normal()
+
+    monkeypatch.setattr(main_window, "showNormal", spy)
+
+    main_window.resetWindowGeometry()
+
+    # called exactly once, and before the geometry was set
+    assert len(calls) == 1
+    assert calls[0] != _expected_default(main_window)
 
 
 @pytest.mark.gui
