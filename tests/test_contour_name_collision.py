@@ -21,11 +21,21 @@ is not.
 So:
 
 * ``applyContourRenames`` carries the rename into ``obj_attrs``,
-  ``object_groups`` and ``host_tree``, which fixes the no-collision case
-  outright;
+  ``object_groups`` and ``host_tree``, which fixes the no-collision case for
+  everything the series keys by name in its JSON;
 * ``contourNameCollisions`` finds the merges before the hidden directory is
   created, and ``openJser`` asks first, so the one case that genuinely cannot
   keep both objects is not silent.
+
+The top-level ``log`` is a fourth structure keyed by object name and it is
+deliberately not repointed. A renamed object's history stays under the old name,
+and a legacy row whose name holds ``", "`` still fails to parse on open, which
+is the very case the first paragraph above uses to justify the rule. That is
+unchanged from ``main``: this module neither causes nor worsens it. It is left
+because repointing rewrites recorded history rather than metadata, and because
+the rows that most need it are exactly the ones ``Log.fromStr`` cannot locate
+the object name in by field index, so it needs its own change rather than a
+field swap here.
 
 Flag names are deliberately left alone, and
 ``test_flag_names_are_not_normalized`` pins that as intended rather than
