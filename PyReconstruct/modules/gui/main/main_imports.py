@@ -82,6 +82,7 @@ from PyReconstruct.modules.gui.utils import (
     setMainWindow,
     noUndoWarning,
     checkMag,
+    importHistoryWarning,
     getUserColsMenu,
     getAlignmentsMenu,
     getOpenRecentMenu,
