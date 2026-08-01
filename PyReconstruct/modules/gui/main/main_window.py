@@ -3092,24 +3092,10 @@ class MainWindow(QMainWindow):
 
         # both 3D and 2D possible and they are linked
         if can_3D and can_2D and linked:
-            # QMessageBox(self).exec() spins a modal event loop that offscreen
-            # Qt never dismisses (no window manager, no user). Take the "undo
-            # all sections" default silently so headless callers (the test
-            # suite, CI) are not permanently stalled.
-            if not user_is_present():
+            scope = linkedUndoNotify(redo=redo)
+            if scope == "all":
                 act3D()
-                return
-            mbox = QMessageBox(self)
-            mbox.setWindowTitle("Redo" if redo else "Undo")
-            mbox.setText("This action is linked to multiple sections.\nPlease select how you would like to proceed.")
-            mbox.setStandardButtons(QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
-            mbox.setButtonText(QMessageBox.Yes, "All sections")
-            mbox.setButtonText(QMessageBox.No, "Only this section")
-            mbox.setButtonText(QMessageBox.Cancel, "Cancel")
-            response = mbox.exec()
-            if response == QMessageBox.Yes:
-                act3D()
-            elif response == QMessageBox.No:
+            elif scope == "section":
                 act2D()
         # both 3D and 2D possible but they are not linked
         elif can_3D and can_2D and not linked:
