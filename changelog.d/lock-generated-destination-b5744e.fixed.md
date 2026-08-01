@@ -1,6 +1,6 @@
-- **"Copy" and "Split into individual objects" no longer write traces into a
-  locked object.** Both invent their destination rather than asking for one:
-  copying gives `<obj>_copy`, splitting gives `<obj>_1` through `<obj>_N`.
+- **"Duplicate object" and "Split into separate objects" no longer write traces
+  into a locked object.** Both invent their destination rather than asking for
+  one: copying gives `<obj>_copy`, splitting gives `<obj>_1` through `<obj>_N`.
   Neither looked for a free name, so a generated name that already belonged to
   an object went straight into it, and when that object was locked the operation
   added traces to the very thing the lock was protecting. Copying an object,
