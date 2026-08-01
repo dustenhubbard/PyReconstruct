@@ -7,6 +7,7 @@ from .utils import (
     addItem,
     populateMenu,
     populateMenuBar,
+    clearMenuBar,
     setMainWindow,
     user_is_present,
     notify,
