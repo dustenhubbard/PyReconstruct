@@ -130,6 +130,22 @@ jobs:
         # error). Without that distinction a crash produces an empty report and
         # a summary reading "0 errors", which is the most misleading thing a
         # reporting-only job can say. It still does not fail the build.
+        #
+        # One exit code below that threshold is not mypy's at all. `status` is
+        # the exit of the whole `uv run` wrapper, and uv exits 1 when it cannot
+        # build the environment: a yanked or withdrawn `mypy==2.3.0`, mypy
+        # missing from it, a resolution refused with the network disabled. That
+        # text carries no `: error:` line, so `errors` comes back 0 and exit 1
+        # on its own is indistinguishable from the normal case. The two are
+        # separable anyway, because mypy exits 1 only when it found errors and
+        # every one of those prints a `: error:` line even under
+        # `--no-error-summary`: `status` 1 with `errors` 0 is self-contradictory
+        # for a real run and can only mean the wrapper never reached mypy. The
+        # condition below reads it as a non-run. It is worth guarding because
+        # the pin is genuinely re-resolved every time: it lives only in the
+        # `--with` string and in the Makefile, never in `uv.lock`, so `--frozen`
+        # does not cover it and it sits outside setup-uv's `uv.lock` cache key.
+        # (An unreachable index exits 2 and was already caught.)
         run: |
           # `set +e` on purpose. Actions runs `run:` under `bash -eo pipefail`,
           # so without this the step would abort the instant mypy exits 1, which
@@ -141,8 +157,8 @@ jobs:
           status=$?
           errors=$(grep -c ': error:' mypy-report.txt || true)
           files=$(grep ': error:' mypy-report.txt | cut -d: -f1 | sort -u | wc -l | tr -d ' ')
-          if [ "$status" -ge 2 ]; then
-            headline="mypy did not run to completion (exit ${status}). The counts below mean nothing."
+          if [ "$status" -ge 2 ] || { [ "$status" -eq 1 ] && [ "$errors" -eq 0 ]; }; then
+            headline="mypy did not run to completion (exit ${status}, ${errors} errors parsed). The counts below mean nothing."
           else
             headline="**${errors} errors in ${files} files.** Baseline when this job landed: 218 in 17."
           fi
