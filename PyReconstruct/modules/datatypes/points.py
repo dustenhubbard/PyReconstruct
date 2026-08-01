@@ -62,7 +62,7 @@ class Points:
 
     def __add__(self, other_points) -> None:
 
-        if isinstance(other_points, tuple or list):
+        if isinstance(other_points, (tuple, list)):
 
             self.points.append(other_points)
 
