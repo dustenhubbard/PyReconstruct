@@ -7,7 +7,6 @@ from .main_imports import *
 
 from PyReconstruct.modules.datatypes.series import SeriesOpenError
 from PyReconstruct.modules.backend.func.window_geometry import (
-    DEFAULT_SCREEN_FRACTION,
     default_window_rect,
     window_geometry_is_usable,
 )
