@@ -45,8 +45,6 @@ pytestmark = pytest.mark.gui
 
 
 from tests.test_data_lists_real_widget import (  # noqa: E402
-    StubListManager,
-    TRACE_SECTION,
     flag_table,  # noqa: F401  (fixture)
     list_mainwindow,  # noqa: F401  (fixture)
     trace_table,  # noqa: F401  (fixture)
@@ -97,8 +95,8 @@ def test_flag_list_still_maps_every_live_row_after_shrinking(flag_table):  # noq
         assert flag_table.getSelected(single=True).name == ONE_FLAG_RE
 
 
-def test_flag_list_stays_in_sync_across_a_shrink_then_a_section_update(  # noqa: F811
-    flag_table,
+def test_flag_list_stays_in_sync_across_a_shrink_then_a_section_update(
+    flag_table,  # noqa: F811
 ):
     """``updateData`` after a shrink: still one entry per row.
 
