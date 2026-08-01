@@ -1,22 +1,34 @@
 """Reset Defaults in ``Series > Options`` must move the sliders too.
 
 ``AllOptionsDialog.resetDefaults`` clears the tabs and calls
-``createWidgets(use_defaults=True)``. Every option in that method threads the
-flag through to ``series.getOption(name, use_defaults)``, which returns the
-shipped default instead of the stored value. Three did not: the 3D XY
-resolution slider (``3D_xy_res``), the scale bar size slider
-(``scale_bar_width``) and the CPU usage slider (``cpu_max``). They read the
-stored value unconditionally, so pressing Reset Defaults rebuilt the dialog
+``createWidgets(use_defaults=True)``. An option that threads the flag through to
+``series.getOption(name, use_defaults)`` comes back at the shipped default
+instead of the stored value. Nine display-path reads did not thread it. Three
+are fixed here: the 3D XY resolution slider (``3D_xy_res``), the scale bar size
+slider (``scale_bar_width``) and the CPU usage slider (``cpu_max``). They read
+the stored value unconditionally, so pressing Reset Defaults rebuilt the dialog
 with those three sliders sitting exactly where the user had left them.
+
+The other six are ``trace_mode``, ``sampling_frame_grid``,
+``smoothing_iterations``, ``screenshot_res``, ``theme`` and
+``series_code_pattern``. They still do not reset after this change and are the
+subject of a separate branch (``fix/options-reset-non-sliders``). The tenth
+bare read, ``theme`` inside the ``setOption`` closure, is correctly a
+current-value read and is not a defect.
 
 These tests drive the real dialog against a real series and read the slider
 values back through the widgets themselves, so the assertion is on what the
 user sees rather than on the argument list.
 
 Also here because it is the same surface: ``determine_cpus`` multiplies by
-``os.cpu_count()``, which Python documents as possibly returning ``None``. The
-CPU slider's readout calls it while the dialog is being built, so a ``None``
-would raise on open rather than at conversion time.
+``os.cpu_count()``, which Python documents as possibly returning ``None``.
+Building the dialog does not call it. ``all_options.py`` does not import the
+name, and the only caller is the image-to-zarr conversion in ``MainWindow``,
+which is where a ``None`` raises today. The guard is kept anyway because the
+slider readout branch (``feat/slider-readout``) imports ``determine_cpus`` into
+``all_options.py`` and calls it from ``cpuSliderReadout``, which does run while
+the dialog is built. So it is a prerequisite for that branch rather than a fix
+for a crash reachable on open here.
 """
 import os
 import shutil
@@ -126,8 +138,12 @@ def test_determine_cpus_survives_cpu_count_none(monkeypatch):
 
 
 def test_options_dialog_opens_when_cpu_count_is_none(qapp, tmp_path, monkeypatch):
-    """The CPU section is built at dialog-open time, so a None cpu count must
-    not stop Series > Options from opening."""
+    """A None cpu count must not stop Series > Options from opening.
+
+    This passes without the guard too, because the dialog never calls
+    ``determine_cpus`` (see the module docstring). It is a regression guard for
+    the slider readout branch, which does call it during the build.
+    """
     from PyReconstruct.modules.backend.func import utils
 
     monkeypatch.setattr(utils.os, "cpu_count", lambda: None)
