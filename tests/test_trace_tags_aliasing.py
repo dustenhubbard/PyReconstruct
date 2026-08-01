@@ -25,8 +25,6 @@ clipboard.
 Fix: ``new_trace.tags = set(tags)``, inside the method, so every caller gets the
 guarantee without having to know about it.
 """
-import pytest
-
 from PyReconstruct.modules.datatypes import Trace
 from PyReconstruct.modules.datatypes.section import Section
 
