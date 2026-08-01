@@ -417,7 +417,15 @@ def get_context_menu_list_obj(self, list_ops=None):
             "text": "Object attributes",
             "opts":
             [
-                ("sethosts_act", "Set hosts...", "", self.setHosts),
+                # The series form binds the user-configurable key looked up by
+                # act_name (default Ctrl+Shift+H). This passed `""` until now,
+                # so the default and the shortcuts-dialog row it has always had
+                # bound nothing. Nobody reported it because `resetShortcuts`
+                # writes onto the built QAction, repairing the key for anyone
+                # who opened that dialog until the next `createContextMenus`
+                # re-applied the `""`. Same form as `addobjto3D_act` above,
+                # this menu's other keyed action.
+                ("sethosts_act", "Set hosts...", self.series, self.setHosts),
                 ("clearhosts_act", "Clear hosts", "", self.clearHosts),
                 ("displayhosts_act", "Show host tree", "", self.displayHostTree),
                 ("displayinhabitants_act", "Show inhabitant tree", "", lambda : self.displayHostTree(False)),

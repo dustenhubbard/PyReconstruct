@@ -220,12 +220,11 @@ def test_the_field_object_menu_keeps_add_and_remove_reachable(main_window):
     assert _cpp(paths["3D > Remove from scene"]) == wanted_remove
 
 
-# `sethosts_act` has a default of `Ctrl+Shift+H` in `default_settings.py` and an
-# editable row in the shortcuts dialog, but `get_context_menu_list_trace` builds
-# it with `""` instead of `self.series`, so the action ships with no shortcut and
-# the key does nothing. Pinned by its own test below rather than fixed here:
-# giving it the key it was configured for is a user-visible change.
-KNOWN_UNAPPLIED_SHORTCUTS = {"sethosts_act"}
+# Every option-backed action now applies the key its option holds. `sethosts_act`
+# was the last exemption: it was built with `""` in `get_context_menu_list_obj`,
+# so its `Ctrl+Shift+H` default and its shortcuts-dialog row bound nothing. It
+# passes the series now, and the test below covers it from a cold store.
+KNOWN_UNAPPLIED_SHORTCUTS = set()
 
 
 def _configurable_actions(window):
@@ -273,28 +272,37 @@ def test_every_configurable_action_carries_the_shortcut_its_option_holds(
     assert mismatched == {}
 
 
-def test_set_hosts_ships_without_the_shortcut_it_is_configured_for(
+def test_set_hosts_carries_its_shortcut_from_a_cold_settings_store(
     main_window, local_series_settings
 ):
-    """`Set hosts...` has a configured key that the menu never applies.
+    """`Set hosts...` binds `Ctrl+Shift+H` with nothing stored and no dialog.
 
-    Found by the test above, and the exact shape of the affordance problem: the
-    option exists (`Ctrl+Shift+H`), the shortcuts dialog offers an editable row
-    for it, and the action is built with `""`, so the key does nothing until the
-    user opens that dialog and presses OK. `resetShortcuts` is what repairs it,
-    which is why the second half here passes.
+    The regression this pins is specifically a COLD one. `sethosts_act` was
+    built with `""`, so its key was dead on a fresh install. But
+    `resetShortcuts` writes straight onto the built QAction, so anyone who
+    opened the shortcuts dialog and pressed OK repaired it in passing and could
+    never reproduce the report. The repair lasted until the next
+    `createContextMenus`, which re-applied the `""`.
 
-    Recorded rather than fixed: making a configured key start working is a
-    user-visible change and this is a test change. `Ctrl+Shift+H` is unclaimed
-    elsewhere in this window (the 3D scene popup hardcodes it for
-    `organize_act`, a different window), so nothing collides.
+    So this asserts the state a new user actually gets: an empty
+    `DictSettingsStore` (the option resolves to its default, nothing stored),
+    menus built by the real `createContextMenus`, and no dialog anywhere in the
+    path. Reverting the one-word fix fails the first assertion, not the second.
+
+    `Ctrl+Shift+H` is unclaimed elsewhere in this window (the 3D scene popup
+    hardcodes it for `organize_act`, a different top-level window), so binding
+    it here makes no ambiguous pair.
     """
-    series = local_series_settings(main_window)
+    series = local_series_settings(main_window)  # cold store + real menu rebuild
 
+    assert main_window.sethosts_act.shortcut() == QKeySequence("Ctrl+Shift+H"), (
+        "Set hosts... does not carry its default key from a cold store; the "
+        "construction site in get_context_menu_list_obj is passing '' again"
+    )
     assert series.getOption("sethosts_act") == "Ctrl+Shift+H"
-    assert main_window.sethosts_act.shortcut().toString() == ""
 
-    main_window.resetShortcuts()
+    # and it survives the rebuild that used to wipe the dialog's repair
+    main_window.createContextMenus()
 
     assert main_window.sethosts_act.shortcut() == QKeySequence("Ctrl+Shift+H")
 
