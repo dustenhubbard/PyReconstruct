@@ -96,6 +96,7 @@ default_settings = {
     "inccon_act": "]",
     "blend_act": "Space",
     "toggleztraces_act": "",  # checkable "Show z-traces"; no default key
+    "homeview_act": "Home",
     "selectall_act": "Ctrl+A",
     "deselect_act": "Ctrl+D",
     # Third member of the selection trio, so it wants to sit beside Ctrl+A and

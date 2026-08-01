@@ -29,9 +29,9 @@ this one.
 One name is grandfathered in ``KNOWN_UNAPPLIED``, with the reason and the open
 question for it. ``test_known_unapplied_registry_is_current`` fails if it starts
 working, so the entry is deleted by whoever fixes it rather than rotting into a
-permanent exemption. ``homeview_act`` was the second entry and was retired the
-other way: it is now a fixed key like the other three the guide names, with no
-settings default and no editable dialog row, so the sweep no longer sees it.
+permanent exemption. ``homeview_act`` was the second entry and is retired here:
+its menu tuple in ``menubar.py`` now passes the series instead of the literal
+``"Home"``, so the sweep covers it like every other configurable key.
 
 Settings scoping, and why it is not optional. ``Series.getOption`` writes the
 default back into the settings store on a miss, and the production store is
@@ -256,10 +256,10 @@ def test_menu_actions_honor_a_user_configured_shortcut(qapp, scoped_series, menu
 
     The sentinel keys are the mechanism of the test. Comparing against the
     shipped default would pass for an action whose menu tuple hardcodes a copy of
-    that default, which is exactly how ``homeview_act`` hid for two years while
-    carrying an editable dialog row that never bound anything. Setting the option
-    to something no source file contains means only a real ``getOption`` lookup
-    can produce the expected value.
+    that default, which is exactly how ``homeview_act`` hid for two years and
+    five months while carrying an editable dialog row that never bound anything.
+    Setting the option to something no source file contains means only a real
+    ``getOption`` lookup can produce the expected value.
     """
     names = _configurable()
     sentinels = _sentinels(names)

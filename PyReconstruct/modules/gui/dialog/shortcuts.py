@@ -155,7 +155,7 @@ help_shortcuts = [
     ("deccon_act", "Decrease contrast"),
     ("inccon_act", "Increase contrast"),
     ("blend_act", "Section blend"),
-    ("Home", "Set view to image"),
+    ("homeview_act", "Set view to image"),
     None,
     "Field Interactions",
     ("selectall_act", "Select all traces on section"),

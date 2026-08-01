@@ -580,40 +580,95 @@ def test_the_dialog_refuses_a_sequence_a_static_action_already_owns(
         dialog.deleteLater()
 
 
-def test_home_is_a_fixed_key_and_is_reserved_like_the_other_fixed_keys(
-    main_window, monkeypatch
+def test_rebinding_home_survives_the_next_menubar_rebuild(
+    main_window, local_series_settings
 ):
-    """`Home` is fixed, so nothing may be rebound onto it.
+    """A rebind of `Home` must still be there after `createMenuBar` runs again.
 
-    `docs/USER_GUIDE.md` names four fixed menu shortcuts: `PgUp`/`PgDown`,
-    `Home`, `Ctrl+\\` and `?`. Three of them are fixed the way this codebase
-    makes a key fixed, by writing it into the `menubar.py` action tuple and
-    giving it no entry in `default_settings.py` and no editable dialog row.
-    `Home` used to have both, which made it the one fixed key the dialog offered
-    to rebind, and `newAction` overwrote any such rebind on the next
-    `createMenuBar` call.
+    `homeview_act` has had a `default_settings.py` entry and an editable dialog
+    row since `2cea11bd`, but that commit left its `menubar.py` tuple carrying
+    the literal `"Home"` while converting 44 others to pass the series. Of the 53
+    defaults it added, `homeview_act` was the only menu-tuple action to get a
+    default and keep its literal. `newAction` takes the string branch for a
+    literal, so every rebind was stored and then overwritten on the next
+    `createMenuBar`, which runs on every series open.
 
-    The half of that with teeth was collision detection. `accept` reserves the
-    sequences held by actions it cannot edit; while `homeview_act` sat in
-    `act_widgets` its `Home` was treated as editable and never reserved, so the
-    dialog would accept `Home` for a second action. Combined with
-    `test_two_actions_sharing_a_sequence_fire_neither`, that cost the user both
-    keys, and the menubar literal meant `Home` came back on the next rebuild
-    anyway.
+    Passing the series takes the `kbd.getOption(act_name)` branch instead, which
+    is what the other configurable keys in this file already do.
     """
-    from PyReconstruct.modules.datatypes import Series
+    series = local_series_settings(main_window)
+
+    assert main_window.homeview_act.shortcut().toString() == "Home", (
+        "the shipped default should still bind Home out of the box"
+    )
+
+    series.setOption("homeview_act", "Ctrl+Alt+F9")
+    main_window.resetShortcuts()
+    main_window.createMenuBar()
+
+    assert main_window.homeview_act.shortcut() == QKeySequence("Ctrl+Alt+F9"), (
+        "the menubar literal is still overwriting the user's choice"
+    )
+
+
+def test_moving_home_off_its_action_frees_it_for_another_command(
+    main_window, local_series_settings, monkeypatch
+):
+    """Move `homeview_act` elsewhere, give `Home` away, and keep both keys.
+
+    This is the end-to-end failure the literal caused. `accept` reserves each
+    editable row as it walks them, so `Home` is refused for a second command
+    while `homeview_act` still holds it, and released once it does not. Before
+    the conversion the release was a trap: the dialog accepted the reassignment,
+    then `createMenuBar` put the literal `Home` back on `homeview_act`, so two
+    actions held `Home` and (see
+    `test_two_actions_sharing_a_sequence_fire_neither`) neither fired. The user
+    lost the command they had just bound as well as the one they moved.
+    """
     from PyReconstruct.modules.gui.dialog import ShortcutsDialog
     from PyReconstruct.modules.gui.dialog import shortcuts as shortcuts_module
 
-    assert "homeview_act" not in Series.qsettings_defaults, (
-        "a fixed key must not carry a settings default; see this test's docstring"
-    )
-    assert "homeview_act" not in _shortcut_rows(), (
-        "a fixed key must not get an editable row in the shortcuts dialog"
+    series = local_series_settings(main_window)
+
+    notices = []
+    monkeypatch.setattr(
+        shortcuts_module, "notify",
+        lambda message, *args, **kwargs: notices.append(message),
     )
 
-    static = main_window.homeview_act.shortcut()
-    assert static.toString() == "Home", "the menubar no longer binds Home"
+    dialog = ShortcutsDialog(main_window, series)
+    try:
+        assert "homeview_act" in dialog.act_widgets, (
+            "Home is configurable, so it must have an editable row"
+        )
+
+        dialog.act_widgets["homeview_act"].setKeySequence(
+            QKeySequence("Ctrl+Alt+F9")
+        )
+        dialog.act_widgets["goto_act"].setKeySequence(QKeySequence("Home"))
+        dialog.accept()
+
+        assert notices == [], "Home is free once its own row gives it up"
+        assert dialog.result() == 1
+
+        for name, widget in dialog.act_widgets.items():
+            series.setOption(name, widget.keySequence().toString())
+    finally:
+        dialog.deleteLater()
+
+    main_window.resetShortcuts()
+    main_window.createMenuBar()
+
+    assert main_window.goto_act.shortcut() == QKeySequence("Home")
+    assert main_window.homeview_act.shortcut() == QKeySequence("Ctrl+Alt+F9")
+
+
+def test_home_is_still_reserved_while_its_own_row_holds_it(
+    main_window, monkeypatch
+):
+    """The duplicate check covers `Home` like any other configurable key."""
+    from PyReconstruct.modules.gui.dialog import ShortcutsDialog
+    from PyReconstruct.modules.gui.dialog import shortcuts as shortcuts_module
 
     notices = []
     monkeypatch.setattr(
@@ -623,9 +678,7 @@ def test_home_is_a_fixed_key_and_is_reserved_like_the_other_fixed_keys(
 
     dialog = ShortcutsDialog(main_window, main_window.series)
     try:
-        assert "homeview_act" not in dialog.act_widgets
-
-        dialog.act_widgets["goto_act"].setKeySequence(static)
+        dialog.act_widgets["goto_act"].setKeySequence(QKeySequence("Home"))
         dialog.accept()
 
         assert len(notices) == 1
