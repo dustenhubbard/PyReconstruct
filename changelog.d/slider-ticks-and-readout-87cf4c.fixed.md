@@ -9,7 +9,7 @@
   the worker count on the label is the worker count that will start. **Scale bar
   size** reads as a percentage of the field width and **XY Resolution** in the 3D
   section as the percentage of the way from the coarsest voxel to the finest. All
-  of them carry tick marks now, so the distance the handle has travelled is
+  of them carry tick marks now, so the distance the handle has traveled is
   readable at a glance, and so does the **Overlap threshold** slider in the series
   import dialog, which already showed its number.
 
