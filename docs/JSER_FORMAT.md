@@ -1109,7 +1109,7 @@ removal of traces with fewer than two points.
 
 The old behavior was not stable, which is why it was worth changing. A `.jser` opened and
 saved without touching the section round-tripped the stale `true` byte for byte, but the
-first save that took the section back through the model wrote `false` — so the flag
+first save that took the section back through the model wrote `false`. The flag therefore
 flipped at an unpredictable later save rather than never, and a byte-level diff showed a
 change no edit accounts for. A generator writing `closed: true` on a two-point row should
 expect it to come back as `false`.
