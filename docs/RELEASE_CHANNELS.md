@@ -14,16 +14,28 @@ The Beta channel also skips any release under the legacy `ROLLING_TAG`
 (`prerelease`), which no longer gets published but is excluded as defense in
 depth for old clients.
 
-Ordering is by parsed version, using [PEP 440](https://peps.python.org/pep-0440/)
-semantics, and not by the order GitHub lists releases in. So a re-published or
-out-of-order tag cannot mis-select an update:
+Selection is by the order GitHub lists releases in. `pick_release` walks the
+list the API returned, in that order, and takes the first release matching the
+channel; no version is parsed to get there. So a re-published or out-of-order
+tag can mis-select. [PEP 440](https://peps.python.org/pep-0440/) semantics come
+in one step later, comparing the version of the *already selected* build against
+the installed one:
 
 ```
 1.21.0b1 < 1.21.0b2 < 1.21.0rc1 < 1.21.0
 ```
 
-A final release with no pre-release suffix outranks every pre-release of the same
-version, so once `v1.21.0` ships, both channels offer it.
+That comparison is what labels the offer newer, same or older, so an
+out-of-order pick surfaces as a visible "Downgrade" prompt rather than a silent
+regression.
+
+A final release with no pre-release suffix outranks every pre-release of the
+same version, but that ranking is never reached across channels: the Beta
+channel only ever considers releases flagged pre-release, and a stable is not
+one. So once `v1.21.0` ships the Stable channel moves to it, while the Beta
+channel keeps offering `v1.21.0-beta-7` until a newer pre-release supersedes it
+or the betas are pruned by hand (see [Pruning is skipped for a staged
+draft](#pruning-is-skipped-for-a-staged-draft)).
 
 Switching from Beta back to Stable is safe at any time. The updater never
 installs anything without being told to. If you are running a beta that is newer
@@ -145,9 +157,15 @@ gh release delete v1.21.0-beta-1 --cleanup-tag --yes
 ```
 
 Otherwise a Beta-channel user keeps being offered `v1.21.0-beta-7` alongside the
-stable `v1.21.0`. The PEP 440 ordering means the stable wins on the Stable
-channel regardless, but the stale betas stay visible on the Releases page and on
-the Beta channel until the next pre-release supersedes them.
+stable `v1.21.0`. The Stable channel is unaffected either way, since it never
+considers a pre-release-flagged release, but the stale betas stay visible on the
+Releases page and on the Beta channel until the next pre-release supersedes
+them.
+
+Pruning does not move a Beta user onto the stable either: with the betas gone
+the Beta channel has no candidate at all and the check reports nothing
+available, until the next pre-release is cut. Switching to Stable under
+**Series ▸ Options ▸ Update channel** is what offers them `v1.21.0`.
 
 ## Notes
 
