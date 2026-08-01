@@ -624,7 +624,16 @@ def checkMag(s_series, o_series):
 
 def importHistoryWarning(s_series, o_series):
     """The warning to show before an import that asked for the history check
-    but cannot use it. None when the history check will work.
+    but cannot use it. None when `last_shared_index >= 0`.
+
+    That is not the same as "None when the history check will work". The gate in
+    `Section.importTraces` is `not complete_match and last_shared_index >= 0`,
+    so two identical non-empty logs skip the history block as well, and this
+    function stays silent there. Covering that would mean warning on every
+    import of two copies whose logs match, which is a false alarm when they
+    genuinely have not diverged; the logs alone do not separate that from two
+    sides trimmed to the same prefix. Deliberately left, and pinned in
+    `test_no_warning_when_the_two_logs_are_identical`.
 
     "Check history" compares the two series' logs, keeps their longest matching
     opening run, and treats everything after it as work done since the copies

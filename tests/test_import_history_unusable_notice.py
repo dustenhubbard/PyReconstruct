@@ -213,9 +213,21 @@ def test_no_warning_when_the_logs_share_an_opening_run():
 
 
 def test_no_warning_when_the_two_logs_are_identical():
-    """Identical logs share their whole length, so the divergence point is
-    real. Nothing was recorded after it, which is an answer rather than a
-    failure, and it must not produce a warning."""
+    """Identical logs reach `last_shared_index >= 0`, so no warning is returned.
+
+    This pins current behavior rather than endorsing it. Identical logs also set
+    `complete_match`, and the gate in `Section.importTraces` is
+    `not complete_match and last_shared_index >= 0`, so the history block is
+    skipped here too and nothing says so. That is the same silent skip this
+    module exists to report, reached by a second path, and it is not covered:
+    `importHistoryWarning` tests only `last_shared_index`.
+
+    It is left rather than fixed because warning on every identical-log import
+    would be a false alarm on copies that genuinely have not diverged, where a
+    plain union is the right answer. The logs alone do not separate that from
+    two sides trimmed to the same prefix by `LogSet.exportLogHistory`, which is
+    the case where the content diverged after the cut and nothing is said.
+    """
     shared = [logLine("seed", 1, "Modify trace(s)")]
 
     assert importHistoryWarning(stubSeries(shared), stubSeries(shared)) is None
