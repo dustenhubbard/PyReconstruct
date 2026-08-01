@@ -2,7 +2,6 @@
 
 from typing import Union
 
-import numpy as np
 
 from PyReconstruct.modules.calc import traceGeometry
 
@@ -420,7 +419,6 @@ class SeriesData():
     def getSurfaceArea(self, obj_name: str) -> float:
         """Get the surface area of an object."""
 
-        from PyReconstruct.modules.backend.volume.export_volumes import get_3D_mesh
 
         pass
 

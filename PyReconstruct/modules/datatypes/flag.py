@@ -1,4 +1,3 @@
-from datetime import datetime
 import random
 
 from PyReconstruct.modules.constants import getDateTime
