@@ -36,7 +36,6 @@ reaches a section the user did not save.
 import hashlib
 import json
 import os
-import shutil
 
 import pytest
 
