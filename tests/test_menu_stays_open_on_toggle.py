@@ -333,11 +333,20 @@ def test_the_shortcut_for_a_checkable_row_still_fires_its_handler(
     The `(series, "checkbox")` form of the third tuple element is what lets a
     toggle be a checkbox and keep a user-configurable key. The change under test
     is on the mouse path only, and this is what says so.
+
+    `Qt::WindowShortcut` resolves against `QApplication.activeWindow()`. On the
+    offscreen platform, after many preceding window create/show/close cycles (one
+    per test), the application has no active window when this test's fixture
+    builds a new one. `activateWindow()` sets it explicitly so the shortcut
+    dispatch is deterministic regardless of run order.
     """
     field = main_window.field
     action = main_window.hideimage_act
     sequence = action.shortcut()
     assert not sequence.isEmpty(), "'Hide image' lost its configurable shortcut"
+
+    main_window.activateWindow()
+    QApplication.processEvents()
 
     before = field.hide_image
     QTest.keySequence(main_window, sequence)
