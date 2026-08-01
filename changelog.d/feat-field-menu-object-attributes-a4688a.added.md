@@ -5,5 +5,5 @@
   beta-5 tester reported. The object list has carried it as its first row since
   the menu redesign; this brings the field into line. Both rows run the same
   handler, so the field copy edits the objects owning the selected traces and
-  greys out when no traces are selected. `Object >` keeps its own copy, exactly
+  grays out when no traces are selected. `Object >` keeps its own copy, exactly
   as `Trace >` keeps "Edit trace attributes...", and no keyboard shortcut moved.
