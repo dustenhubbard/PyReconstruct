@@ -108,21 +108,25 @@ def _redirect_qsettings():
 _REAL_QSETTINGS = _redirect_qsettings()
 
 
-@atexit.register
 def _drop_scratch_settings():
-    """Empty every throwaway domain this run wrote, per-series scopes included.
+    """Empty every throwaway domain, per-series scopes included.
 
     Both scopes are swept, not just the global one: a profiling run reads
     per-series options too, and each lands in its own file.
 
-    The order matters and so does the honest limit. Each domain is cleared
-    through QSettings first, because removing the file alone does not remove the
-    values: the platform store buffers, and a `defaults delete` reports success
-    while leaving the file on disk for the same reason. The file removal after it
-    is best effort, and on macOS it usually does not stick, since the store
-    rewrites an empty plist at process teardown. So what this guarantees is that
-    no value survives the run, not that no file does. The domain name is fixed,
-    so those empty files are reused rather than accumulating.
+    Run at import as well as at exit, and the pairing is the point rather than
+    belt and braces. Cleanup at exit alone does not hold on macOS: the platform
+    store buffers, so it can flush a copy of the values back to disk after the
+    process has removed the file, and a `defaults delete` reports success while
+    leaving the file for the same reason. Measured, not assumed: a run that
+    cleared, synced and unlinked still left its keys on disk afterward. What
+    holds is the sweep at the start of the next run, which is why this is not
+    only an exit hook.
+
+    So the honest guarantee is narrow and worth stating: the real domain is
+    never addressed, and no scratch value is visible to a profiling run. A
+    scratch plist can survive between runs. The domain name is fixed rather than
+    per-process so those files are reused instead of accumulating.
 
     clear() is safe here in a way it is not on the real domain: nothing but this
     script ever writes these names.
@@ -147,6 +151,11 @@ def _drop_scratch_settings():
             os.remove(path)
         except OSError:
             pass
+
+
+_drop_scratch_settings()            # anything a previous run left behind
+atexit.register(_drop_scratch_settings)
+
 
 W, H = 1600, 1000
 
