@@ -1,36 +1,55 @@
-"""Regression tests for Points.__add__'s isinstance check.
+"""Pin the argument contract of ``Points.__add__``.
 
-The check read ``isinstance(other_points, tuple or list)``. Python evaluates
-``tuple or list`` to ``tuple`` before isinstance runs, so a list argument fell
-through to the else branch and was spliced in with ``+=``: a single point
-passed as ``[x, y]`` corrupted the coordinate list with two bare scalars
-instead of being appended as one point. Latent today -- nothing in the tree
-applies ``+`` to a Points -- but a trap for the next caller. The check now
-reads ``isinstance(other_points, (tuple, list))``.
+The check used to read ``isinstance(other_points, tuple or list)``. Python
+evaluates ``tuple or list`` to ``tuple`` before isinstance runs, so the branch
+was always tuple-only. That spelling is wrong -- it names ``list`` and then
+ignores it -- but the behaviour it produced is the one the module's own type
+aliases ask for: ``Point = Tuple[Coordinate, Coordinate]`` and
+``PointSeq = List[Point]``, so a tuple is one point and a list is a sequence of
+points. The check now reads ``isinstance(other_points, tuple)``, which says the
+same thing on purpose. No argument shape changes behaviour.
 
-Note the trap in testing this: ``tuple or list`` still accepts a tuple, so a
-tuple-only test passes against the bug. The list case is the regression test.
+These tests exist to stop the obvious "tidy-up" -- rewriting the check to
+``isinstance(other_points, (tuple, list))`` -- which looks like a fix for the
+bad spelling but routes every list to ``append``, so a ``PointSeq`` gets nested
+inside the coordinate list as though it were one point.
+``test_add_point_seq_extends`` is the test that catches that.
+
+``__add__`` is annotated ``-> None`` and mutates in place, so the only call form
+that works is the bare statement ``p + x``; ``p = p + x`` would rebind ``p`` to
+None. That is a separate design wart, tracked separately, not touched here.
 """
 from PyReconstruct.modules.datatypes.points import Points
 
 
-def test_add_list_point_appends_as_one_point():
-    # Failed before the fix: [2, 2] was spliced to ...(1, 1), 2, 2
-    p = Points([(0, 0), (1, 1)], closed=False)
-    p + [2, 2]
-    assert p.points == [(0, 0), (1, 1), [2, 2]]
-
-
-def test_add_list_point_does_not_splice_scalars():
-    # The exact corruption the bug produced: bare scalars in the point list.
-    p = Points([(0, 0), (1, 1)], closed=False)
-    p + [2, 2]
-    assert 2 not in p.points
-
-
-def test_add_tuple_point_appends_as_one_point():
-    # Passed before and after the fix (tuple satisfied the broken check too);
-    # kept so the tuple branch has coverage of its own.
+def test_add_tuple_appends_as_one_point():
+    # Point is a Tuple, so a tuple argument is a single point.
     p = Points([(0, 0), (1, 1)], closed=False)
     p + (2, 2)
     assert p.points == [(0, 0), (1, 1), (2, 2)]
+
+
+def test_add_point_seq_extends():
+    # PointSeq is a List[Point], so a list argument is a sequence of points and
+    # extends. This is the case that breaks if the check is widened to
+    # (tuple, list): the whole list would be appended as one nested element.
+    p = Points([(0, 0), (1, 1)], closed=False)
+    p + [(3, 3), (4, 4)]
+    assert p.points == [(0, 0), (1, 1), (3, 3), (4, 4)]
+
+
+def test_add_single_point_written_as_a_list_is_not_a_point():
+    # Documents the sharp edge rather than papering over it. A list is read as
+    # a sequence, so [2, 2] is read as two malformed points and splices two
+    # bare scalars in. One point must be written as a tuple.
+    p = Points([(0, 0), (1, 1)], closed=False)
+    p + [2, 2]
+    assert p.points == [(0, 0), (1, 1), 2, 2]
+
+
+def test_add_tuple_of_points_is_appended_whole():
+    # The mirror sharp edge, unchanged by any spelling of the check: a tuple is
+    # always one point, so a tuple *of* points nests rather than extending.
+    p = Points([(0, 0), (1, 1)], closed=False)
+    p + ((3, 3), (4, 4))
+    assert p.points == [(0, 0), (1, 1), ((3, 3), (4, 4))]
