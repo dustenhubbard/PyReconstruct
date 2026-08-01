@@ -181,18 +181,28 @@ def test_the_two_widths_from_the_report_no_longer_render_the_same_bar(
 # ------------------------------------------------- conservative where it counts
 
 @pytest.mark.parametrize("pct, scale, expected_px, expected_label", [
-    (25, 0.004, 250, "1 µm"),      # l = 1 µm exactly: a rung on both ladders
+    (25, 0.004, 250, "1 µm"),      # l = 1 µm exactly
+    (25, 0.01, 250, "2.5 µm"),     # l = 2.5 µm exactly
     (25, 0.02, 250, "5 µm"),       # l = 5 µm exactly
     (100, 0.01, 1000, "10 µm"),    # l = 10 µm exactly
-    (50, 0.04, 500, "20 µm"),      # l = 20 µm exactly
 ])
 def test_a_width_that_already_landed_on_a_rung_is_untouched(
     app, monkeypatch, pct, scale, expected_px, expected_label
 ):
-    """Rungs the two ladders share still render the pixel lengths they did.
+    """The four rungs the two ladders share still render the lengths they did.
 
-    The pixel figures are the ones the d0eb01a9 probe recorded. Only the label's
-    spelling moves ("1.0 µm" -> "1 µm"), which is the formatting fix below.
+    1, 2.5, 5 and 10 are the whole of the old ladder, and all four survive into
+    the new one, so a width that already landed on one draws the same number of
+    pixels it drew on d0eb01a9. The pixel figures are the ones the d0eb01a9
+    probe recorded. What moves is spelling: the bar label loses a trailing zero
+    where it had one ("1.0 µm" -> "1 µm", and "2.5 µm" is unchanged because it
+    never had one), and the tick labels lose theirs too ("1.0" -> "1"). Both are
+    the formatting fix below.
+
+    Widths that landed between the old rungs are a different matter and are not
+    pinned here: 50 % at 0.04 µm/px drew a 250 px "10 µm" bar on d0eb01a9 and
+    draws a 500 px "20 µm" bar now, because 2.0 is a rung of the new ladder and
+    was not one of the old. That is what the finer ladder is for.
     """
     bar_px, label, _ = _probe(_make_bar(pct, scale), monkeypatch)
     assert (bar_px, label) == (expected_px, expected_label)
