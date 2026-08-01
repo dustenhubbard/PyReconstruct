@@ -6,7 +6,7 @@ keyed on mtime and size. It is withdrawn, and these tests are why: the geometry
 is not a function of the section file alone.
 
 ``TraceData`` maps a trace's points through ``section.tforms[alignment]``
-(``series_data.py:172-186``), and *which* alignment that is comes from series
+(``series_data.py:148-159``), and *which* alignment that is comes from series
 state -- ``series.alignment``, or the per-object override
 ``series.getAttr(name, "alignment")``. Change the alignment and every length,
 area, centroid and radius changes while every section file on disk stays
@@ -18,7 +18,12 @@ fire only on an alignment change: ``state_manager.py:548-550`` (guarded by
 ``objects.py:189`` (the per-object ``alignment`` setter), and
 ``field_widget_4_data.py:267-281`` (``changeAlignment``, via
 ``manager.py:184``). The fourth, ``series.py:204``, runs against an empty
-``self.data`` at open. So a file-keyed skip is wrong on every path that fires.
+``self.data`` at open. So a file-keyed skip is wrong on every alignment path.
+
+``manager.py:184`` is a shared site rather than an alignment site: six call
+sites reach it with ``refresh_data=True`` and only ``changeAlignment`` is an
+alignment change. Series magnification (``field_widget_4_data.py:492``) rewrites
+every section file, so the key would be correct on that one.
 
 Measured on the ``rhhks276`` corpus, an alignment switch modifies **0 of 276**
 section files and changes **94.6%** of trace geometry; the key would have

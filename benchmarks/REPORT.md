@@ -400,7 +400,7 @@ Three refinements to the audit's framing:
    > > - **the section file is not what the geometry depends on.** `TraceData`
    > >   maps points through `section.tforms[alignment]`, and the alignment is
    > >   resolved from *series* state: `series.alignment`, or the per-object
-   > >   `series.getAttr(name, "alignment")` (`series_data.py:172-186`). Change
+   > >   `series.getAttr(name, "alignment")` (`series_data.py:148-159`). Change
    > >   the alignment and every trace's length, area, centroid and radius
    > >   change while every section file on disk stays byte-identical.
    > >   Measured on `rhhks276`: switching `d001` to `default` modifies
@@ -415,18 +415,43 @@ Three refinements to the audit's framing:
    > >   the per-object `alignment` setter; and
    > >   `field_widget_4_data.py:267-281` (`changeAlignment`) reaches
    > >   `manager.py:184`. The fourth, `series.py:204`, runs against an empty
-   > >   `self.data` at open, where there is nothing to reuse. The key is
-   > >   exactly inverted on every path that fires.
+   > >   `self.data` at open, where there is nothing to reuse.
+   > >
+   > >   `manager.py:184` is a shared site rather than an alignment site. It is
+   > >   inside `recreateTables`, which by its own comment serves "series-wide
+   > >   operations (alignment changes, imports, series undo)", and six call
+   > >   sites reach it with `refresh_data=True`. Only `changeAlignment`
+   > >   (`field_widget_4_data.py:281`) is an alignment change. Series
+   > >   magnification (`field_widget_4_data.py:492`) calls `setMag` and `save`
+   > >   on every section, so it rewrites every section file and the key would
+   > >   be correct there; `deleteSections`, `reorderSections` and
+   > >   `insertSection` (`section.py:463`, `:557`, `:597`) are the paths
+   > >   treated below; and `TableManager.refresh` (`manager.py:213`) depends on
+   > >   its caller. So the key is inverted on the alignment paths, not on every
+   > >   path that reaches this refresh.
    > >
    > > The prize itself is real. Geometry is `RH276.refresh.geomshare` (62.5%)
    > > of a refresh, against 32.0% for the parse, which is why the cache
-   > > recovered so little of the 24.7 s. But **a correct key has to include the
-   > > resolved alignment**, and once it does, the three alignment call sites
-   > > invalidate every entry by construction and hit 0%. What is left is
-   > > `deleteSections` / `insertSection` / `reorderSections`, which are rare,
-   > > and the latter two `os.rename` the section files
-   > > (`series.py:3239-3252`); rename preserves mtime and size exactly, so the
-   > > key is blind to a renumbering that changes which section a file *is*.
+   > > recovered so little of the 24.7 s. A correct key has to include the
+   > > resolved alignment, and how much that costs depends on which alignment
+   > > path fired. Measured on the checked-in `class_series` fixture, 8 objects
+   > > and 232 trace rows: a global `series.alignment` switch moves 232 of 232
+   > > rows, so an alignment-aware key hits 0% there and does invalidate every
+   > > entry by construction. The per-object override does not. It changes the
+   > > resolved alignment of one object, and every other object's entries stay
+   > > valid: 1 of 232 rows move for the smallest object (`Test1DenShaft`) and
+   > > 187 of 232 for the largest (`d03`), leaving that key hitting between
+   > > 19.4% and 99.6% depending on which object is pinned. None of the three
+   > > writes a section file, which is what disqualifies the (mtime, size) key
+   > > on all of them and is the finding this correction rests on. Whether an
+   > > alignment-aware key is worth building is a separate question, and it is
+   > > open.
+   > >
+   > > What is left beyond the alignment paths is `deleteSections` /
+   > > `insertSection` / `reorderSections`, which are rare, and the latter two
+   > > `os.rename` the section files (`series.py:3239-3252`); rename preserves
+   > > mtime and size exactly, so the key is blind to a renumbering that changes
+   > > which section a file *is*.
    > >
    > > **Not dispatched again without a different key.** Skipping geometry is
    > > still worth having; keying it on the file is not the way to get it.
