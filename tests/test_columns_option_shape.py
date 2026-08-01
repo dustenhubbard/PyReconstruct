@@ -149,3 +149,37 @@ def test_non_column_options_are_untouched():
     series = _series(small_dist=0.01, autoseg={})
     assert series.getOption("small_dist") == 0.01
     assert series.getOption("autoseg") == {}
+
+
+# ---------------------------------------------------------------------------
+# the message survives the trip to the dialog
+# ---------------------------------------------------------------------------
+
+def test_error_dialog_keeps_the_line_breaks(monkeypatch):
+    """The global hook renders the message as rich text, so `\\n` needs help.
+
+    Without this, a message that spells the expected shape and the fix out on
+    separate lines arrives as one run-on paragraph. `show_save_error` already
+    converted; the exception hook did not.
+    """
+    from PyReconstruct.modules.gui.utils import errors
+
+    shown = {}
+
+    def fake_show(summary_html, report, parent=None, title="Error"):
+        shown["summary"] = summary_html
+
+    monkeypatch.setattr(errors, "show_error_report", fake_show)
+
+    series = _series(section_columns="Thickness")
+    try:
+        series.getOption("section_columns")
+    except SeriesOptionError as err:
+        errors.customExcepthook(type(err), err, err.__traceback__)
+
+    summary = shown["summary"]
+    lead = summary.split("Click <b>Copy report")[0]
+    assert "\n" not in lead
+    assert "<br>Problem: the value is a str, not a list.<br>Value:" in lead
+    # still escaped, so a value carrying markup cannot render as markup
+    assert "&quot;section_columns&quot;" in lead

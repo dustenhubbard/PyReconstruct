@@ -10,3 +10,9 @@
   on both paths and reports the option, the expected shape, the offending value
   and the fix. It also checks the shape rather than only the type: a flat
   `["Thickness", "Locked"]` is a list and still crashed.
+
+- **The error window keeps the line breaks in a message that has them.** The
+  global exception hook renders the message as rich text and passed it through
+  without converting newlines, so anything written on several lines arrived as
+  one run-on paragraph. The handled save-error path already converted; this
+  brings the hook into line with it.
