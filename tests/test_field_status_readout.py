@@ -279,3 +279,34 @@ def test_a_paint_with_no_points_does_not_raise(main_window):
     paint_the_field(main_window)
 
     assert readout(main_window).startswith("Section: ")
+
+
+# ---- 4. pixel-level regression: stretch=0 leaves the message area visible ---
+
+def test_banner_paints(main_window, qtbot):
+    """``showMessage`` must produce a visible pixel change in the status bar.
+
+    With ``addPermanentWidget(label, stretch=1)`` the permanent widget absorbs
+    all spare width, the temporary-message area collapses to ~0 px, and
+    ``showMessage`` changes no pixels. With ``stretch=0`` the label sits at the
+    right edge and the message area is wide enough to paint normally.
+
+    This is a pixel-level regression guard: it fails with stretch=1 and passes
+    with stretch=0, so the defect cannot return silently.
+
+    The window is resized to 1200 px before the grab so the label's text
+    (≈480 px sizeHint) leaves a genuine message area on the left; at the
+    default 400 px width the readout text crowds out the message area for both
+    stretch values and the comparison yields a false pass.
+    """
+    main_window.resize(1200, 600)
+    sb = main_window.statusbar
+    QApplication.processEvents()
+    sb.repaint()
+    before = sb.grab().toImage()
+    sb.showMessage("Update available: 9.9.9", 15000)
+    # qtbot.wait() gives the event loop real time to process the repaint,
+    # which processEvents() alone does not guarantee in the offscreen platform.
+    qtbot.wait(25)
+    sb.repaint()
+    assert before != sb.grab().toImage()

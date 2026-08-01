@@ -116,9 +116,11 @@ class MainWindow(QMainWindow):
         ## and hovering a QAction with no status tip sends an empty one, which
         ## is what used to blank the readout on a trip to the menu bar.
         ## Permanent widgets are laid out to the right of the temporary-message
-        ## area, so `showMessage` notices remain visible alongside it.
+        ## area. stretch=0 keeps the label right-aligned and leaves the
+        ## temporary-message area at its natural width so showMessage notices
+        ## paint normally.
         self.status_label = QLabel()
-        self.statusbar.addPermanentWidget(self.status_label, 1)
+        self.statusbar.addPermanentWidget(self.status_label, 0)
 
         ## Open series if requested thru CLI
         if filename and Path(filename).exists():

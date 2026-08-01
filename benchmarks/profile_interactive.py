@@ -114,7 +114,7 @@ def build_stub_mainwindow():
             # updateStatusBar falls back to showMessage and measures a
             # different write.
             self.status_label = QLabel()
-            self.statusbar.addPermanentWidget(self.status_label, 1)
+            self.statusbar.addPermanentWidget(self.status_label, 0)
 
         def checkActions(self, *a, **k):
             pass
