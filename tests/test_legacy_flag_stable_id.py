@@ -38,7 +38,7 @@ import sys
 
 import pytest
 
-from PyReconstruct.modules.datatypes.flag import Flag, possible_chars
+from PyReconstruct.modules.datatypes.flag import possible_chars
 from PyReconstruct.modules.datatypes.section import Section
 from PyReconstruct.modules.datatypes.series import Series
 
