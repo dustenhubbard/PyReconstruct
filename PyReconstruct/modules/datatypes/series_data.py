@@ -416,12 +416,6 @@ class SeriesData():
         
         return v
 
-    def getSurfaceArea(self, obj_name: str) -> float:
-        """Get the surface area of an object."""
-
-
-        pass
-
     def getConfiguration(self, obj_name: str) -> Union[str, None]:
         """Get the configuration of the object.
 

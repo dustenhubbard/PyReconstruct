@@ -16,7 +16,10 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
-from .helper import MultiInput, BorderedWidget, RadioButtonGroup, resizeLineEdit
+from .helper import (
+    MultiInput, BorderedWidget, RadioButtonGroup, resizeLineEdit,
+    defaultTickInterval,
+)
 from .quick_dialog import getLayout
 from PyReconstruct.modules.gui.utils import notify, notifyConfirm
 from PyReconstruct.modules.datatypes import Series
@@ -446,6 +449,10 @@ class ImportTracesWidget(QWidget):
         slider = QSlider(Qt.Horizontal, self)
         slider.setMinimum(0)
         slider.setMaximum(100)
+        # this one already shows its value above the groove; give it the tick
+        # marks too, so the distance the handle has traveled is readable
+        slider.setTickPosition(QSlider.TicksBelow)
+        slider.setTickInterval(defaultTickInterval(0, 100))
         slider.valueChanged.connect(self.setOverlapThreshold)
         slider.setValue(50)
         cvlayout.addWidget(slider)

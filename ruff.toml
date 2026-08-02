@@ -66,10 +66,3 @@ select = ["E9", "F63", "F7", "F82", "F401", "F811"]
 # code of its own. `tests/test_shipped_python_is_linted.py` already documents it
 # as a re-export site.
 "PyReconstruct/modules/gui/main/main_imports.py" = ["F401"]
-
-# TEMPORARY. `SeriesObject.opacity_3D` is rebound by a `@mode_3D.setter`
-# decorator, which is the F811 here and is a real defect: the property has been
-# returning the 3D mode instead of the opacity. The one-line fix is already in
-# flight on `fix/seriesobject-setters`; delete this entry when that lands and the
-# rule will confirm the fix by passing.
-"PyReconstruct/modules/datatypes/objects.py" = ["F811"]
