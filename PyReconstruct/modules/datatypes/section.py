@@ -4,7 +4,7 @@ import json
 from typing import List, Union
 
 from .contour import Contour
-from .trace import Trace
+from .trace import Trace, normalizeObjectName
 from .flag import Flag
 from .transform import Transform
 from .log import LogSetPair
@@ -226,11 +226,22 @@ class Section():
         """Add missing attributes to section JSON.
 
         (Updates the dictionary in place)
-        
+
             Params:
                 section_data (dict): the JSON data to update
                 n (int): the section number
+            Returns:
+                (dict): the contour renames this call performed, old name -> new
+                    name. Empty for a section whose names already satisfy
+                    ``normalizeObjectName``, which is every section written by a
+                    build that has the rule. The caller needs this because the
+                    rename is only half done here: a series keeps an object's
+                    groups, comment, curation, user columns and hosts under the
+                    object *name*, in the series file, which this function does
+                    not see. ``Series.openJser`` repoints them.
         """
+        renamed = {}
+
         # Recorded BEFORE the back-fill loop below inserts the key, because the
         # legacy brightness/contrast migration needs to know whether the *file*
         # carried a profiles dict -- a fact that is unrecoverable once the
@@ -330,28 +341,42 @@ class Section():
         if "no-alignment" in section_data["tforms"]:
             del(section_data["tforms"]["no-alignment"])
         
-        # iterate through flags and add resolved status or section number and ID
+        # iterate through flags and add resolved status or section number and ID.
+        # The ID is DERIVED from the flag's own content, not generated: this
+        # migration runs on every unpack of a .jser whose flags predate the ID
+        # field, and a random ID there gave the same flag a different identity
+        # on every open. Flag.equals compares IDs and nothing else, so
+        # Series.importFlags deduplicated on an identity that did not survive
+        # the trip and duplicated every legacy flag it was asked to merge.
+        # See Flag.deriveID.
+        taken = set(
+            flag[0] for flag in section_data["flags"]
+            if len(flag) == 7 and isinstance(flag[0], str)
+        )
         for flag in section_data["flags"]:
             if len(flag) == 5:
                 flag.append(False)
             if len(flag) == 6:
-                flag.insert(0, Flag.generateID())
-        
+                id = Flag.deriveID([n] + flag, taken)
+                taken.add(id)
+                flag.insert(0, id)
+
         # iterate through contours and remove whitespace
         for cname in tuple(section_data["contours"].keys()):
-            
+
             ## print(f"'{cname}'")
-            cname_trimmed = cname.strip()
-            updated_cname = "_".join(cname_trimmed.split()).replace(",", "_")
-            
+            updated_cname = normalizeObjectName(cname)
+
             if cname != updated_cname:
-                
+
                 if updated_cname not in section_data["contours"]:
                     section_data["contours"][updated_cname] = []
-                    
+
                 section_data["contours"][updated_cname] += section_data["contours"][cname]
-                
+
                 del(section_data["contours"][cname])
+
+                renamed[cname] = updated_cname
 
         # Canonical key order. The back-fill loop at the top of this function
         # appends any missing key at the tail, so two sections with identical
@@ -368,6 +393,8 @@ class Section():
             ordered = {name: contours[name] for name in sorted(contours, key=str)}
             contours.clear()
             contours.update(ordered)
+
+        return renamed
 
     def getDict(self) -> dict:
         """Convert section object into a dictionary.
