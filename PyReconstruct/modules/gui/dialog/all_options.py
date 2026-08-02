@@ -259,7 +259,7 @@ class AllOptionsDialog(QDialog):
             # 3D_xy_res is a percentage: 0 puts the mesh voxel at the coarsest
             # of the section magnification and thickness, 100 at the finest.
             ["less detail (fast)",
-             ("slider", self.series.getOption("3D_xy_res"), {"suffix": "%"}),
+             ("slider", self.series.getOption("3D_xy_res", use_defaults), {"suffix": "%"}),
              "more detail (slow)"],
             [" "],
             ["3D smoothing:"],
@@ -319,7 +319,7 @@ class AllOptionsDialog(QDialog):
         # was invisible to the user and did not round trip: 60 of the 81 values
         # the option can hold came back one lower, the default of 25 included,
         # so pressing OK without touching anything narrowed the scale bar.
-        sbw = self.series.getOption("scale_bar_width")
+        sbw = self.series.getOption("scale_bar_width", use_defaults)
         structure = [
             [("check",
               ("show numbers", self.series.getOption("show_scale_bar_text", use_defaults)),
@@ -420,7 +420,7 @@ class AllOptionsDialog(QDialog):
         self.addOptionWidget("time", structure, setOption)
 
         # computational power
-        cpu_max = self.series.getOption("cpu_max")
+        cpu_max = self.series.getOption("cpu_max", use_defaults)
 
         structure = [
             ["CPU usage (image-to-zarr conversion):"],
