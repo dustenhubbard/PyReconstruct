@@ -348,6 +348,59 @@ def test_materialized_attributes_are_native_python_types():
     json.dumps(trace.getList(include_name=False))
 
 
+@BACKINGS
+def test_freeze_releases_the_growth_slack_without_changing_a_value(backing):
+    """A snapshot must not be measured as costing its allocator slack.
+
+    The columns grow by amortized doubling, so a store holding two rows can hold
+    buffers for sixty-four and the packed backing's initial capacity is 256
+    points. That is the right trade while a store is being built and the wrong one
+    for a snapshot, which is immutable after construction. Found while adapting
+    the undo-growth harness, where the slack would have dominated the figure the
+    measurement exists to produce.
+    """
+    store = SectionColumns(1, coordinates=backing())
+    rows = [store.appendRow(name="axon",
+                            points=[(float(i), 0.0), (float(i), 1.0)],
+                            color=[i, i, i], tags={"t"})
+            for i in range(3)]
+
+    before = [(store.getPoints(r), store.getColor(r), store.getTags(r)) for r in rows]
+    generation = store.generation
+    allocated = _allocated_bytes(store)
+
+    store.freeze()
+
+    assert _allocated_bytes(store) < allocated, (
+        "freeze() released nothing, so a snapshot would carry its growth slack"
+    )
+    assert store.generation == generation, "freeze() is not a mutation"
+    assert [(store.getPoints(r), store.getColor(r), store.getTags(r))
+            for r in rows] == before
+
+    ## Appending after a freeze is allowed and simply grows the columns again.
+    added = store.appendRow(name="axon", points=[(9.0, 9.0), (9.0, 8.0)], color=[1, 2, 3])
+    assert store.getPoints(added) == [(9.0, 9.0), (9.0, 8.0)]
+    assert store.rowsForContour("axon")[-1] == added
+
+
+def _allocated_bytes(store):
+    """Bytes the store's numeric buffers hold, slack included.
+
+    Reaches past the public surface on purpose: the slack is invisible through
+    `colorColumn` and friends, which return views over the live prefix, and the
+    slack is the whole subject of the test above.
+    """
+    total = store._colors._array.nbytes + store._fill_modes._array.nbytes
+    total += sum(c._array.nbytes for c in store._bools.values())
+    backing = store.coordinateBacking
+    if isinstance(backing, PackedCoordinates):
+        total += backing._array.nbytes
+    else:
+        total += sum(a.nbytes for a in backing._arrays if a is not None)
+    return total
+
+
 def test_the_columns_are_the_dtypes_the_layout_claims():
     store = SectionColumns(1)
     store.appendRow(name="axon", points=[(0.0, 0.0), (1.0, 1.0)], color=[1, 2, 3])

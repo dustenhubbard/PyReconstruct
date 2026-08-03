@@ -218,6 +218,10 @@ class SegmentedCoordinates():
     def totalPoints(self) -> int:
         return sum(len(a) for a in self._arrays if a is not None)
 
+    def freeze(self):
+        """Nothing to release: each row's array is allocated at its exact size."""
+        return
+
 
 class PackedCoordinates():
     """One `(N, 2)` float64 array per section, appended to and never inserted.
@@ -300,6 +304,17 @@ class PackedCoordinates():
         extents left by a length-changing write."""
         return self._used - self.totalPoints
 
+    def freeze(self):
+        """Release the capacity beyond `_used`. See `SectionColumns.freeze`.
+
+        Trims the tail only. Dead extents left inside `_used` by a length-changing
+        write are NOT reclaimed, because reclaiming them means moving rows and row
+        order is load-bearing. A store built by appends alone, which is what a
+        snapshot is, has none.
+        """
+        if self._used != len(self._array):
+            self._array = self._array[:self._used].copy()
+
 
 def _asCoordinateArray(points) -> np.ndarray:
     """Coerce a point sequence to a fresh `(n, 2)` float64 array.
@@ -372,6 +387,11 @@ class _NumericColumn():
         """The live prefix of the column. A view, so the capacity slack behind
         `_used` is never visible to a caller."""
         return self._array[:self._used]
+
+    def freeze(self):
+        """Release the growth slack. See `SectionColumns.freeze`."""
+        if self._used != len(self._array):
+            self._array = self._array[:self._used].copy()
 
 
 class SectionColumns():
@@ -541,6 +561,28 @@ class SectionColumns():
     def getID(self, row: int):
         """The row's id, or `None` if the store was built without an issuer."""
         return self._ids[row]
+
+    def freeze(self):
+        """Release every column's growth slack. For a store that will not grow.
+
+        The columns grow by amortized doubling, so a store holding two rows can
+        hold buffers for sixty-four, and the coordinate backing's initial capacity
+        is larger still. That slack is the right trade while a store is being
+        built and the wrong one the moment a store is a **snapshot**: a snapshot is
+        immutable after construction, and an undo state that over-allocated its
+        columns five times over would be measured as costing five times what it
+        costs.
+
+        Found while adapting the undo-growth harness, where the slack would have
+        dominated the figure the measurement exists to produce. Not a mutation: no
+        value changes, so the generation counter does not move. Appending after a
+        `freeze()` is allowed and simply grows the columns again.
+        """
+        self._colors.freeze()
+        for column in self._bools.values():
+            column.freeze()
+        self._fill_modes.freeze()
+        self._coordinates.freeze()
 
     # --- the columns themselves ----------------------------------------------
     #
