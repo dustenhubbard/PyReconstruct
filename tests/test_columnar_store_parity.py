@@ -45,7 +45,7 @@ The coordinate backing is `SegmentedCoordinates`, and it is the decided one:
 the paired undo-snapshot measurement found the per-section packed alternative
 0.32% dearer on the workload it was hypothesized to win, the A1 open-pass
 split leans the same way, and the losing backing was deleted rather than kept
-as an option. The store still reaches its backing only through the six-method
+as an option. The store still reaches its backing only through the five-method
 interface, so these tests exercise the seam a future layout would arrive
 behind.
 """
@@ -292,9 +292,10 @@ def test_the_synthetic_file_itself_carries_what_the_real_series_cannot():
     Asserted against the bytes on disk, not against anything loaded: the rows
     are positional lists (the current format, so no legacy dict migration runs
     over them), at least one coordinate is inexact at 7 decimal places, and
-    tagged, negative, hidden and single-point traces are all present. If an
-    edit to the fixture drops any of these, the parity tests below quietly
-    stop discriminating, and this census is what makes that loud instead.
+    tagged, negative, hidden and single-point traces are all present, and more
+    than one fill mode is used. If an edit to the fixture drops any of these,
+    the parity tests below quietly stop discriminating, and this census is what
+    makes that loud instead.
     """
     rows = _synthetic_rows()
     assert rows
@@ -307,6 +308,20 @@ def test_the_synthetic_file_itself_carries_what_the_real_series_cannot():
     assert any(row[4] for row in rows), "no negative trace in the fixture"
     assert any(row[5] for row in rows), "no hidden trace in the fixture"
     assert any(len(row[0]) == 1 for row in rows), "no single-point trace"
+
+    ## The fill mode is a (mode, condition) pair and the parity walk compares it
+    ## column by column, so a fixture that carried one pair everywhere would let
+    ## a store that dropped the column entirely still pass. Three pairs are
+    ## checked in (none/none x6, solid/unselected, transparent/selected), which
+    ## is the number the PR body claims, so the count is asserted rather than
+    ## the exact pairs: a re-cut is free to change which three, not free to
+    ## flatten the variety (review-248 N01).
+    fill_modes = {tuple(row[6]) for row in rows}
+    assert len(fill_modes) >= 3, (
+        f"the fixture carries only {len(fill_modes)} fill-mode pair(s), "
+        f"{sorted(fill_modes)}; the parity walk stops discriminating on that "
+        "column when they are all the same"
+    )
 
 
 def test_every_trace_of_every_synthetic_section_round_trips(synthetic_sections):
@@ -559,17 +574,27 @@ def test_the_columns_are_the_dtypes_the_layout_claims():
 
 
 ## The method surface a coordinate backing has, in the order the module docstring
-## lists it. `SectionColumns` calls exactly these six on whatever it is handed, so
-## a class carrying them is a backing whatever it is called.
-COORDINATE_BACKING_SURFACE = ("append", "get", "set", "release", "totalPoints", "freeze")
+## lists it. `SectionColumns` calls exactly these five on whatever it is handed
+## (`get` at columnar_store.py:414, `freeze` 490, `append` 570, `release` 599,
+## `set` 606), so a class carrying them is a backing whatever it is called.
+##
+## `totalPoints` was a sixth member of this tuple and is not one any more. Its
+## only consumer anywhere in the tree was `PackedCoordinates.deadPoints`, which
+## this PR deleted, so pinning it here would have made the regression net defend
+## dead code -- against this PR's own stated principle that code nobody consumes
+## is unreleased scope (review-246 F06). The property went with the tuple entry,
+## in this commit (review-248 F02).
+COORDINATE_BACKING_SURFACE = ("append", "get", "set", "release", "freeze")
 
 ## How much of that surface makes a class a backing for the purpose of the pin
-## below. Not all six, because a partial reimplementation is still a second
-## backing and would walk straight through an all-six bar. Three, because the
-## namespace has a wide gap to sit in: measured over `vars(columnar_store)`,
-## `SegmentedCoordinates` carries 6, `_NumericColumn` 2 (`append`, `freeze`), the
-## imported `Contour` 1 (`append`) and `Trace` 0. So the bar is in open space,
-## not on a boundary, and `test_the_backing_scan_sits_in_a_gap` pins that.
+## below. Not all five, because a partial reimplementation is still a second
+## backing and would walk straight through an all-five bar. Three, because the
+## namespace has a wide gap to sit in: measured over `vars(columnar_store)`, an
+## exhaustive census of all five classes it holds -- `SegmentedCoordinates`
+## carries 5, `_NumericColumn` 2 (`append`, `freeze`), `SectionColumns` 1
+## (`freeze`), the imported `Contour` 1 (`append`) and `Trace` 0. So the bar is
+## in open space, not on a boundary, and `test_the_backing_scan_sits_in_a_gap`
+## pins that.
 BACKING_SURFACE_THRESHOLD = 3
 
 
@@ -577,16 +602,21 @@ def _backingsInNamespace(module) -> list:
     """Every class reachable in `module`'s namespace shaped like a backing.
 
     By surface, deliberately not by name -- see the test below for why.
+
+    Deduplicated on identity first. One class bound under two names -- a
+    deprecation alias such as `LegacyCoordinates = SegmentedCoordinates` --
+    introduces no second backing, but a plain scan of `vars()` would return it
+    twice and fail the pin below with a message asserting a second backing
+    exists when it does not (review-248 F03). Names are not the unit here; the
+    objects are.
     """
-    return sorted(
-        (
-            obj for obj in vars(module).values()
-            if isinstance(obj, type)
-            and sum(hasattr(obj, m) for m in COORDINATE_BACKING_SURFACE)
-            >= BACKING_SURFACE_THRESHOLD
-        ),
-        key=lambda cls: cls.__name__,
-    )
+    unique = {
+        id(obj): obj for obj in vars(module).values()
+        if isinstance(obj, type)
+        and sum(hasattr(obj, m) for m in COORDINATE_BACKING_SURFACE)
+        >= BACKING_SURFACE_THRESHOLD
+    }
+    return sorted(unique.values(), key=lambda cls: cls.__name__)
 
 
 def test_the_decided_backing_is_segmented_and_the_module_carries_no_other():

@@ -46,10 +46,13 @@ per store, and ~90% of undo snapshots hold one), and after the A1 open-pass
 split (geometry 68%, construction 15.4%) came in on the side the design doc
 itself names for that shape. The losing backing was deleted rather than kept
 as an option -- carrying it was unreleased scope (review-246 F06) -- and the
-store stays layout-blind behind the same six-method backing interface
-(`append` / `get` / `set` / `release` / `totalPoints` / `freeze`), so a future
-whole-section layout, if a measurement ever earns one, arrives as a new
-backing rather than a rewrite.
+store stays layout-blind behind the same five-method backing interface
+(`append` / `get` / `set` / `release` / `freeze`), so a future whole-section
+layout, if a measurement ever earns one, arrives as a new backing rather than a
+rewrite. The interface was six methods until `totalPoints` went with the class
+that consumed it: `PackedCoordinates.deadPoints` was its only call site
+anywhere in the tree, and applying the unreleased-scope principle to one and
+not the other is the inconsistency review-248 F02 recorded.
 
 Coordinates are **float64**, not float32. float32 carries about 7 significant
 decimal digits in total while `getList` promises 7 decimal *places*, so a
@@ -213,10 +216,6 @@ class SegmentedCoordinates():
         """Drop the row's coordinates. The row number is not reused."""
         self._arrays[row] = None
 
-    @property
-    def totalPoints(self) -> int:
-        return sum(len(a) for a in self._arrays if a is not None)
-
     def freeze(self):
         """Nothing to release: each row's array is allocated at its exact size."""
         return
@@ -315,7 +314,7 @@ class SectionColumns():
                 section_number (int): the section these rows sit on
                 coordinates: the coordinate backing. Defaults to
                     `SegmentedCoordinates`, the decided backing; anything
-                    satisfying the same six-method interface may be injected.
+                    satisfying the same five-method interface may be injected.
                 id_issuer: anything with an `issue()` returning a fresh id.
                     `datatypes/trace_id.TraceIDIssuer` is the intended
                     production issuer. `None` means rows carry no id, which is
