@@ -248,8 +248,14 @@ def deriveTraceID(section_number: int, contour_name: str, row: list,
     ## makes migrating a series quadratic in its own trace count -- measured
     ## 0.888 s at 16k traces and projected ~91 s at the 161,767-trace corpus on
     ## record, against a flat ~3 us/trace once the copy is conditional (ledger
-    ## row TID.derive.section32k). The branch cannot move an id: `x in some_set`
-    ## and `x in set(some_set)` agree by construction.
+    ## row TID.derive.section32k). The branch cannot move an id for any `taken`
+    ## that honors set semantics: `x in some_set` and `x in set(some_set)` agree
+    ## whenever the container's membership test agrees with its own elements.
+    ## A `set` SUBCLASS whose `__contains__` contradicts what it iterates is the
+    ## one input the two arms answer differently -- it is not a container of ids
+    ## under this parameter's documented contract, no producer of one exists in
+    ## this codebase, and the boundary is recorded in review-247 F06 rather than
+    ## guarded against here.
     ##
     ## The copy is kept for every other iterable rather than dropped, because
     ## `taken` is documented as an *iterable* and a one-shot one must not be
