@@ -205,15 +205,27 @@ def test_two_identical_rows_in_one_contour_get_two_ids():
 
 
 class _MembershipSpy(set):
-    """A real set that counts the membership tests run against it."""
+    """A real set that counts the membership tests and traversals it sees.
+
+    `contains_calls` says which object answered a membership probe.
+    `iter_calls` says whether anything walked the index element by element --
+    the shape `set(s)`/`frozenset(s)` do NOT produce (they take CPython's
+    table-merge fast path and call no Python-level hook), but `list(s)`, a
+    `for` loop and any other ordinary traversal do.
+    """
 
     def __init__(self, *args):
         super().__init__(*args)
         self.contains_calls = 0
+        self.iter_calls = 0
 
     def __contains__(self, item):
         self.contains_calls += 1
         return super().__contains__(item)
+
+    def __iter__(self):
+        self.iter_calls += 1
+        return super().__iter__()
 
 
 def test_a_set_of_taken_ids_is_tested_in_place_and_not_copied():
@@ -256,7 +268,10 @@ def test_derive_for_section_hands_its_own_index_to_every_derivation(monkeypatch)
     admits a second quadratic shape: a loop that rebuilds the index per trace
     and rebinds the attribute (`self._taken = set(self._taken)`) hands an object
     that IS `issuer._taken` at probe time, so the pin passed while per-trace
-    cost went 12.1 -> 50.4 us across 4k -> 16k traces (review-wave-b F07).
+    cost went 12.1 -> 50.4 us across 4k -> 16k traces. Those figures are this
+    PR's own re-measurement of review-wave-b F07's sabotage, not F07's record
+    (F07 filed 18.7 -> 21.7 -> 53.1 us on its host); every number here is
+    machine-dependent and shape-only (review-247 N07).
 
     So the reference is captured ONCE, before the pass, and everything is
     asserted against that one object:
@@ -268,22 +283,37 @@ def test_derive_for_section_hands_its_own_index_to_every_derivation(monkeypatch)
       * the derived ids landed IN it -- so the pass mutated the caller's index
         in place rather than filling a copy and restoring the original.
 
-    WHAT IS OUT OF REACH, STATED RATHER THAN IMPLIED
-    -----------------------------------------------
-    A copy that is neither handed on nor bound -- `set(self._taken)` computed
-    per trace and discarded -- is quadratic (measured: 22.2 -> 53.7 us/trace
-    across 4k -> 16k) and invisible to every assertion here. It is invisible to
-    any assertion: `set(s)` and `frozenset(s)` on a `set` subclass take
-    CPython's table-merge fast path, which calls no Python-level hook at all
-    (verified on 3.11: an instrumented subclass sees no `__iter__`, no
-    `__len__`, and no element `__hash__`; only the `s.copy()` spelling is
-    observable, and pinning one spelling of a defect is what this repair
-    exists to stop doing). So that shape is left to review, named here so the
-    next reader knows it was considered rather than missed.
+    THE RESIDUAL CLASS IS TRAVERSAL, NOT "A COPY" -- SO TRAVERSAL IS PINNED
+    ----------------------------------------------------------------------
+    The shape that re-pays O(n**2) is any per-trace O(n) touch of the index,
+    not only a copy of it. A bare traversal -- `for _ in self._taken: pass` in
+    `deriveForSection`'s inner loop -- copies nothing and rebinds nothing, so
+    it passes every identity assertion above, and it is just as quadratic
+    (measured: 24.8 -> 24.9 -> 54.6 us/trace across 4k -> 8k -> 16k, against a
+    flat 4.6 -> 3.6 us baseline). It is also plainly observable, because
+    ordinary iteration DOES call `__iter__` on a `set` subclass. So the index
+    below is a `_MembershipSpy` and `iter_calls == 0` is asserted: that pins
+    the whole traversal class rather than one spelling of it (review-247 F08).
+
+    WHAT IS OUT OF REACH -- TWO SPELLINGS, NOT A CLASS
+    -------------------------------------------------
+    What no assertion here can see is narrower than "a copy": the
+    `set(self._taken)` and `frozenset(self._taken)` SPELLINGS specifically,
+    computed per trace and discarded. Both are quadratic (measured: 22.2 ->
+    53.7 us/trace across 4k -> 16k) and both are invisible, because on a `set`
+    subclass they take CPython's table-merge fast path, which calls no
+    Python-level hook at all -- verified on 3.11: an instrumented subclass sees
+    no `__iter__`, no `__len__` and no element `__hash__`. Only the `s.copy()`
+    spelling is observable, and pinning one spelling of a defect is what this
+    repair exists to stop doing. Those two spellings are left to review, named
+    here so the next reader knows they were considered rather than missed.
     """
     import PyReconstruct.modules.datatypes.trace_id as trace_id_module
 
     issuer = TraceIDIssuer()
+    ## The index is a set subclass that counts traversals, so "walked the index
+    ## once per trace" is a failing assertion rather than a silent regression.
+    issuer._taken = _MembershipSpy()
     index = issuer._taken  # captured BEFORE the pass -- see the docstring
     handed = []
     real_derive = trace_id_module.deriveTraceID
@@ -308,6 +338,11 @@ def test_derive_for_section_hands_its_own_index_to_every_derivation(monkeypatch)
     assert set(out.values()) <= index, (
         "the derived ids are not in the index the pass started with, so they "
         "were added to a copy; a later derivation could reissue them"
+    )
+    assert index.iter_calls == 0, (
+        "deriveForSection walked the series index element by element -- not a "
+        "copy and not a rebind, so the identity assertions above stay green, "
+        "but a per-trace traversal is quadratic all the same"
     )
 
 
@@ -590,3 +625,28 @@ def test_deriving_over_a_real_series_gives_one_id_per_trace(real_series):
 
     assert first == second
     assert len(first_issuer.taken) == n_traces
+
+
+def test_the_issuer_is_exported_through_the_datatypes_package():
+    """The `datatypes/__init__.py` export, taken in this PR.
+
+    Two things ride on this one line. Identity, first: the package must hand
+    out the same objects this suite tests, not a second copy of the module.
+    And reach, second: `test_datatypes_import_graph_is_qt_free` proves the
+    package's import graph imports cleanly with every `PySide6` import raising,
+    so a module nothing in the package imports is simply outside the proof.
+    `trace_id` was outside it until this line; the AST scan in that same file
+    covered the source, but nothing covered the actual import.
+
+    `deriveForSection` is a method on `TraceIDIssuer` rather than a module
+    function, so the four names below are the module's whole public surface
+    apart from its frozen constants, which stay module-qualified on purpose --
+    `TRACE_ID_VERSION` reads as a tid-v1 fact where it is defined and as
+    nothing in particular at package scope.
+    """
+    from PyReconstruct.modules import datatypes
+
+    assert datatypes.TraceIDIssuer is TraceIDIssuer
+    assert datatypes.deriveTraceID is deriveTraceID
+    assert datatypes.encodeTraceID is encodeTraceID
+    assert datatypes.decodeTraceID is decodeTraceID
