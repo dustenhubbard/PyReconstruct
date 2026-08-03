@@ -35,9 +35,13 @@ Those gaps are covered by mutating real traces on real sections rather than by
 building a synthetic series, so the material under test stays real and the
 attribute domain gets covered. Where a test does that, it says so.
 
-Both coordinate backings are parametrized over every test that touches
-coordinates. The choice between them is an open measurement, and running the
-suite against both is what keeps it open.
+The coordinate backing is `SegmentedCoordinates`, and it is the decided one:
+the paired undo-snapshot measurement found the per-section packed alternative
+0.32% dearer on the workload it was hypothesized to win, the A1 open-pass
+split leans the same way, and the losing backing was deleted rather than kept
+as an option. The store still reaches its backing only through the six-method
+interface, so these tests exercise the seam a future layout would arrive
+behind.
 """
 import numpy as np
 import pytest
@@ -47,16 +51,9 @@ from PyReconstruct.modules.datatypes.columnar_store import (
     BOOL_ATTRIBUTES,
     FILL_MODE_CODES,
     FILL_MODE_OVERFLOW,
-    PackedCoordinates,
     SectionColumns,
     SegmentedCoordinates,
 )
-
-BACKINGS = pytest.mark.parametrize(
-    "backing", [SegmentedCoordinates, PackedCoordinates],
-    ids=["segmented", "packed"],
-)
-
 
 class StubIssuer():
     """A deterministic stand-in for `trace_id.TraceIDIssuer`.
@@ -112,18 +109,17 @@ def _assert_trace_parity(store, row, trace):
     assert store.getTags(row) == trace.tags
 
 
-# --- the whole fixture series, both backings ---------------------------------
+# --- the whole fixture series -------------------------------------------------
 
 
-@BACKINGS
-def test_every_trace_of_every_real_section_round_trips(loaded_sections, backing):
+def test_every_trace_of_every_real_section_round_trips(loaded_sections):
     """The headline parity assertion, over all 232 traces of the real series.
 
     Contour names, within-contour order, and every column of every row.
     """
     n_traces = 0
     for section in loaded_sections:
-        store = SectionColumns.fromSection(section, coordinates=backing())
+        store = SectionColumns.fromSection(section)
         ## Non-empty contours only, which is the set `Section.getDict` writes:
         ## an empty `Contour` holds no rows, so it has no index entry. On this
         ## fixture the two sets are identical, because `Section.updateJSON`
@@ -142,8 +138,7 @@ def test_every_trace_of_every_real_section_round_trips(loaded_sections, backing)
     assert n_traces > 200, f"expected the fixture's ~232 traces, walked {n_traces}"
 
 
-@BACKINGS
-def test_materializing_rebuilds_traces_equal_to_the_originals(loaded_sections, backing):
+def test_materializing_rebuilds_traces_equal_to_the_originals(loaded_sections):
     """`materializeTrace` against `Trace.isSameTrace`, which compares name, color
     and points, plus the four attributes it does not compare.
 
@@ -153,7 +148,7 @@ def test_materializing_rebuilds_traces_equal_to_the_originals(loaded_sections, b
     already uses.
     """
     for section in loaded_sections:
-        store = SectionColumns.fromSection(section, coordinates=backing())
+        store = SectionColumns.fromSection(section)
         for name in store.contourNames():
             for row, original in zip(store.rowsForContour(name),
                                      section.contours[name]):
@@ -166,8 +161,7 @@ def test_materializing_rebuilds_traces_equal_to_the_originals(loaded_sections, b
                 assert rebuilt.tags == original.tags
 
 
-@BACKINGS
-def test_materialized_contours_match_the_sections_own_dict(loaded_sections, backing):
+def test_materialized_contours_match_the_sections_own_dict(loaded_sections):
     """`materializeContours` against `Section.contours`, contour by contour.
 
     Built through `Contour(name, traces)`, the checking constructor, so a name
@@ -175,7 +169,7 @@ def test_materialized_contours_match_the_sections_own_dict(loaded_sections, back
     producing a quietly mismatched contour.
     """
     for section in loaded_sections:
-        store = SectionColumns.fromSection(section, coordinates=backing())
+        store = SectionColumns.fromSection(section)
         rebuilt = store.materializeContours()
         assert sorted(rebuilt, key=str) == sorted(section.contours, key=str)
         for name, contour in rebuilt.items():
@@ -185,8 +179,7 @@ def test_materialized_contours_match_the_sections_own_dict(loaded_sections, back
                 assert a.isSameTrace(b)
 
 
-@BACKINGS
-def test_the_stored_row_reserializes_to_the_same_bytes(loaded_sections, backing):
+def test_the_stored_row_reserializes_to_the_same_bytes(loaded_sections):
     """A second, independent parity check: `getList` of a materialized trace
     equals `getList` of the original.
 
@@ -197,7 +190,7 @@ def test_the_stored_row_reserializes_to_the_same_bytes(loaded_sections, backing)
     that rounded to 7 dp on the way in.
     """
     for section in loaded_sections:
-        store = SectionColumns.fromSection(section, coordinates=backing())
+        store = SectionColumns.fromSection(section)
         for name in store.contourNames():
             for row, original in zip(store.rowsForContour(name),
                                      section.contours[name]):
@@ -208,9 +201,7 @@ def test_the_stored_row_reserializes_to_the_same_bytes(loaded_sections, backing)
 # --- the rounding seam -------------------------------------------------------
 
 
-@BACKINGS
-def test_the_store_is_on_the_unrounded_side_of_the_seven_dp_rounding(
-        loaded_sections, backing):
+def test_the_store_is_on_the_unrounded_side_of_the_seven_dp_rounding(loaded_sections):
     """The store keeps a coordinate that `getList` would throw away.
 
     Written because the real material cannot show this: every one of the 20,105
@@ -227,7 +218,7 @@ def test_the_store_is_on_the_unrounded_side_of_the_seven_dp_rounding(
     assert round(precise, 7) != precise, "pick a value the rounding actually moves"
     trace.points = [(precise, 6.0987654321098)] + list(trace.points[1:])
 
-    store = SectionColumns.fromSection(section, coordinates=backing())
+    store = SectionColumns.fromSection(section)
     row = store.rowsForContour(name)[0]
 
     ## The store kept the full value.
@@ -247,8 +238,7 @@ def test_the_store_is_on_the_unrounded_side_of_the_seven_dp_rounding(
 # --- the attribute domain the fixture does not reach -------------------------
 
 
-@BACKINGS
-def test_tags_negative_and_hidden_round_trip_on_a_real_trace(loaded_sections, backing):
+def test_tags_negative_and_hidden_round_trip_on_a_real_trace(loaded_sections):
     """The fixture series has no tagged, negative or hidden trace.
 
     Measured, not assumed: 0 of 232 for each. So real traces on a real section
@@ -262,7 +252,7 @@ def test_tags_negative_and_hidden_round_trip_on_a_real_trace(loaded_sections, ba
     trace.negative = True
     trace.hidden = True
 
-    store = SectionColumns.fromSection(section, coordinates=backing())
+    store = SectionColumns.fromSection(section)
     row = store.rowsForContour(name)[0]
     assert store.getTags(row) == {"alpha", "beta", "checked"}
     assert store.getFlag(row, "negative") is True
@@ -270,9 +260,7 @@ def test_tags_negative_and_hidden_round_trip_on_a_real_trace(loaded_sections, ba
     _assert_trace_parity(store, row, trace)
 
 
-@BACKINGS
-def test_the_tags_column_cannot_be_mutated_through_a_value_it_handed_out(
-        loaded_sections, backing):
+def test_the_tags_column_cannot_be_mutated_through_a_value_it_handed_out(loaded_sections):
     """`getTags` returns a fresh set, so a caller cannot reach into the column.
 
     `Contour.copy()` gives each copied trace its own `tags` set for the same
@@ -282,7 +270,7 @@ def test_the_tags_column_cannot_be_mutated_through_a_value_it_handed_out(
     section = loaded_sections[0]
     name = sorted(section.contours, key=str)[0]
     section.contours[name][0].tags = {"alpha"}
-    store = SectionColumns.fromSection(section, coordinates=backing())
+    store = SectionColumns.fromSection(section)
     row = store.rowsForContour(name)[0]
 
     handed_out = store.getTags(row)
@@ -348,18 +336,17 @@ def test_materialized_attributes_are_native_python_types():
     json.dumps(trace.getList(include_name=False))
 
 
-@BACKINGS
-def test_freeze_releases_the_growth_slack_without_changing_a_value(backing):
+def test_freeze_releases_the_growth_slack_without_changing_a_value():
     """A snapshot must not be measured as costing its allocator slack.
 
-    The columns grow by amortized doubling, so a store holding two rows can hold
-    buffers for sixty-four and the packed backing's initial capacity is 256
-    points. That is the right trade while a store is being built and the wrong one
-    for a snapshot, which is immutable after construction. Found while adapting
+    The columns grow by amortized doubling, so a store holding two rows can
+    hold buffers for sixty-four. That is the right trade while a store is
+    being built and the wrong one for a snapshot, which is immutable after
+    construction. Found while adapting
     the undo-growth harness, where the slack would have dominated the figure the
     measurement exists to produce.
     """
-    store = SectionColumns(1, coordinates=backing())
+    store = SectionColumns(1)
     rows = [store.appendRow(name="axon",
                             points=[(float(i), 0.0), (float(i), 1.0)],
                             color=[i, i, i], tags={"t"})
@@ -394,10 +381,7 @@ def _allocated_bytes(store):
     total = store._colors._array.nbytes + store._fill_modes._array.nbytes
     total += sum(c._array.nbytes for c in store._bools.values())
     backing = store.coordinateBacking
-    if isinstance(backing, PackedCoordinates):
-        total += backing._array.nbytes
-    else:
-        total += sum(a.nbytes for a in backing._arrays if a is not None)
+    total += sum(a.nbytes for a in backing._arrays if a is not None)
     return total
 
 
@@ -414,15 +398,31 @@ def test_the_columns_are_the_dtypes_the_layout_claims():
 # --- layout invariants -------------------------------------------------------
 
 
-@BACKINGS
-def test_rows_are_append_only_and_row_numbers_are_never_reused(backing):
+def test_the_decided_backing_is_segmented_and_the_module_carries_no_other():
+    """The backing decision, pinned so reverting it is loud.
+
+    Design question 1 (one coordinate array per section versus one per trace)
+    was decided for the segmented pole after the paired undo-snapshot
+    measurement found `PackedCoordinates` 0.32% dearer on the workload it was
+    hypothesized to win, with A1's open-pass split leaning the same way. The
+    loser was deleted, not parked: a second backing nobody consumes is
+    unreleased scope (review-246 F06), and this test is what makes
+    reintroducing it a decision rather than a drift.
+    """
+    import PyReconstruct.modules.datatypes.columnar_store as columnar_store
+
+    assert type(SectionColumns(1).coordinateBacking) is SegmentedCoordinates
+    assert not hasattr(columnar_store, "PackedCoordinates")
+
+
+def test_rows_are_append_only_and_row_numbers_are_never_reused():
     """A removed row's number retires with it.
 
     This is what lets the per-contour index and any later operation log refer to
     a row by number without a generation of its own. It is also why nothing here
     ever performs a mid-array insert.
     """
-    store = SectionColumns(1, coordinates=backing())
+    store = SectionColumns(1)
     first = store.appendRow(name="axon", points=[(0.0, 0.0), (1.0, 1.0)], color=[1, 2, 3])
     second = store.appendRow(name="axon", points=[(2.0, 2.0), (3.0, 3.0)], color=[1, 2, 3])
     assert [first, second] == [0, 1]
@@ -437,8 +437,7 @@ def test_rows_are_append_only_and_row_numbers_are_never_reused(backing):
         store.getCoordinates(first)
 
 
-@BACKINGS
-def test_within_contour_order_survives_every_operation(backing):
+def test_within_contour_order_survives_every_operation():
     """Within-contour trace order is semantically significant.
 
     `Contour.importTraces` walks `self[i]` against `other[i]` positionally and
@@ -446,7 +445,7 @@ def test_within_contour_order_survives_every_operation(backing):
     change import behavior on real data. Appends land at the end and a removal
     closes the gap without disturbing the survivors.
     """
-    store = SectionColumns(1, coordinates=backing())
+    store = SectionColumns(1)
     rows = [store.appendRow(name="axon", points=[(float(i), 0.0), (float(i), 1.0)],
                             color=[1, 2, 3]) for i in range(5)]
     assert store.rowsForContour("axon") == rows
@@ -486,35 +485,7 @@ def test_a_rename_moves_the_row_between_contour_indices():
     assert store.getAllModifiedNames() >= {"axon", "dendrite01"}
 
 
-def test_packed_coordinates_never_insert_and_report_their_own_slack():
-    """A length-changing write appends and tombstones rather than shifting.
-
-    `addTrace` is an append today and must stay one, so the packed backing has no
-    mid-array insert at all. The cost of that is dead space, and the backing
-    reports it rather than hiding it, because deciding whether to compact needs a
-    number and compaction reorders rows, which nothing here is allowed to do.
-    """
-    backing = PackedCoordinates()
-    store = SectionColumns(1, coordinates=backing)
-    row = store.appendRow(name="axon", points=[(0.0, 0.0), (1.0, 1.0)], color=[1, 2, 3])
-    assert backing.deadPoints == 0
-
-    ## Same length: written in place, no slack.
-    store.setCoordinates(row, [(2.0, 2.0), (3.0, 3.0)])
-    assert backing.deadPoints == 0
-    assert store.getPoints(row) == [(2.0, 2.0), (3.0, 3.0)]
-
-    ## Longer: a fresh extent, and the old two points become slack.
-    store.setCoordinates(row, [(4.0, 4.0), (5.0, 5.0), (6.0, 6.0)])
-    assert backing.deadPoints == 2
-    assert store.getPoints(row) == [(4.0, 4.0), (5.0, 5.0), (6.0, 6.0)]
-
-    store.removeRow(row)
-    assert backing.deadRows == 1
-
-
-@BACKINGS
-def test_a_copied_row_does_not_share_coordinate_memory_with_its_source(backing):
+def test_a_copied_row_does_not_share_coordinate_memory_with_its_source():
     """The aliasing class the coordinate coercion exists to close.
 
     `np.asarray` of an existing float64 array returns the same memory, so a row
@@ -522,12 +493,12 @@ def test_a_copied_row_does_not_share_coordinate_memory_with_its_source(backing):
     write to one would silently change the other. That is a data-loss shape, not
     a slowness shape.
     """
-    store = SectionColumns(1, coordinates=backing())
+    store = SectionColumns(1)
     source = store.appendRow(name="axon", points=[(0.0, 0.0), (1.0, 1.0)], color=[1, 2, 3])
     copied = store.duplicateRow(source)
 
     ## Checked immediately, before any write. Checking it after a write does NOT
-    ## discriminate: both backings replace a row's array on a length-changing
+    ## discriminate: the backing replaces a row's array on a length-changing
     ## write, so two rows that started out sharing memory look independent
     ## afterward. The invariant is that they never shared it.
     assert not np.shares_memory(store.getCoordinates(source),
@@ -540,8 +511,7 @@ def test_a_copied_row_does_not_share_coordinate_memory_with_its_source(backing):
     assert store.getPoints(copied) == [(7.0, 7.0), (8.0, 8.0)]
 
 
-@BACKINGS
-def test_a_store_does_not_alias_the_arrays_of_a_store_built_beside_it(backing):
+def test_a_store_does_not_alias_the_arrays_of_a_store_built_beside_it():
     """Two stores built from one section hold independent coordinates.
 
     The same coercion invariant, reached by the path a caller is most likely to
@@ -554,8 +524,8 @@ def test_a_store_does_not_alias_the_arrays_of_a_store_built_beside_it(backing):
         n = 3
         contours = {"axon": [trace]}
 
-    first = SectionColumns.fromSection(StubSection(), coordinates=backing())
-    second = SectionColumns.fromSection(StubSection(), coordinates=backing())
+    first = SectionColumns.fromSection(StubSection())
+    second = SectionColumns.fromSection(StubSection())
     assert not np.shares_memory(first.getCoordinates(0), second.getCoordinates(0))
 
     ## And neither of them aliases the live trace's own point list.
@@ -748,12 +718,11 @@ def test_an_explicit_id_is_carried_in_rather_than_reissued():
     assert issuer.count == 0
 
 
-@BACKINGS
-def test_ids_are_issued_once_per_row_over_a_whole_real_section(loaded_sections, backing):
+def test_ids_are_issued_once_per_row_over_a_whole_real_section(loaded_sections):
     """One id per trace across a real section, and no repeats."""
     section = max(loaded_sections, key=lambda s: sum(len(c) for c in s.contours.values()))
     issuer = StubIssuer()
-    store = SectionColumns.fromSection(section, coordinates=backing(), id_issuer=issuer)
+    store = SectionColumns.fromSection(section, id_issuer=issuer)
 
     ids = [store.getID(row) for name in store.contourNames()
            for row in store.rowsForContour(name)]
