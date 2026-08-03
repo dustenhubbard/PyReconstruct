@@ -240,6 +240,37 @@ def test_a_set_of_taken_ids_is_tested_in_place_and_not_copied():
     assert derived == "yGjaA0DdBeJ"
 
 
+def test_derive_for_section_hands_its_own_index_to_every_derivation(monkeypatch):
+    """The frame the mechanism pin above does not reach.
+
+    The test above proves `deriveTraceID` probes the set it is *given*; it says
+    nothing about which object `deriveForSection` gives it. A one-token
+    refactor there -- passing `frozenset(self._taken)` per call -- passes the
+    callee's `isinstance` guard, keeps every other test green, and restores the
+    full O(n**2) copy-per-trace the docstring says the migration must not pay.
+    Object identity is the exact invariant, so it is what is asserted: the
+    migration hands its own index in place, never a per-call copy of it.
+    """
+    import PyReconstruct.modules.datatypes.trace_id as trace_id_module
+
+    issuer = TraceIDIssuer()
+    handed = []
+    real_derive = trace_id_module.deriveTraceID
+
+    def spying_derive(section_number, cname, row, taken):
+        handed.append(taken is issuer._taken)
+        return real_derive(section_number, cname, row, taken)
+
+    monkeypatch.setattr(trace_id_module, "deriveTraceID", spying_derive)
+    out = issuer.deriveForSection(3, {"axon": [ROW8], "dendrite01": [ROW8]})
+
+    assert len(handed) == len(out) == 2
+    assert all(handed), (
+        "deriveForSection handed a copy of the series index instead of the "
+        "index itself, which re-pays the O(n**2) copy the F01 fix removed"
+    )
+
+
 def test_the_derivation_accepts_any_iterable_of_taken_ids():
     """`taken` is documented as an iterable, and every kind must still work.
 
@@ -295,10 +326,14 @@ def test_a_value_json_cannot_encode_raises_instead_of_being_stringified():
 def test_every_value_a_stored_row_can_hold_is_still_accepted():
     """The other half of the test above: the refusal must not overshoot.
 
-    Dropping the hatch may only reject what `Trace.getList` cannot produce. The
-    bar is the save path's, which writes these same rows with a plain
-    `json.dumps` and no `default=`: a row this refuses could not have been saved
-    to a `.jser` either, and a row that saves must still derive.
+    Dropping the hatch may only reject what `Trace.getList` cannot produce.
+    The bar is deliberately NOT "what the save path accepts": the real save
+    path is `fast_dumps` (`Section.save`, and every leaf of the `.jser`
+    writer), which is orjson-first, and orjson accepts values the derive
+    refuses -- a `datetime`, a `UUID`, a dataclass -- but such a value comes
+    back from a save/load round trip as a JSON string, so no persisted row
+    carries one at migration time. What must hold is narrower and is what this
+    asserts: every value `Trace.getList` actually emits still derives.
     """
     from PyReconstruct.modules.datatypes.trace import Trace
 
@@ -308,7 +343,9 @@ def test_every_value_a_stored_row_can_hold_is_still_accepted():
     trace.fill_mode = ("transparent", "selected")
     row = trace.getList(include_name=False)
 
-    ## Saveable by the real save path's call, so it must be derivable.
+    ## JSON-native end to end. `json.dumps` here is the stricter of the save
+    ## path's two encoders, not "the save path": a row it accepts is a row
+    ## either encoder writes, and it must derive.
     json.dumps({"contours": {"axon": [row]}}, indent=2)
     assert len(deriveTraceID(5, "axon", row)) == TRACE_ID_LENGTH
 

@@ -79,11 +79,19 @@ the code.
                      stringified value is only as stable as its `__str__`, so
                      the hatch admits process-dependent bytes (a `set`'s
                      iteration order, an object's `repr` memory address) into a
-                     digest declared frozen, silently. The bar is the one the
-                     save path already sets: `Section.getDict`'s rows are
-                     written with a plain `json.dumps` and no `default=`, so a
-                     row this function refuses is a row that could never have
-                     been saved to a `.jser` either.
+                     digest declared frozen, silently. The refusal does not
+                     overshoot, but the bar is NOT "what the save path
+                     accepts": the real save writes `fast_dumps`
+                     (`Section.save`, and every leaf of the `.jser` writer),
+                     which is orjson-first with a stdlib fallback, and orjson
+                     natively encodes values this recipe refuses (`datetime`,
+                     `date`, `time`, `UUID`, a dataclass). The bar is that no
+                     live producer emits such a value --- `Trace.getList`
+                     writes only JSON-native types --- and an orjson-native
+                     value does not survive a save/load round trip as itself:
+                     it is read back as a JSON string, which derives fine. So
+                     no row persisted in any real `.jser` can present one at
+                     migration time, and no persisted trace's id moves.
 
     hash             `hashlib.blake2b(payload_bytes, digest_size=8)`, i.e. 64
                      bits, read big-endian as an unsigned integer.
