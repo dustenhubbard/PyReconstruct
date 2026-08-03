@@ -558,6 +558,37 @@ def test_the_columns_are_the_dtypes_the_layout_claims():
 # --- layout invariants -------------------------------------------------------
 
 
+## The method surface a coordinate backing has, in the order the module docstring
+## lists it. `SectionColumns` calls exactly these six on whatever it is handed, so
+## a class carrying them is a backing whatever it is called.
+COORDINATE_BACKING_SURFACE = ("append", "get", "set", "release", "totalPoints", "freeze")
+
+## How much of that surface makes a class a backing for the purpose of the pin
+## below. Not all six, because a partial reimplementation is still a second
+## backing and would walk straight through an all-six bar. Three, because the
+## namespace has a wide gap to sit in: measured over `vars(columnar_store)`,
+## `SegmentedCoordinates` carries 6, `_NumericColumn` 2 (`append`, `freeze`), the
+## imported `Contour` 1 (`append`) and `Trace` 0. So the bar is in open space,
+## not on a boundary, and `test_the_backing_scan_sits_in_a_gap` pins that.
+BACKING_SURFACE_THRESHOLD = 3
+
+
+def _backingsInNamespace(module) -> list:
+    """Every class reachable in `module`'s namespace shaped like a backing.
+
+    By surface, deliberately not by name -- see the test below for why.
+    """
+    return sorted(
+        (
+            obj for obj in vars(module).values()
+            if isinstance(obj, type)
+            and sum(hasattr(obj, m) for m in COORDINATE_BACKING_SURFACE)
+            >= BACKING_SURFACE_THRESHOLD
+        ),
+        key=lambda cls: cls.__name__,
+    )
+
+
 def test_the_decided_backing_is_segmented_and_the_module_carries_no_other():
     """The backing decision, pinned so reverting it is loud.
 
@@ -568,11 +599,60 @@ def test_the_decided_backing_is_segmented_and_the_module_carries_no_other():
     loser was deleted, not parked: a second backing nobody consumes is
     unreleased scope (review-246 F06), and this test is what makes
     reintroducing it a decision rather than a drift.
+
+    PINNED ON THE SURFACE, NOT ON THE NAME
+    --------------------------------------
+    The `hasattr` line below is a tripwire for the one drift it can see: a
+    revert, or the old class cherry-picked back under its old name. It is not
+    the property. On its own it enforced a *name* -- the identical deleted
+    class re-inserted as `ArenaCoordinates` passed this module 35/35
+    (review-wave-b F01) -- while this test's own name promises the module
+    carries no other backing at all. So the property is asserted directly: no
+    class reachable in the module's namespace but `SegmentedCoordinates` has a
+    coordinate backing's shape.
+
+    Scanning the namespace rather than the classes defined here is deliberate:
+    a backing defined elsewhere and imported in is still a second backing this
+    module carries, and the scan sees it. What it does not reach is a backing
+    that is never named in this module and is injected through
+    `SectionColumns(coordinates=...)`; the first assertion below pins what the
+    store constructs when nobody injects anything, and injection is what that
+    parameter is for.
     """
     import PyReconstruct.modules.datatypes.columnar_store as columnar_store
 
     assert type(SectionColumns(1).coordinateBacking) is SegmentedCoordinates
     assert not hasattr(columnar_store, "PackedCoordinates")
+    assert _backingsInNamespace(columnar_store) == [SegmentedCoordinates], (
+        "the module's namespace carries a class other than SegmentedCoordinates "
+        "with a coordinate backing's shape; one backing was the decision, so a "
+        "second one is a decision to re-open and not a refactor"
+    )
+
+
+def test_the_backing_scan_sits_in_a_gap():
+    """What the scan above counts, so its threshold is a measurement.
+
+    A surface scan is only as good as its bar, and a bar nobody can see the
+    margin around is a bar the next person will not trust. This records the
+    margin: the decided backing carries the whole surface, and nothing else in
+    the namespace carries even the threshold. If a future class lands between
+    these two facts, one of these assertions breaks and the bar gets re-decided
+    on purpose rather than drifting.
+    """
+    import PyReconstruct.modules.datatypes.columnar_store as columnar_store
+
+    counted = {
+        cls.__name__: sum(hasattr(cls, m) for m in COORDINATE_BACKING_SURFACE)
+        for cls in vars(columnar_store).values()
+        if isinstance(cls, type)
+    }
+    assert counted["SegmentedCoordinates"] == len(COORDINATE_BACKING_SURFACE)
+    others = {name: n for name, n in counted.items() if name != "SegmentedCoordinates"}
+    assert others, "the scan found no other class at all, so it proves nothing"
+    assert max(others.values()) < BACKING_SURFACE_THRESHOLD, (
+        f"a class now sits at the scan's threshold: {others}"
+    )
 
 
 def test_the_store_is_exported_through_the_datatypes_package():
