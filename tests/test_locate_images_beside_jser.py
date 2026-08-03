@@ -165,6 +165,14 @@ def test_openSeries_prompts_when_auto_recovery_fails(monkeypatch):
     read the step and check ``openSeries`` still calls it. Both halves are
     asserted: neither the step existing unwired nor ``openSeries`` calling a
     step that lost the recovery is enough on its own.
+
+    The negative assertion deliberately reads the whole ``MainWindow`` class
+    rather than one method. A negative assertion's power is exactly the size
+    of the text it reads: scoped to ``_ensureImagesAvailable`` it would let
+    the buggy call reappear anywhere else in the open sequence - including
+    back in ``openSeries`` itself, where it used to live - without failing.
+    Reading the class is also refactor-proof in a way that reading one
+    method's source is not.
     """
     import inspect
 
@@ -179,10 +187,11 @@ def test_openSeries_prompts_when_auto_recovery_fails(monkeypatch):
     assert "self.changeSrcDir(notify=True)" in src, (
         "a failed auto-recovery must fall through to the interactive prompt"
     )
-    # and the old file-path call must be gone
-    assert "self.changeSrcDir(src_path)" not in src, (
-        "openSeries must not hand changeSrcDir a file path"
-    )
+    # and the old file-path call must be gone - from anywhere in the class,
+    # not merely from the step the image block was decomposed into
+    assert "self.changeSrcDir(src_path)" not in inspect.getsource(
+        mw.MainWindow
+    ), "MainWindow must not hand changeSrcDir a file path"
 
 
 # --------------------------------------------------------------------------
