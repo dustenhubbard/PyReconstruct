@@ -67,8 +67,31 @@ SUBMENU_TITLE = "Series alignment"
 
 
 def readout(window):
-    """What the status bar's permanent label currently shows."""
-    return window.status_label.text()
+    """What the status bar's permanent readout currently shows.
+
+    Asks which readout widget is mounted rather than naming one, because two
+    shapes are in flight. On ``main`` the permanent widget is the flat
+    ``status_label`` (a ``QLabel``); the clickable-status-bar change replaces
+    it with ``status_readout``, a ``FieldStatusReadout`` whose ``text()``
+    returns the same ``"  |  "``-joined string, so everything parsed out of it
+    below reads identically either way. ``FieldWidget.updateStatusBar`` is
+    already defensive about exactly this -- it reaches the permanent widget
+    through ``getattr(self.mainwindow, ..., None)`` -- and hard-coding one
+    name here is what would make these tests pass alone and fail on a tree
+    carrying both changes.
+
+    Raises when neither exists rather than returning something empty: a
+    readout helper that quietly reported nothing would leave every assertion
+    below green while pinning nothing at all.
+    """
+    for attr in ("status_label", "status_readout"):
+        widget = getattr(window, attr, None)
+        if widget is not None:
+            return widget.text()
+    raise AssertionError(
+        "main window carries neither 'status_label' nor 'status_readout'; "
+        "the permanent status-bar readout has been renamed again"
+    )
 
 
 def alignment_named_in_readout(window):
