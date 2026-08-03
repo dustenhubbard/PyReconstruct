@@ -31,9 +31,15 @@ one trace, and
     `("solid", "unselected")`;
   * no coordinate needing more than 7 decimal places.
 
-Those gaps are covered by mutating real traces on real sections rather than by
-building a synthetic series, so the material under test stays real and the
-attribute domain gets covered. Where a test does that, it says so.
+Those gaps are covered twice, deliberately. Tests below mutate real traces on
+real sections, so the mutation entry points get covered against real material.
+And `tests/fixtures/parity_series.jser` -- a checked-in synthetic series added
+because review-246 found the real fixture cannot distinguish the parity
+definitions that matter -- carries the missing domains in the *file itself*:
+positional (list) contour rows, coordinates inexact at 7 decimal places,
+tagged/negative/hidden traces, and single-point traces the load path screens.
+The synthetic tests say which gap they close; a raw-file census pins that the
+fixture keeps carrying all of them.
 
 The coordinate backing is `SegmentedCoordinates`, and it is the decided one:
 the paired undo-snapshot measurement found the per-section packed alternative
@@ -43,6 +49,10 @@ as an option. The store still reaches its backing only through the six-method
 interface, so these tests exercise the seam a future layout would arrive
 behind.
 """
+import json
+import shutil
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -86,6 +96,33 @@ def loaded_sections(real_series):
             sections.append(section)
     assert sections, "the fixture series has no populated sections"
     return sections
+
+
+## The checked-in synthetic series. It exists because the real fixture cannot
+## prove the parity this suite claims (review-246): every one of its 40,210
+## coordinate values is exact at 7 dp, none of its traces is tagged, negative
+## or hidden, and its contour rows are legacy dicts. This file carries, in the
+## raw bytes rather than through an in-test mutation: positional (list) contour
+## rows, coordinates inexact at 7 dp, tagged/negative/hidden traces, and
+## single-point traces (which the load path screens out).
+SYNTHETIC_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "parity_series.jser"
+
+
+@pytest.fixture
+def synthetic_sections(tmp_path):
+    """Every populated section of the synthetic series, from a writable copy.
+
+    A copy for the same reason `series_jser` copies: `Series.openJser` builds
+    a hidden working directory beside the file it is given.
+    """
+    from PyReconstruct.modules.datatypes import Series
+
+    destination = tmp_path / "parity_series.jser"
+    shutil.copy(SYNTHETIC_FIXTURE, destination)
+    series = Series.openJser(str(destination))
+    sections = [series.loadSection(n) for n in sorted(series.sections)]
+    yield [section for section in sections if section.contours]
+    series.close()
 
 
 def _assert_trace_parity(store, row, trace):
@@ -235,6 +272,131 @@ def test_the_store_is_on_the_unrounded_side_of_the_seven_dp_rounding(loaded_sect
     assert store.materializeTrace(row).points[0][0] == precise
 
 
+# --- the synthetic series: the domains the real fixture cannot carry ---------
+
+
+def _synthetic_rows():
+    """Every 8-field contour row of the checked-in synthetic file, raw."""
+    data = json.loads(SYNTHETIC_FIXTURE.read_text())
+    return [
+        row
+        for section in data["sections"] if section
+        for contour in section["contours"].values()
+        for row in contour
+    ]
+
+
+def test_the_synthetic_file_itself_carries_what_the_real_series_cannot():
+    """The raw-file census, so the fixture cannot silently lose its point.
+
+    Asserted against the bytes on disk, not against anything loaded: the rows
+    are positional lists (the current format, so no legacy dict migration runs
+    over them), at least one coordinate is inexact at 7 decimal places, and
+    tagged, negative, hidden and single-point traces are all present. If an
+    edit to the fixture drops any of these, the parity tests below quietly
+    stop discriminating, and this census is what makes that loud instead.
+    """
+    rows = _synthetic_rows()
+    assert rows
+    assert all(type(row) is list and len(row) == 8 for row in rows)
+
+    coordinates = [value for row in rows for value in row[0] + row[1]]
+    assert any(round(value, 7) != value for value in coordinates)
+
+    assert any(row[7] for row in rows), "no tagged trace in the fixture"
+    assert any(row[4] for row in rows), "no negative trace in the fixture"
+    assert any(row[5] for row in rows), "no hidden trace in the fixture"
+    assert any(len(row[0]) == 1 for row in rows), "no single-point trace"
+
+
+def test_every_trace_of_every_synthetic_section_round_trips(synthetic_sections):
+    """The headline parity walk, over material the real series cannot supply.
+
+    Same assertions as the real-series walk -- every column of every row,
+    within-contour order, materialization equality and `getList` byte
+    equality -- but here the tagged/negative/hidden values and the inexact
+    coordinates arrived from a checked-in file, not from an in-test mutation,
+    so this is the walk that can actually prove object-model parity.
+    """
+    tagged = negative = hidden = 0
+    for section in synthetic_sections:
+        store = SectionColumns.fromSection(section)
+        assert store.contourNames() == sorted(
+            (n for n, c in section.contours.items() if len(c)), key=str
+        )
+        for name in store.contourNames():
+            rows = store.rowsForContour(name)
+            traces = list(section.contours[name])
+            assert len(rows) == len(traces)
+            for row, trace in zip(rows, traces):
+                _assert_trace_parity(store, row, trace)
+                rebuilt = store.materializeTrace(row)
+                assert rebuilt.isSameTrace(trace)
+                assert (rebuilt.getList(include_name=False)
+                        == trace.getList(include_name=False))
+                tagged += bool(trace.tags)
+                negative += trace.negative
+                hidden += trace.hidden
+    assert tagged and negative and hidden, (
+        "the synthetic material lost the attribute domain it exists to carry"
+    )
+
+
+def test_synthetic_coordinates_stay_unrounded_from_file_to_store(synthetic_sections):
+    """The two parity definitions, distinguished on checked-in material.
+
+    The real series cannot tell a silently rounding store from a faithful one
+    (all 40,210 values exact at 7 dp), which is review-246's finding against
+    this suite's own fixture. Here coordinates that a `getList` round trip
+    would move arrive from the file, survive `Trace.fromList` verbatim, and
+    must come back out of the store bit-identical -- so a store that rounded
+    on the way in fails on the fixture alone, with nothing mutated in-test.
+    """
+    inexact = 0
+    for section in synthetic_sections:
+        store = SectionColumns.fromSection(section)
+        for name in store.contourNames():
+            for row, trace in zip(store.rowsForContour(name),
+                                  section.contours[name]):
+                for stored, held in zip(store.getPoints(row), trace.points):
+                    for stored_value, held_value in zip(stored, held):
+                        if round(held_value, 7) != held_value:
+                            inexact += 1
+                        assert stored_value == held_value
+    assert inexact >= 4, (
+        f"only {inexact} coordinates discriminate the rounding seam; the "
+        f"fixture is supposed to carry them in quantity"
+    )
+
+
+def test_single_point_traces_are_screened_and_the_store_matches_the_model(
+        synthetic_sections):
+    """Parity is with the object model, not with the file.
+
+    The fixture carries two single-point rows: one beside a valid trace in
+    `spine01` (section 0), and one as the only row of `lone` (section 1).
+    `Section.updateJSON`/`Section.__init__` screen both out, taking the `lone`
+    contour with them, so a store built from the section must hold the
+    screened counts and never resurrect what the load path dropped.
+    """
+    raw = json.loads(SYNTHETIC_FIXTURE.read_text())
+    assert len(raw["sections"][0]["contours"]["spine01"]) == 2
+    assert len(raw["sections"][1]["contours"]["lone"]) == 1
+
+    by_number = {section.n: section for section in synthetic_sections}
+
+    store = SectionColumns.fromSection(by_number[0])
+    assert len(store.rowsForContour("spine01")) == 1
+    assert len(by_number[0].contours["spine01"]) == 1
+
+    store = SectionColumns.fromSection(by_number[1])
+    assert "lone" not in store.contourNames()
+    assert "lone" not in by_number[1].contours
+    assert all(len(store.getPoints(row)) > 1
+               for name in store.contourNames()
+               for row in store.rowsForContour(name))
+
+
 # --- the attribute domain the fixture does not reach -------------------------
 
 
@@ -320,8 +482,6 @@ def test_materialized_attributes_are_native_python_types():
     that handed them out would pass a value comparison and fail at the point of
     writing the file. Checked by type, and then by actually serializing.
     """
-    import json
-
     store = SectionColumns(1)
     row = store.appendRow(
         name="axon", points=[(0.0, 0.0), (1.0, 1.0)], color=[10, 20, 30],
