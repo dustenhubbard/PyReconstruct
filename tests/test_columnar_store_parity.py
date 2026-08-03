@@ -415,6 +415,20 @@ def test_the_decided_backing_is_segmented_and_the_module_carries_no_other():
     assert not hasattr(columnar_store, "PackedCoordinates")
 
 
+def test_the_store_is_exported_through_the_datatypes_package():
+    """The deferred `datatypes/__init__.py` export, taken in this PR.
+
+    Neither wave-B PR could take it without colliding with the other, so it
+    was parked for the PR that decides the backing (2026-08-03 realign, Part
+    2, wave B, order 1). Identity is asserted, not just importability: the
+    package must hand out the same objects this suite tests.
+    """
+    from PyReconstruct.modules import datatypes
+
+    assert datatypes.SectionColumns is SectionColumns
+    assert datatypes.SegmentedCoordinates is SegmentedCoordinates
+
+
 def test_rows_are_append_only_and_row_numbers_are_never_reused():
     """A removed row's number retires with it.
 
