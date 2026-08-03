@@ -158,10 +158,21 @@ def test_unloadable_candidate_reports_failure(tmp_path, monkeypatch):
 # openSeries wiring: failure must reach the interactive prompt.
 # --------------------------------------------------------------------------
 def test_openSeries_prompts_when_auto_recovery_fails(monkeypatch):
-    """The user must be asked to locate images rather than told nothing."""
+    """The user must be asked to locate images rather than told nothing.
+
+    The image block moved out of ``openSeries`` into
+    ``_ensureImagesAvailable`` when the 200-line method was decomposed, so
+    read the step and check ``openSeries`` still calls it. Both halves are
+    asserted: neither the step existing unwired nor ``openSeries`` calling a
+    step that lost the recovery is enough on its own.
+    """
     import inspect
 
-    src = inspect.getsource(mw.MainWindow.openSeries)
+    assert "self._ensureImagesAvailable()" in inspect.getsource(
+        mw.MainWindow.openSeries
+    ), "openSeries must still run the images step"
+
+    src = inspect.getsource(mw.MainWindow._ensureImagesAvailable)
     assert "findImagesBesideJser()" in src, (
         "openSeries should route missing images through the recovery helper"
     )
