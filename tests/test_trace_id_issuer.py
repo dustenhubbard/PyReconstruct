@@ -248,17 +248,48 @@ def test_derive_for_section_hands_its_own_index_to_every_derivation(monkeypatch)
     refactor there -- passing `frozenset(self._taken)` per call -- passes the
     callee's `isinstance` guard, keeps every other test green, and restores the
     full O(n**2) copy-per-trace the docstring says the migration must not pay.
-    Object identity is the exact invariant, so it is what is asserted: the
-    migration hands its own index in place, never a per-call copy of it.
+
+    THE INVARIANT IS IDENTITY WITH ONE PARTICULAR OBJECT, NOT WITH `_taken`
+    ----------------------------------------------------------------------
+    An earlier version of this test read `issuer._taken` *inside* the spy and
+    so asserted identity against the live attribute, re-read at call time. That
+    admits a second quadratic shape: a loop that rebuilds the index per trace
+    and rebinds the attribute (`self._taken = set(self._taken)`) hands an object
+    that IS `issuer._taken` at probe time, so the pin passed while per-trace
+    cost went 12.1 -> 50.4 us across 4k -> 16k traces (review-wave-b F07).
+
+    So the reference is captured ONCE, before the pass, and everything is
+    asserted against that one object:
+
+      * every call received it -- no per-call copy, and no rebind, since a
+        rebound attribute is a different object than the one captured;
+      * it is still the attribute afterwards -- no rebind that outlives the
+        pass;
+      * the derived ids landed IN it -- so the pass mutated the caller's index
+        in place rather than filling a copy and restoring the original.
+
+    WHAT IS OUT OF REACH, STATED RATHER THAN IMPLIED
+    -----------------------------------------------
+    A copy that is neither handed on nor bound -- `set(self._taken)` computed
+    per trace and discarded -- is quadratic (measured: 22.2 -> 53.7 us/trace
+    across 4k -> 16k) and invisible to every assertion here. It is invisible to
+    any assertion: `set(s)` and `frozenset(s)` on a `set` subclass take
+    CPython's table-merge fast path, which calls no Python-level hook at all
+    (verified on 3.11: an instrumented subclass sees no `__iter__`, no
+    `__len__`, and no element `__hash__`; only the `s.copy()` spelling is
+    observable, and pinning one spelling of a defect is what this repair
+    exists to stop doing). So that shape is left to review, named here so the
+    next reader knows it was considered rather than missed.
     """
     import PyReconstruct.modules.datatypes.trace_id as trace_id_module
 
     issuer = TraceIDIssuer()
+    index = issuer._taken  # captured BEFORE the pass -- see the docstring
     handed = []
     real_derive = trace_id_module.deriveTraceID
 
     def spying_derive(section_number, cname, row, taken):
-        handed.append(taken is issuer._taken)
+        handed.append(taken is index)
         return real_derive(section_number, cname, row, taken)
 
     monkeypatch.setattr(trace_id_module, "deriveTraceID", spying_derive)
@@ -266,8 +297,17 @@ def test_derive_for_section_hands_its_own_index_to_every_derivation(monkeypatch)
 
     assert len(handed) == len(out) == 2
     assert all(handed), (
-        "deriveForSection handed a copy of the series index instead of the "
-        "index itself, which re-pays the O(n**2) copy the F01 fix removed"
+        "deriveForSection handed something other than the index it started "
+        "with -- either a per-call copy of it or a per-trace rebind of the "
+        "attribute -- and both re-pay the O(n**2) copy the F01 fix removed"
+    )
+    assert issuer._taken is index, (
+        "deriveForSection rebound the series index instead of mutating it, so "
+        "the index is rebuilt at least once per pass"
+    )
+    assert set(out.values()) <= index, (
+        "the derived ids are not in the index the pass started with, so they "
+        "were added to a copy; a later derivation could reissue them"
     )
 
 
