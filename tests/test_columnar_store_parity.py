@@ -548,6 +548,54 @@ def test_a_store_does_not_alias_the_arrays_of_a_store_built_beside_it():
     assert second.getPoints(0)[0] == (0.0, 0.0)
 
 
+# --- the transform key set, across a rebuild from a file ---------------------
+
+
+def test_a_section_rebuilt_from_a_files_key_set_still_carries_no_alignment(
+        loaded_sections):
+    """The `TransformsDict` hazard a coordinates-and-attributes suite cannot see.
+
+    The object model always carries the `no-alignment` transform because
+    `TransformsDict.__init__` seeds it unconditionally (`section.py`), while
+    the file's key set never carries it: `Section.getDict` drops it on save
+    and `Section.updateJSON` deletes it on unpack. So a consumer that rebuilt
+    a section's transforms from the file's key set through a plain dict would
+    lose `no-alignment` on every section, and every other test in this file
+    would pass clean over the loss -- which is why the 2026-08-03 realign
+    requires this pin before any consumer parity claim is accepted (Part 2,
+    wave B, order 2).
+
+    Every section here IS a rebuild from a file's key set: `Section.__init__`
+    walks `section_data["tforms"]` into a fresh `TransformsDict`. Both halves
+    are asserted -- the file side carries no `no-alignment` key (so the test
+    cannot pass vacuously) and the rebuilt side carries it on every section,
+    as the identity, through the exact walk the load path runs.
+    """
+    from PyReconstruct.modules.datatypes import Transform
+    from PyReconstruct.modules.datatypes.section import TransformsDict
+
+    identity = Transform.identity()
+    for section in loaded_sections:
+        serialized = section.getDict()["tforms"]
+
+        ## The file's key set does not carry it, and a plain-dict rebuild of
+        ## that key set loses it. This is the half that makes the pin real.
+        assert "no-alignment" not in serialized
+        assert "no-alignment" not in dict(serialized)
+
+        ## The load path's exact walk over the file's key set.
+        rebuilt = TransformsDict()
+        for alignment in serialized:
+            rebuilt[alignment] = Transform(serialized[alignment])
+        assert "no-alignment" in rebuilt
+        assert rebuilt["no-alignment"].equals(identity)
+
+        ## And the section this test was handed, itself rebuilt from a file,
+        ## carries it on every alignment surface a consumer would read.
+        assert "no-alignment" in section.tforms
+        assert section.tforms["no-alignment"].equals(identity)
+
+
 # --- the generation counter, beside the name tracking ------------------------
 
 
