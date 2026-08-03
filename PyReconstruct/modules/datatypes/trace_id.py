@@ -56,7 +56,12 @@ the code.
                      in-memory attributes precisely because it is canonical:
                      two opens of one file produce byte-identical rows, and the
                      tag set's iteration order -- which is not stable across
-                     processes -- has been replaced by a sorted list.
+                     processes -- has been replaced by a sorted list. Handing
+                     this function the in-memory `tags` **set** instead is the
+                     mistake this paragraph exists to prevent, and since the
+                     serialization below carries no `default=`, that mistake now
+                     raises `TypeError` rather than hashing one process's
+                     iteration order.
 
     salt             an integer counted up from 0, prepended to the payload as
                      `f"{salt}\\x00{payload}"`. Salting resolves a genuine
@@ -64,12 +69,21 @@ the code.
                      colour and a point list, and they still need two ids.
 
     serialization    `json.dumps(inputs, sort_keys=True, separators=(",", ":"),
-                     ensure_ascii=True, default=str)`. `ensure_ascii` keeps the
-                     bytes independent of any locale; `separators` removes the
-                     whitespace `json` would otherwise vary; `default=str` is
-                     the same escape hatch `Flag.deriveID` uses, so a row
-                     carrying a type `json` cannot encode degrades to its `repr`
-                     instead of raising.
+                     ensure_ascii=True)`. `ensure_ascii` keeps the bytes
+                     independent of any locale; `separators` removes the
+                     whitespace `json` would otherwise vary. There is
+                     deliberately **no `default=`**: a row carrying a type
+                     `json` cannot encode raises `TypeError` rather than
+                     degrading to that value's `str`. `Flag.deriveID` does pass
+                     `default=str`, and that divergence is the point --- a
+                     stringified value is only as stable as its `__str__`, so
+                     the hatch admits process-dependent bytes (a `set`'s
+                     iteration order, an object's `repr` memory address) into a
+                     digest declared frozen, silently. The bar is the one the
+                     save path already sets: `Section.getDict`'s rows are
+                     written with a plain `json.dumps` and no `default=`, so a
+                     row this function refuses is a row that could never have
+                     been saved to a `.jser` either.
 
     hash             `hashlib.blake2b(payload_bytes, digest_size=8)`, i.e. 64
                      bits, read big-endian as an unsigned integer.
@@ -212,14 +226,33 @@ def deriveTraceID(section_number: int, contour_name: str, row: list,
             row (list): the trace's stored 8-field row, as
                 `Trace.getList(include_name=False)` produces it
             taken (iterable): ids already spoken for in this SERIES, so a
-                derived id never displaces one
+                derived id never displaces one. A `set` or `frozenset` is
+                membership-tested in place; any other iterable is copied into
+                one first (see below).
         Returns:
             (str): the derived id, `TRACE_ID_LENGTH` base62 characters
     """
-    taken = set(taken)
+    ## Normalize only when the caller did not already hand us a hashed
+    ## container. This function never mutates `taken` -- it only tests
+    ## membership -- so testing the caller's own set directly is equivalent, and
+    ## copying it is not: `deriveForSection` passes the SERIES-wide index once
+    ## per trace, so an unconditional `set(taken)` copies n ids n times and
+    ## makes migrating a series quadratic in its own trace count -- measured
+    ## 0.888 s at 16k traces and projected ~91 s at the 161,767-trace corpus on
+    ## record, against a flat ~3 us/trace once the copy is conditional (ledger
+    ## row TID.derive.section32k). The branch cannot move an id: `x in some_set`
+    ## and `x in set(some_set)` agree by construction.
+    ##
+    ## The copy is kept for every other iterable rather than dropped, because
+    ## `taken` is documented as an *iterable* and a one-shot one must not be
+    ## consumed by the membership tests: `x in generator` advances it, so the
+    ## salt loop's second probe would see an exhausted iterator, find nothing
+    ## taken, and hand back an id the caller already holds.
+    if not isinstance(taken, (set, frozenset)):
+        taken = set(taken)
     payload = json.dumps(
         [TRACE_ID_VERSION, section_number, contour_name, row],
-        sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str,
+        sort_keys=True, separators=(",", ":"), ensure_ascii=True,
     )
     for salt in range(DERIVATION_MAX_SALT):
         digest = hashlib.blake2b(

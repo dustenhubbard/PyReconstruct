@@ -168,7 +168,7 @@ def test_the_version_string_is_inside_the_hashed_payload():
     """
     payload = json.dumps(
         [TRACE_ID_VERSION, 7, "axon", ROW8],
-        sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str,
+        sort_keys=True, separators=(",", ":"), ensure_ascii=True,
     )
     assert TRACE_ID_VERSION in payload
 
@@ -177,7 +177,7 @@ def test_the_version_string_is_inside_the_hashed_payload():
     def derive_with_version(version):
         text = json.dumps(
             [version, 7, "axon", ROW8],
-            sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str,
+            sort_keys=True, separators=(",", ":"), ensure_ascii=True,
         )
         digest = hashlib.blake2b(
             f"0\x00{text}".encode("utf-8"), digest_size=TRACE_ID_BITS // 8
@@ -199,6 +199,118 @@ def test_two_identical_rows_in_one_contour_get_two_ids():
     assert first != second
     third = deriveTraceID(3, "glia", ROW8, taken={first, second})
     assert third not in (first, second)
+
+
+# --- what `taken` may be, and what the derivation may do to it ---------------
+
+
+class _MembershipSpy(set):
+    """A real set that counts the membership tests run against it."""
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.contains_calls = 0
+
+    def __contains__(self, item):
+        self.contains_calls += 1
+        return super().__contains__(item)
+
+
+def test_a_set_of_taken_ids_is_tested_in_place_and_not_copied():
+    """The migration must not copy the series index once per trace.
+
+    Pinned on the MECHANISM rather than on a stopwatch, because the defect this
+    guards is asymptotic and a wall-clock bound is either flaky or useless:
+    `deriveForSection` hands the series-wide index to `deriveTraceID` once per
+    trace, so an unconditional `set(taken)` copies n ids n times and migrating a
+    series costs O(n**2) (measured: 0.888 s at 16k traces, ~91 s projected at
+    the 161,767-trace corpus on record).
+
+    A subclass of `set` cannot be copied without losing its identity, so
+    counting `__contains__` calls says exactly which object was probed. Restore
+    the unconditional copy and this reads 0.
+    """
+    spy = _MembershipSpy({encodeTraceID(1)})
+    derived = deriveTraceID(12, "dendrite01", ROW8, spy)
+
+    assert spy.contains_calls >= 1, (
+        "deriveTraceID copied `taken` instead of testing the caller's set"
+    )
+    ## And skipping the copy did not move the id: this is the frozen golden.
+    assert derived == "yGjaA0DdBeJ"
+
+
+def test_the_derivation_accepts_any_iterable_of_taken_ids():
+    """`taken` is documented as an iterable, and every kind must still work.
+
+    The normalization is skipped only for a set/frozenset; a one-shot iterable
+    is still copied, and that copy is load-bearing rather than defensive. `x in
+    generator` *advances* the generator, so a version that dropped the copy
+    entirely would exhaust it on the first probe, see nothing taken on the
+    second, and hand back an id the caller already holds.
+    """
+    first = deriveTraceID(3, "glia", ROW8)
+    for taken in (
+        {first},                    # set
+        frozenset([first]),         # frozenset
+        [first],                    # list
+        (first,),                   # tuple
+        iter([first]),              # one-shot iterator
+        (x for x in [first]),       # one-shot generator
+        {first: "axon"}.keys(),     # dict view
+        {first: "axon"},            # dict
+    ):
+        assert deriveTraceID(3, "glia", ROW8, taken) != first
+
+
+# --- the serialization refuses what it cannot canonically encode -------------
+
+
+def test_a_value_json_cannot_encode_raises_instead_of_being_stringified():
+    """No `default=` in the frozen recipe, and this is why.
+
+    `default=str` would turn a value `json` cannot encode into that value's
+    `str`, which is only as stable as the `__str__` behind it. A `set` -- the
+    in-memory shape of `tags`, and the mistake the module docstring warns
+    against -- stringifies in the string hash seed's order, so one input derived
+    three different ids across three `PYTHONHASHSEED` values. An object falling
+    back to the default `repr` embeds a memory address and moves every run.
+    Inside a derivation declared frozen, that is silent re-identification, so
+    the recipe carries no hatch and the error surfaces.
+    """
+    tags_as_set = list(ROW8)
+    tags_as_set[7] = {"a", "b"}
+    with pytest.raises(TypeError):
+        deriveTraceID(3, "axon", tags_as_set)
+
+    class Opaque:
+        """No `__str__`, so `str()` falls back to a repr with an address."""
+
+    opaque = list(ROW8)
+    opaque[7] = [Opaque()]
+    with pytest.raises(TypeError):
+        deriveTraceID(3, "axon", opaque)
+
+
+def test_every_value_a_stored_row_can_hold_is_still_accepted():
+    """The other half of the test above: the refusal must not overshoot.
+
+    Dropping the hatch may only reject what `Trace.getList` cannot produce. The
+    bar is the save path's, which writes these same rows with a plain
+    `json.dumps` and no `default=`: a row this refuses could not have been saved
+    to a `.jser` either, and a row that saves must still derive.
+    """
+    from PyReconstruct.modules.datatypes.trace import Trace
+
+    trace = Trace("axon", (255, 0, 0), closed=True)
+    trace.points = [(1.123456789, -2.5), (0.0, 4.0)]
+    trace.tags = {"beta", "alpha"}
+    trace.fill_mode = ("transparent", "selected")
+    row = trace.getList(include_name=False)
+
+    ## Saveable by the real save path's call, so it must be derivable.
+    json.dumps({"contours": {"axon": [row]}}, indent=2)
+    assert len(deriveTraceID(5, "axon", row)) == TRACE_ID_LENGTH
 
 
 def test_an_exhausted_salt_range_raises_rather_than_going_random():
