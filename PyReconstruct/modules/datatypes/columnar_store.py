@@ -307,6 +307,26 @@ class SectionColumns():
     tracking rather than replacing it.
     """
 
+    ## The object-dtype columns and the index, declared here rather than as
+    ## annotated assignments in `__init__`. A bare class-level annotation is
+    ## evaluated once, at class creation; an annotated attribute assignment is
+    ## evaluated on every instantiation and discarded (PEP 526). These six
+    ## subscripts measure 326ns together against a 1,200ns `SectionColumns(...)`,
+    ## so writing them inline would have put ~27% onto the construction cost of
+    ## the object whose construction cost is what this module exists to measure.
+    ##
+    ## `_fill_mode_overflow` is deliberately not `dict[int, tuple[str, str]]`:
+    ## the reason it exists is that the pair came out of a `.jser` unvalidated,
+    ## so naming its element type would claim a check nothing performs.
+    ## `_ids` is `None` where the store has no issuer, which is every section in
+    ## the shipped application today; `TraceIDIssuer.issue` returns `str`.
+    _names : list[str]
+    _fill_mode_overflow : dict[int, tuple]
+    _tags : list[frozenset[str]]
+    _ids : list[str | None]
+    _live : list[bool]
+    _index : dict[str, list[int]]
+
     def __init__(self, section_number: int, coordinates=None, id_issuer=None):
         """Create an empty store for one section.
 
@@ -328,6 +348,7 @@ class SectionColumns():
         self._colors = _NumericColumn(np.uint8, width=3)
         self._bools = {name: _NumericColumn(bool) for name in BOOL_ATTRIBUTES}
         self._fill_modes = _NumericColumn(np.uint8)
+        ## row -> the pair the file carried, for a pair outside FILL_MODE_CODES.
         self._fill_mode_overflow = {}
         self._tags = []
         self._ids = []

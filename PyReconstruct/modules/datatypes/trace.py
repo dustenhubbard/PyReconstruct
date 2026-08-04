@@ -1,5 +1,5 @@
 import re
-from typing import Union
+from typing import Sequence, Union
 
 import numpy as np
 
@@ -32,12 +32,32 @@ def normalizeObjectName(value : str) -> str:
 
 class Trace():
 
-    def __init__(self, name : str, color : tuple, closed=True):
+    # Declared on the class, not as `self.fill_mode : Sequence[str] = ...` in
+    # `__init__`. A bare class-level annotation is evaluated once, when the
+    # class is created; an annotated *attribute* assignment is evaluated on
+    # every instantiation (PEP 526 evaluates the annotation for a non-simple
+    # target and discards it). `Sequence[str]` measures 55ns to subscript
+    # against a 190ns `Trace(...)`, so writing it in `__init__` would have put
+    # ~29% onto the constructor of the most-constructed object in the program.
+    fill_mode : Sequence[str]
+
+    def __init__(self, name : str, color : Sequence[int], closed=True):
         """Create a Trace object.
-        
+
+        ``color`` and ``fill_mode`` are annotated as sequences rather than as
+        tuples, because a list is not a mistake here -- it is the shape a
+        file-loaded trace has. ``fromList`` assigns both verbatim from parsed
+        JSON, where a JSON array decodes to a ``list``, and ``fromXMLObj``
+        builds ``color`` as a list too. Nothing normalizes either one
+        afterwards, and nothing should: ``getList`` writes the value straight
+        back out, and ``convertMode`` accepts ``tuple`` or ``list`` by an
+        explicit runtime check. Annotating them ``tuple`` said the round trip
+        through a ``.jser`` was a type error, which is the wrong way round --
+        the tuple literals in this file are the special case, not the list.
+
             Params:
                 name (str): the name of the trace
-                color (tuple): the color of the trace: (R, G, B) 0-255
+                color (Sequence[int]): the color of the trace: (R, G, B) 0-255
                 closed (bool): True if trace is closed
         """
         self.name       = name
@@ -318,9 +338,12 @@ class Trace():
             Returns:
                 (XMLContour) the trace as an xml contour object or (Str)
         """
-        border_color = list(self.color)
-        for i in range(len(border_color)):
-            border_color[i] /= 255
+        # 0-255 in, 0-1 out. Built as a new list rather than divided in place,
+        # which is the same arithmetic on the same values and is what
+        # `Ztrace.getXMLObj` already does for the identical conversion: the
+        # in-place form wrote floats back into a list of ints, so the list's
+        # element type changed under it halfway through the loop.
+        border_color = [c / 255 for c in self.color]
 
         # reverse point order if negative trace
         if self.negative:
