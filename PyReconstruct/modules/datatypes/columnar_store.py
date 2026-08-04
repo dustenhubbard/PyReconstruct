@@ -308,12 +308,17 @@ class SectionColumns():
     """
 
     ## The object-dtype columns and the index, declared here rather than as
-    ## annotated assignments in `__init__`. A bare class-level annotation is
-    ## evaluated once, at class creation; an annotated attribute assignment is
-    ## evaluated on every instantiation and discarded (PEP 526). These six
-    ## subscripts measure 326ns together against a 1,200ns `SectionColumns(...)`,
-    ## so writing them inline would have put ~27% onto the construction cost of
-    ## the object whose construction cost is what this module exists to measure.
+    ## annotated assignments in `__init__`. The reason is convention, not speed:
+    ## none of the six has per-instance default logic for a type to hang off, so
+    ## declaring them together puts the shape of a row in one block instead of
+    ## scattering it down the constructor.
+    ##
+    ## An earlier version of this comment said the inline form pays an
+    ## annotation evaluation on every instantiation and put a percentage on it.
+    ## That was wrong. PEP 526 evaluates a complex-target annotation only in
+    ## module or class scope, so `self.x : T = v` inside `__init__` never
+    ## evaluates `T`; the two forms measure the same `SectionColumns(...)` cost.
+    ## See `Trace.fill_mode` in `trace.py` for the same note.
     ##
     ## `_fill_mode_overflow` is deliberately not `dict[int, tuple[str, str]]`:
     ## the reason it exists is that the pair came out of a `.jser` unvalidated,

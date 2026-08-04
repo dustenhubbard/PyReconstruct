@@ -1,5 +1,5 @@
 import re
-from typing import Sequence, Union
+from typing import Union
 
 import numpy as np
 
@@ -32,32 +32,45 @@ def normalizeObjectName(value : str) -> str:
 
 class Trace():
 
-    # Declared on the class, not as `self.fill_mode : Sequence[str] = ...` in
-    # `__init__`. A bare class-level annotation is evaluated once, when the
-    # class is created; an annotated *attribute* assignment is evaluated on
-    # every instantiation (PEP 526 evaluates the annotation for a non-simple
-    # target and discards it). `Sequence[str]` measures 55ns to subscript
-    # against a 190ns `Trace(...)`, so writing it in `__init__` would have put
-    # ~29% onto the constructor of the most-constructed object in the program.
-    fill_mode : Sequence[str]
+    # Declared on the class rather than as `self.fill_mode : ... = ...` in
+    # `__init__`. The reason is convention, not speed: there is no per-instance
+    # default logic for the type to hang off, so it belongs where a reader
+    # looking for the shape of a `Trace` will find it.
+    #
+    # Said explicitly because an earlier version of this comment claimed
+    # otherwise, and the claim was wrong: the inline form costs nothing either.
+    # PEP 526 evaluates a complex-target annotation only in module or class
+    # scope, so inside a function body `self.x : T = v` does not evaluate `T`
+    # at all -- the bytecode is LOAD_CONST / LOAD_FAST / STORE_ATTR, with no
+    # annotation in it. The two forms measure the same `Trace(...)` cost. Write
+    # whichever reads better; do not avoid the inline form for performance.
+    fill_mode : tuple[str, ...] | list[str]
 
-    def __init__(self, name : str, color : Sequence[int], closed=True):
+    def __init__(self, name : str, color : tuple[int, ...] | list[int], closed=True):
         """Create a Trace object.
 
-        ``color`` and ``fill_mode`` are annotated as sequences rather than as
-        tuples, because a list is not a mistake here -- it is the shape a
-        file-loaded trace has. ``fromList`` assigns both verbatim from parsed
-        JSON, where a JSON array decodes to a ``list``, and ``fromXMLObj``
-        builds ``color`` as a list too. Nothing normalizes either one
-        afterwards, and nothing should: ``getList`` writes the value straight
-        back out, and ``convertMode`` accepts ``tuple`` or ``list`` by an
-        explicit runtime check. Annotating them ``tuple`` said the round trip
-        through a ``.jser`` was a type error, which is the wrong way round --
-        the tuple literals in this file are the special case, not the list.
+        ``color`` and ``fill_mode`` admit a ``list`` as well as a ``tuple``,
+        because a list is not a mistake here -- it is the shape a file-loaded
+        trace has. ``fromList`` assigns both verbatim from parsed JSON, where a
+        JSON array decodes to a ``list``, and ``fromXMLObj`` builds ``color`` as
+        a list too. Nothing normalizes either one afterwards, and nothing
+        should: ``getList`` writes the value straight back out, and
+        ``convertMode`` accepts ``tuple`` or ``list`` by an explicit runtime
+        check. Annotating them ``tuple`` alone said the round trip through a
+        ``.jser`` was a type error, which is the wrong way round -- the tuple
+        literals in this file are the special case, not the list.
+
+        Named as the two containers that occur, and not as ``Sequence``,
+        because ``str`` satisfies ``Sequence[str]`` and ``bytes`` satisfies
+        ``Sequence[int]``. Under the wider annotation ``trace.fill_mode =
+        "solid"`` and a ``bytes`` colour both type-check silently, which is the
+        classic widening footgun and is not a trade this needed to make: the
+        union reports exactly the same mypy total as ``Sequence`` did.
+        ``tests/test_trace_color_fill_mode_types.py`` pins both.
 
             Params:
                 name (str): the name of the trace
-                color (Sequence[int]): the color of the trace: (R, G, B) 0-255
+                color (tuple[int, ...] | list[int]): the color of the trace: (R, G, B) 0-255
                 closed (bool): True if trace is closed
         """
         self.name       = name
