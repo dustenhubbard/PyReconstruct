@@ -285,12 +285,43 @@ def test_copy_carries_every_field():
     as the constructor default instead of the original's value. Comparing the
     instance dicts catches that without this test having to list the fields
     itself.
+
+    Comparing the dicts is necessary but *not sufficient*, which is why the
+    fixture check below exists. ``copy()`` builds its result from
+    ``Trace("", [0, 0, 0])``, so a dropped field arrives on the copy holding
+    that trace's value for it. If ``orig`` also happens to hold that value --
+    which is exactly what happens to a field this test was never updated to
+    poke -- then both sides agree and the comparison passes while the field is
+    being silently dropped. A ninth field added to ``__init__`` with a constant
+    default and left out of ``copy()`` was confirmed to slip through the two
+    ``vars()`` assertions alone.
+
+    So the fixture is checked before it is used: every field ``orig`` carries
+    must differ from what ``copy()``'s throwaway constructor call produces for
+    it. A new field turns this test red until somebody gives it a
+    distinguishing value here, at which point the dict comparison can see it.
+    That is what makes the forward guarantee in the first paragraph real rather
+    than conditional on the new field's default being an interesting one.
     """
     orig = make_square_trace(name="orig", color=(1, 2, 3), closed=False)
     orig.negative = True
     orig.hidden = True
     orig.tags = {"a", "b"}
     orig.fill_mode = ("solid", "unselected")
+
+    # The same throwaway `copy()` starts from, so its values are precisely the
+    # ones a dropped field would come back holding.
+    default = Trace("", [0, 0, 0])
+    for field, value in vars(orig).items():
+        assert field in vars(default), (
+            f"{field} is not a field a Trace constructor produces; this test "
+            f"compares against Trace(\"\", [0, 0, 0]) and cannot vouch for it"
+        )
+        assert value != vars(default)[field], (
+            f"{field} sits at its constructor default in this fixture, so a "
+            f"copy() that dropped it would still compare equal and this test "
+            f"would not notice -- give {field} a distinct value above"
+        )
 
     c = orig.copy()
 
