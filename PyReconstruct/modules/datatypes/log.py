@@ -310,14 +310,23 @@ class LogSet():
             Returns:
                 (LogSet): the parsed log set
 
-        The parse is row-at-a-time, so a row that will not read says nothing
-        about the rows around it and need not cost them. Which of the two
-        behaviors is right is the caller's call, not this function's: a reader
-        that shows the history to a user would rather raise than quietly
-        present an incomplete one, while a reader that folds the rows into a
-        set (Series.getEditorsFromHistory) loses every OTHER user's entry if
-        one row costs the file. Hence the flag, defaulting to the historical
-        all-or-nothing so no existing caller changes.
+        Which of the two behaviors is right is the caller's call, not this
+        function's: a reader that shows the history to a user would rather
+        raise than quietly present an incomplete one, while a reader that
+        folds the rows into a set (Series.getEditorsFromHistory) loses every
+        OTHER user's entry if one row costs the file. Hence the flag,
+        defaulting to the historical all-or-nothing so no existing caller
+        changes.
+
+        What skip_corrupt promises is bounded, and the bound is worth stating
+        because an earlier version of this docstring overstated it. The parse
+        is row-at-a-time only for a row that arrives whole. A row holding
+        FEWER than six comma fields is first joined to the lines after it by
+        the continuation loop below, and that join is greedy: a bad row can
+        and does cost the row after it. "A bad row costs only itself" is true
+        of the six-field rows that fail in Log.fromStr, and false of the short
+        ones. Both shapes are pinned in
+        tests/test_editors_from_corrupt_history.py.
         """
         log_set = LogSet()
         i = 0
@@ -325,7 +334,59 @@ class LogSet():
             log_str = log_list[i]
             if log_str.strip():
                 try:
-                    # check for corrupt log strings (return key in name)
+                    # Reassemble before parsing: a name holding a literal
+                    # newline -- the "return key in name" this loop was written
+                    # for -- reaches us split across the physical lines it was
+                    # written to, so a short row is joined to the line after it
+                    # until it has six comma fields.
+                    #
+                    # The join is GREEDY and unguarded. That is a known
+                    # limitation, recorded here rather than fixed in passing,
+                    # because it has no way to tell a genuine continuation from
+                    # the next unrelated row: it takes whatever follows. So a
+                    # well-formed row sitting after a short one is consumed
+                    # here before Log.fromStr ever sees it on its own, and is
+                    # lost one of two ways depending on what the concatenation
+                    # happens to parse as:
+                    #
+                    #   * the join does not parse -- both rows land in
+                    #     skipped_rows as ONE entry, so the count callers print
+                    #     (Series.getEditorsFromHistory) is honest about
+                    #     logical rows and undercounts file lines; or
+                    #   * the join DOES parse -- a single fabricated Log stands
+                    #     in for both, nothing reaches skipped_rows at all, and
+                    #     the invented row can carry a user ("-", the placeholder
+                    #     __str__ writes for an empty field) that nobody was.
+                    #     This half also fires on the DEFAULT path, where
+                    #     skip_corrupt never comes into it.
+                    #
+                    # Reachable from the app's own writer, not just a
+                    # hand-built list. Trace.name's setter routes through
+                    # normalizeObjectName, which collapses commas AND
+                    # whitespace, so a trace name cannot carry either hazard.
+                    # Ztrace.name is a plain attribute and is normalized
+                    # nowhere -- and ztrace names DO reach the log, both as the
+                    # obj_name field (Series.createZtrace, smoothZtraces,
+                    # deleteZtraces) and inside the event text itself
+                    # (renameZtrace writes f"Rename ztrace to {new_name}").
+                    # A newline in one splits the row across physical lines in
+                    # existing_log.csv, which is where the short rows come from.
+                    # Flag names are NOT a route, checked rather than assumed:
+                    # every flag call site passes obj_name=None.
+                    #
+                    # Bounding the join, or recording one skipped_rows entry
+                    # per source line, changes what every default caller sees,
+                    # so which of those to want is a maintainer's call and not
+                    # a cleanup to make in passing. Measured rather than
+                    # assumed: refusing to join a line that already carries six
+                    # comma fields breaks the shapes pinned in
+                    # tests/test_editors_from_corrupt_history.py and nothing
+                    # else in the suite -- but it is a guess about the data,
+                    # since a genuine continuation whose own text holds six
+                    # commas would then stop being rejoined. That guess is
+                    # exactly the judgement this comment declines to make for
+                    # whoever comes next; the tests pin the behavior as it
+                    # stands so the choice is a deliberate one.
                     while len(log_str.split(",")) < 6:
                         log_str += log_list[i+1].strip()
                         i += 1
