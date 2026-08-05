@@ -2453,10 +2453,14 @@ def test_deleting_duplicate_traces_leaves_the_section_saveable(real_section):
     carry different tags -- rare, and exactly the messy series this clean-up
     operation is run on.
 
-    Driven at the mechanism rather than through `deleteDuplicateTraces` itself,
-    because the operation only reaches `mergeTags` when it finds two traces that
-    overlap above threshold, and the fixture series has no such pair to offer.
-    The call, the receiver and the ordering are the operation's own.
+    Driven at the mechanism: the call, the receiver and the ordering are the
+    operation's own, and this is the test that attributes the drift to `tags`.
+    It does NOT pin the production repair -- deleting
+    `series.py`'s `resyncColumnarStore()` call leaves it green, because it never
+    calls `deleteDuplicateTraces`. `test_a_planted_duplicate_pair_is_merged_and_
+    persisted_by_the_real_operation` below is the one that goes red for that,
+    and it is what the "pinned by a test that reverts the repair" claim rests
+    on.
     """
     name = next(
         c for c in sorted(real_section.contours, key=str)
@@ -2499,6 +2503,345 @@ def test_mergeTags_on_a_held_trace_without_the_repair_really_drifts(
     )
 
 
+def _plantADuplicatePair(section, name="a_planted_duplicate", tags=("one", "two")):
+    """Two identical closed traces under one name, carrying different tags.
+
+    `deleteDuplicateTraces` only reaches `mergeTags` when it finds a pair that
+    `Trace.overlaps` accepts, and it only *drifts* when the two carry different
+    tags. The fixture series offers no such pair, and the earlier version of
+    this file took that as a reason to drop down to the mechanism -- which is
+    exactly how the production repair came to be unguarded. Planting the pair is
+    eight lines and keeps the real function in the loop.
+
+    Identical point lists rather than merely overlapping ones, because
+    `Trace.overlaps` short-circuits on `pointsMatch` before it ever needs
+    `getOverlapRatio`, so the pair is a duplicate at any threshold and the test
+    does not depend on a ratio computation it is not about.
+
+    Both traces go in through `Section.addTrace`, which is hooked, so the store
+    agrees before the operation starts: a test that began from a drifted store
+    would raise for the wrong reason.
+    """
+    points = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+    for tag in tags:
+        trace = Trace(name, (255, 0, 0), closed=True)
+        trace.points = list(points)
+        trace.tags = {tag}
+        section.addTrace(trace, log_event=False)
+    section.save()
+    return name
+
+
+def test_a_planted_duplicate_pair_is_merged_and_persisted_by_the_real_operation(
+    real_series
+):
+    """`Series.deleteDuplicateTraces`, driven -- the pin for the TENTH site.
+
+    "Delete duplicate traces" is a shipped series-wide clean-up. The real
+    function loads its own sections through `enumerateSections` and calls
+    `section.save()` itself, so with the repair gone the mismatch raises *inside
+    the operation*: the clean-up dies partway through and every later section
+    goes unprocessed. That is what makes this test go red rather than merely
+    fail an assertion at the end.
+
+    Written this way on purpose. The two tests above reproduce
+    `mergeTags`-then-`save` inline and pass whatever `deleteDuplicateTraces`
+    does, so no revert of the production repair can make them red -- which a
+    reviewer established by deleting the call and running the whole suite green.
+    This one calls the shipped function with nothing patched.
+
+    The survivors are read back **off disk after a reload**, so the merged tags
+    asserted here are the persisted bytes and not the in-memory objects the
+    operation happened to be holding.
+    """
+    number = sorted(real_series.sections)[0]
+    name = _plantADuplicatePair(real_series.loadSection(number))
+
+    ## The real, shipped entry point. Its own `section.save()` is what raises
+    ## when the repair is missing.
+    removed = real_series.deleteDuplicateTraces(0.95, log_event=False)
+
+    assert removed.get(number) and name in removed[number], (
+        f"the operation did not report removing a duplicate of {name!r}: "
+        f"{removed}"
+    )
+
+    survivors = real_series.loadSection(number).contours[name]
+    assert len(survivors) == 1, (
+        f"expected one survivor of the planted pair, found {len(survivors)}"
+    )
+    assert survivors[0].tags == {"one", "two"}, (
+        "the surviving trace's merged tags did not reach the disk: "
+        f"{sorted(survivors[0].tags)}"
+    )
+
+
+# --- the two sites that need a live field ------------------------------------
+#
+# `cutTrace` and `smoothTraces` are methods on `FieldWidget`, and both reach the
+# section's own traces through the field's selection. Neither is drivable
+# against a stand-in the way `findFlag` is: `cutTrace` needs
+# `section_layer.traceToPix` and a real `Series.getOption`, and `smoothTraces`
+# is wrapped in `trace_function`, which reads the table manager and calls
+# `mainwindow.saveAllData()` before the method body runs.
+#
+# So these two use the same live-`main_window` harness `tests/test_knife_cut_
+# guards.py` uses, marked `gui` per test rather than per module because the rest
+# of this file must keep running under `-m "not gui"`.
+#
+# `local_series_settings` is not optional in either. `cutTrace` reads
+# `knife_del_threshold` and `smoothTraces` reads `roll_window`, both global-scope
+# options, and `Series.getOption` writes the default back when a key is absent --
+# so without the injected store a run of this file would leave keys in the
+# developer's real `QSettings`.
+
+
+@pytest.fixture
+def field_notices(monkeypatch):
+    """Record what `notify` would have shown from `field_widget_2_trace`.
+
+    That module does `from ... import notify`, binding the function in its own
+    namespace, so patching the helper at its source has no effect. Required
+    rather than convenient: offscreen, `notify` falls through to a console branch
+    ending in `input()`, which raises under pytest's capture and hangs under
+    `-s`, and the refusal below trips it on purpose.
+    """
+    from PyReconstruct.modules.gui.main import field_widget_2_trace
+
+    notices = []
+    monkeypatch.setattr(
+        field_widget_2_trace,
+        "notify",
+        lambda message, *a, **kw: notices.append(message),
+    )
+    return notices
+
+
+def _aReferenceContour(section):
+    """A contour with points, to size the planted traces against.
+
+    Only so the planted geometry lands where the field is actually looking and
+    `traceToPix` returns something sane; nothing here depends on which contour it
+    is.
+    """
+    for name in sorted(section.contours, key=str):
+        if section.contours[name] and len(section.contours[name][0].points) >= 3:
+            return section.contours[name][0]
+    raise AssertionError("the fixture section the window opens on has no traces")
+
+
+def _plantASelectedBowtiePair(field, name="a_planted_bowtie"):
+    """Two same-named self-crossing closed traces, selected, tagged differently.
+
+    Every element is one `cutTrace` needs to reach its tag merge and then refuse:
+
+      * **two of them**, or the `for trace in traces[1:]` loop is empty and
+        nothing is merged;
+      * **the same name**, or `cutTrace` refuses at "Select a single object to
+        cut at a time" before the merge;
+      * **different tags**, or `merged_any` stays False and the store never
+        drifts -- the false-negative-from-a-bad-fixture trap that let `mergeTags`
+        look clean to a reviewer on a single-trace contour;
+      * **self-crossing and closed**, so `uncuttable_closed_traces` refuses the
+        cut *after* the merge, which is the whole point: the drift outlives an
+        operation the user was told did nothing.
+
+    The two diagonals of an existing object's bounding box, taken in an order
+    that crosses in the middle -- the shape freehand tracing makes when a stroke
+    doubles back over itself. Asserted invalid rather than assumed, because a
+    fixture that quietly stopped being a bowtie would make this test pass while
+    proving nothing.
+    """
+    reference = [tuple(p) for p in _aReferenceContour(field.section).points]
+    xs = [p[0] for p in reference]
+    ys = [p[1] for p in reference]
+    x0, x1 = min(xs), max(xs)
+    y0, y1 = min(ys), max(ys)
+    points = [(x0, y0), (x1, y1), (x1, y0), (x0, y1)]
+
+    from shapely.geometry import Polygon
+
+    assert not Polygon(points).is_valid, "the planted trace is not a bowtie"
+
+    planted = []
+    for tag in ("tag_from_first", "tag_from_second"):
+        trace = Trace(name, (0, 255, 0), closed=True)
+        trace.points = list(points)
+        trace.tags = {tag}
+        field.section.addTrace(trace, log_event=False)   # hooked: store agrees
+        planted.append(trace)
+
+    field.section.selected_traces = list(planted)
+    return name, planted
+
+
+def _aScalpelAcross(field, trace):
+    """A knife stroke, in pixel coordinates, that crosses `trace`.
+
+    Lifted from `tests/test_knife_cut_guards.py`. `cutTrace` refuses a
+    self-crossing trace before it looks at the stroke at all, so this only has to
+    be a well-formed argument -- but it is the real shape a real cut arrives as,
+    and passing a degenerate one would be testing a different early return.
+    """
+    pix = field.section_layer.traceToPix(trace)
+    xs = [p[0] for p in pix]
+    ys = [p[1] for p in pix]
+    mid_y = (min(ys) + max(ys)) / 2
+    left, right = min(xs) - 10, max(xs) + 10
+    steps = 20
+    return [(left + (right - left) * i / steps, mid_y) for i in range(steps + 1)]
+
+
+@pytest.mark.gui
+def test_a_refused_scalpel_cut_leaves_the_section_saveable(
+    main_window, local_series_settings, field_notices
+):
+    """`FieldWidgetTrace.cutTrace`, driven -- the pin for the ELEVENTH site.
+
+    THE USER PATH
+    -------------
+    Select two traces of one object -> scalpel across them -> one of them
+    crosses itself, so the cut is refused and the user is told the object was
+    left unchanged -> but the tag merge above the refusal already ran, in place,
+    on a trace the section still holds. The next `Section.save()` -- an autosave,
+    a section change, a mouse-wheel scroll -- then raises
+    `ColumnarDualWriteMismatch` at the user for an action they already watched
+    get refused, and keeps raising.
+
+    `test_merging_tags_across_a_selection_leaves_the_section_saveable` above
+    reproduces that merge inline and therefore passes whatever `cutTrace` does;
+    deleting the production repair leaves it green. This calls the real method
+    with nothing patched but `notify`, so the repair is what keeps the final
+    `save()` from raising.
+    """
+    local_series_settings(main_window)
+    field = main_window.field
+    name, planted = _plantASelectedBowtiePair(field)
+    first = planted[0]
+
+    ## Baseline: the store agrees before the cut, so a raise below is the cut's.
+    field.section.save()
+
+    refused = field.cutTrace(_aScalpelAcross(field, first))
+
+    ## It refused, visibly, and left the object alone -- the guarantee the user
+    ## was given.
+    assert refused is False
+    assert field_notices == [
+        "A selected trace crosses itself and cannot be cut.\n"
+        "The object was left unchanged."
+    ]
+    assert len(field.section.contours[name]) == 2
+    assert field.section.contours[name][0] is first, "the trace was replaced"
+
+    ## And it merged the tags on its way to that refusal, in place, on a trace
+    ## the section still holds. This is the drift.
+    assert first.tags == {"tag_from_first", "tag_from_second"}
+
+    ## The store came with it. Before the repair this raised, and kept raising.
+    field.section.save()
+
+    ## The user's next edit, which is where the raise actually used to arrive.
+    field.section.addTrace(_aTrace(field.section))
+    field.section.save()
+
+
+@pytest.mark.gui
+def test_smoothing_the_selection_leaves_the_section_saveable(
+    main_window, local_series_settings
+):
+    """`FieldWidgetTrace.smoothTraces`, driven -- the pin for a site with no test.
+
+    "Smooth traces" is a shipped field action on the selection. `traces` is the
+    section's own selection, not copies, so `Trace.smooth` rewrites `points` in
+    place on traces the section holds, from outside `Section`, where no
+    dual-write hook sees it. `field_interaction` then calls `saveState()` and
+    `generateView()`, neither of which repairs the store, so the drift survives
+    to whichever later `Section.save()` happens first.
+
+    This is the sibling of `Series.smoothObject` and it had no test of any kind
+    until now -- deleting its repair left all 5,939 tests green.
+
+    Called with no arguments: `trace_function` reads the selection off the
+    section (or the trace table) and inserts it as the first parameter, and the
+    wrapper returns None, so the assertion that the method did something has to
+    be that `points` actually moved. A contour whose traces are all too short to
+    smooth would leave `points` untouched and make this pass while proving
+    nothing, so the contour is chosen for having enough points.
+    """
+    local_series_settings(main_window)
+    field = main_window.field
+    name = next(
+        c for c in sorted(field.section.contours, key=str)
+        if field.section.contours[c]
+        and all(len(t.points) >= 3 for t in field.section.contours[c])
+    )
+    traces = list(field.section.contours[name])
+    before = [[tuple(p) for p in trace.points] for trace in traces]
+
+    ## Baseline: the store agrees before the smooth.
+    field.section.save()
+    field.section.selected_traces = list(traces)
+
+    ## The real, shipped method.
+    field.smoothTraces()
+
+    after = [[tuple(p) for p in trace.points] for trace in traces]
+    assert after != before, (
+        f"`smooth` left {name!r} untouched, so no drift was possible and this "
+        "would have passed for the wrong reason"
+    )
+
+    ## The store came with it.
+    field.section.save()
+
+
+@pytest.mark.gui
+def test_smoothTraces_without_the_repair_really_would_have_drifted(
+    main_window, local_series_settings, monkeypatch
+):
+    """The `smoothTraces` repair is load-bearing, and the drift is in `points`.
+
+    Same shape as `test_smoothObject_without_the_repair_really_would_have_
+    drifted`: the patch reverts the REPAIR and not the BUILD. Neutering
+    `resyncColumnarStore` wholesale would also disable `__init__`'s call, leave
+    the section storeless and make every check return on its first line -- a
+    false pass shaped exactly like a fix. The store is already built by the time
+    the window is up, so patching the bound method on this one section reverts
+    exactly the call this fixup added and nothing else.
+
+    The section is repaired again at the end. Left drifted, it takes the
+    `main_window` fixture's own teardown down with it, which reports as an error
+    beside the pass and buries the result.
+    """
+    local_series_settings(main_window)
+    field = main_window.field
+    section = field.section
+    name = next(
+        c for c in sorted(section.contours, key=str)
+        if section.contours[c]
+        and all(len(t.points) >= 3 for t in section.contours[c])
+    )
+    section.save()
+
+    assert section._columns is not None, "the store was never built"
+    original = type(section).resyncColumnarStore
+    monkeypatch.setattr(section, "resyncColumnarStore", lambda: None)
+
+    section.selected_traces = list(section.contours[name])
+    field.smoothTraces()
+
+    with pytest.raises(ColumnarDualWriteMismatch) as caught:
+        section.save()
+
+    assert "points:" in str(caught.value), (
+        f"the drift was caught but not attributed to `points`: {caught.value}"
+    )
+
+    ## Hand the section back consistent, or teardown's save raises too.
+    original(section)
+
+
 def test_merging_tags_across_a_selection_leaves_the_section_saveable(
     real_section
 ):
@@ -2514,9 +2857,13 @@ def test_merging_tags_across_a_selection_leaves_the_section_saveable(
     `Trace` method -- and the reach is `selected_traces`, which the predicate
     did not know was a route to a section's traces.
 
-    Driven at the mechanism: `cutTrace` needs a scalpel path and a live
-    `FieldWidget`, but the selection, the receiver and the in-place `tags.add`
-    are the widget's own.
+    Driven at the mechanism: the selection, the receiver and the in-place
+    `tags.add` are the widget's own, and this is the test that shows the same
+    state both raises without the repair and saves with it. It does NOT pin the
+    production repair -- it never calls `cutTrace`, so deleting the call in
+    `field_widget_2_trace.py` leaves it green.
+    `test_a_refused_scalpel_cut_leaves_the_section_saveable` above is the one
+    that goes red for that.
     """
     name = next(
         c for c in sorted(real_section.contours, key=str)
