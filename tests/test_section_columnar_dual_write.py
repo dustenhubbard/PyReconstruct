@@ -1,20 +1,68 @@
-"""The test-only dual write from `Section` into the columnar store.
+"""The dual write from `Section` into the columnar store.
 
-Slice 3 of the Phase 1 rewiring. A `Section` can carry a `SectionColumns` beside
-its `self.contours`, mirror every mutation into it, and check the two against
-each other after every single mutation. Nothing reads the store; this exists so
-that the store gets driven by real code on real data before one call site
-anywhere is flipped to read from it.
+Slice 3 of the Phase 1 rewiring. Every `Section` carries a `SectionColumns`
+beside its `self.contours`, mirrors every mutation into it, and checks the two
+against each other. Nothing reads the store yet; this exists so that the store
+is driven by real code on real data before one call site is flipped to read
+from it.
 
-TWO THINGS THIS FILE HAS TO PROVE, AND THE SECOND IS THE ONE THAT IS EASY TO FAKE
----------------------------------------------------------------------------------
-**That the gate is genuinely unreachable from a normal launch.** This is the
-maintainer's stated condition for the slice existing at all, so it is checked
-structurally rather than by assertion-about-intent: the environment variable's
-name appears in exactly one shipped file, that file never writes an environment
-variable, and no launcher, workflow, packaging spec or script in the repository
-mentions it. `test_no_shipped_file_anywhere_in_the_repository_mentions_the_gate`
-is the one that would catch somebody wiring it to a settings toggle later.
+WHAT CHANGED ON 2026-08-05, AND WHAT THIS FILE NOW HAS TO PROVE
+---------------------------------------------------------------
+This landed as a **test-only** harness behind `PYRECON_TEST_ONLY_COLUMNAR_DUAL_
+WRITE`, and half of this file existed to prove the gate was unreachable from a
+real launch. That property was deliberately removed: with the store built only
+under the gate, `Section._columns` was `None` forever in production and there
+was nothing for a consumer to read at all. The store is now built in every
+session.
+
+So the invisibility tests are **not deleted, and not left asserting something
+that is now false**. Each one is replaced by the property that took its place:
+
+  * "no shipped file may name the gate" became **the gate does not exist**, in
+    any file, and no environment variable decides whether the store is built
+    (`test_no_environment_variable_anywhere_decides_whether_the_store_exists`,
+    `test_section_py_neither_reads_nor_writes_the_environment`). The same
+    repository-wide deny-list walk is kept; only the question it asks changed.
+  * "a section without the gate carries no store" became **every section
+    carries a store**, whatever the environment says
+    (`test_every_section_carries_a_store_whatever_the_environment_says`).
+  * "mutating an ungated section stays storeless" became **mutating a section
+    keeps the store in step** (`test_mutating_a_section_keeps_the_store_in_
+    step`).
+  * "nothing outside `Section` knows the harness exists" became **nothing
+    outside `Section` writes to the store**, with the three modules that call
+    the public *repair* enumerated by name so a fourth is a visible act
+    (`test_only_section_py_writes_the_store_and_the_repair_sites_are_pinned`).
+
+What did NOT change is the property the object model still has: **it is still
+authoritative.** Nothing here reads a value out of the store to answer a
+question, `getDict`/`save` serialize `self.contours`, and the store is a shadow
+copy that is written and checked. `test_the_object_model_is_still_authoritative`
+pins that directly.
+
+THE CHECK'S SCOPE NARROWED IN TWO PLACES, ON PURPOSE, AND BOTH ARE TESTED
+--------------------------------------------------------------------------
+Under the gate the whole-section comparison ran after every mutation AND at
+every build. Always-on made both impossible -- measured on `autoseg745`, a
+whole-section comparison is ~85 ms on the median section and ~129 ms on the
+busiest against a 0.002 ms `addTrace`, and a store is built at every section
+load. So:
+
+  * the per-mutation check is targeted at the row that moved
+    (`test_a_mutation_does_not_materialize_the_whole_section`),
+  * the build checks row arity and not values
+    (`test_building_a_store_does_not_run_the_whole_section_comparison`,
+    `test_building_a_store_still_checks_the_row_arity`),
+  * the whole-section comparison runs at `save()`
+    (`test_the_whole_section_check_runs_on_save`).
+
+Both narrowings are asserted rather than described, so restoring the old scope
+turns those tests red and reopens the cost question with a reviewer present.
+What did NOT narrow is what the comparison compares: the `test_a_dropped_*`
+family still drives real `Section` methods with a store entry point silently
+broken and still requires the raise, and
+`test_addTrace_alone_no_longer_detects_a_stale_row_map` pins the one detection
+that was genuinely lost.
 
 **That the consistency check actually catches divergence.** A safety net that is
 written and trusted is worth nothing; a safety net that has been fired at is
@@ -46,7 +94,11 @@ from PyReconstruct.modules.datatypes.columnar_store import SectionColumns
 from PyReconstruct.modules.datatypes.section import ColumnarDualWriteMismatch
 
 
-GATE = section_module.DUAL_WRITE_ENV_VAR
+## The environment variable that used to gate this. Kept as a literal, and only
+## here, because two tests below assert it appears nowhere else: a gate that was
+## removed by deleting its `if` and left named in a launcher is a gate somebody
+## rewires.
+RETIRED_GATE = "PYRECON_TEST_ONLY_COLUMNAR_DUAL_WRITE"
 
 SECTION_SOURCE = Path(section_module.__file__).resolve()
 PACKAGE_ROOT = SECTION_SOURCE.parents[2]
@@ -57,18 +109,6 @@ SYNTHETIC_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "parity_serie
 
 # --- fixtures ----------------------------------------------------------------
 
-@pytest.fixture
-def gate_on(monkeypatch):
-    """Turn the dual-write gate on for the rest of the test.
-
-    `monkeypatch.setenv` and not `os.environ[...] = `, so the variable is gone
-    again at teardown whatever the test does. The gate is read in
-    `Section.__init__`, so this has to be in place before a section is loaded.
-    """
-    monkeypatch.setenv(GATE, "1")
-    return GATE
-
-
 def _busiest(sections):
     populated = [s for s in sections if s.contours]
     assert populated, "the fixture series has no populated section"
@@ -76,8 +116,12 @@ def _busiest(sections):
 
 
 @pytest.fixture
-def real_section(real_series, gate_on):
-    """The busiest section of the real fixture series, with a live store."""
+def real_section(real_series):
+    """The busiest section of the real fixture series.
+
+    No gate fixture any more, and that absence is the point: a section loaded by
+    ordinary means has a store.
+    """
     section = _busiest(
         [real_series.loadSection(n) for n in sorted(real_series.sections)]
     )
@@ -86,8 +130,8 @@ def real_section(real_series, gate_on):
 
 
 @pytest.fixture
-def synthetic_section(tmp_path, gate_on):
-    """The busiest section of the synthetic series, with a live store.
+def synthetic_series(tmp_path):
+    """The synthetic series, opened from a copy.
 
     A copy for the same reason the parity suite copies: `Series.openJser` builds
     a hidden working directory beside the file it is handed.
@@ -97,12 +141,18 @@ def synthetic_section(tmp_path, gate_on):
     destination = tmp_path / "parity_series.jser"
     shutil.copy(SYNTHETIC_FIXTURE, destination)
     series = Series.openJser(str(destination))
+    yield series
+    series.close()
+
+
+@pytest.fixture
+def synthetic_section(synthetic_series):
+    """The busiest section of the synthetic series."""
     section = _busiest(
-        [series.loadSection(n) for n in sorted(series.sections)]
+        [synthetic_series.loadSection(n) for n in sorted(synthetic_series.sections)]
     )
     assert section._columns is not None
-    yield section
-    series.close()
+    return section
 
 
 def _aTrace(section, name="dual_write_probe", points=None):
@@ -121,63 +171,45 @@ def _anyTrace(section):
 
 
 # =============================================================================
-# The gate: that a normal launch cannot reach it
+# The safety properties that replaced invisibility
 # =============================================================================
 
-def test_the_variable_is_named_what_the_documentation_says():
-    """The literal spelling is the contract, so pin it once here.
-
-    Every other test addresses the gate through the constant, which would keep
-    passing if the constant were renamed. A reviewer checking that this is not
-    reachable from a real session is reading for the literal string.
-    """
-    assert GATE == "PYRECON_TEST_ONLY_COLUMNAR_DUAL_WRITE"
-    assert "TEST_ONLY" in GATE, "the name has to say what it is on sight"
-
-
-@pytest.mark.parametrize("value", ["0", "", "true", "yes", "on", "2", "1 "])
-def test_only_an_explicit_1_turns_the_gate_on(monkeypatch, value):
-    """Anything other than exactly `1` leaves the harness off.
-
-    The same spelling `PYRECON_UNATTENDED`, `PYRECON_FORCE_FROZEN` and
-    `PYRECON_JSER_PRETTY` use. A stale `...=0` in a shell profile is off, not a
-    third state, and no truthy-looking value opens the door by accident.
-    """
-    monkeypatch.setenv(GATE, value)
-    assert section_module.dualWriteRequested() is False
-
-
-def test_an_unset_variable_is_off(monkeypatch):
-    monkeypatch.delenv(GATE, raising=False)
-    assert section_module.dualWriteRequested() is False
-    monkeypatch.setenv(GATE, "1")
-    assert section_module.dualWriteRequested() is True
-
-
-def test_a_section_loaded_without_the_gate_carries_no_store(
+def test_every_section_carries_a_store_whatever_the_environment_says(
     real_series, monkeypatch
 ):
-    """The invisibility claim, at the object.
+    """The decision, at the object, and the thing Track C needs to be true.
 
-    No store, no row map, and -- the part that matters for memory -- nothing
-    built and nothing to keep alive.
+    Replaces `test_a_section_loaded_without_the_gate_carries_no_store`, whose
+    assertion is now false by design. Every value the retired gate could have
+    held -- unset, "0", "1", nonsense -- produces the same section, because
+    nothing reads it any more.
     """
-    monkeypatch.delenv(GATE, raising=False)
-    section = _busiest(
-        [real_series.loadSection(n) for n in sorted(real_series.sections)]
-    )
-    assert section._columns is None
-    assert section._column_rows == {}
+    snum = sorted(real_series.sections)[0]
+
+    for value in (None, "0", "", "1", "true", "2"):
+        if value is None:
+            monkeypatch.delenv(RETIRED_GATE, raising=False)
+        else:
+            monkeypatch.setenv(RETIRED_GATE, value)
+
+        section = real_series.loadSection(snum)
+        assert section._columns is not None, (
+            f"no store with {RETIRED_GATE}={value!r}; the environment must not "
+            "decide this any more"
+        )
+        assert len(section._columns) == len(section.tracesAsList())
+        assert set(map(id, section._column_rows)) == {
+            id(t) for t in section.tracesAsList()
+        }
 
 
-def test_mutating_an_ungated_section_stays_storeless(real_series, monkeypatch):
-    """Every hook is a one-line return when there is no store.
+def test_mutating_a_section_keeps_the_store_in_step(real_series):
+    """The runtime half, driving the same mutations the old ungated test drove.
 
-    Drives the same mutations the gated tests below drive, and asserts nothing
-    came into existence. This is what "invisible with the gate off" means at
-    runtime, as opposed to at load.
+    Replaces `test_mutating_an_ungated_section_stays_storeless`. Same sequence,
+    opposite expectation: every hook does real work now, and the two
+    representations agree at the end of it.
     """
-    monkeypatch.delenv(GATE, raising=False)
     section = _busiest(
         [real_series.loadSection(n) for n in sorted(real_series.sections)]
     )
@@ -189,14 +221,39 @@ def test_mutating_an_ungated_section_stays_storeless(real_series, monkeypatch):
     section.setMag(section.mag * 2)
     section.removeTrace(trace)
 
-    assert section._columns is None
-    assert section._column_rows == {}
+    section._assertColumnsMatchObjectModel("the whole mutation sequence")
+    assert len(section._columns) == len(section.tracesAsList())
     assert section_module.Section._column_rows == {}, (
         "the class-level default row map was written to"
     )
 
 
-def test_a_section_that_never_ran_its_constructor_is_unaffected(monkeypatch):
+def test_the_object_model_is_still_authoritative(real_section):
+    """The property that did NOT change, pinned so it cannot erode quietly.
+
+    Always-on removed invisibility. It did not make the store a source of truth:
+    `self.contours` still owns every value, and `getDict` -- what `save` writes
+    -- is built from the object model alone. Corrupt the store and the section
+    still serializes correctly, because nothing reads the store to answer a
+    question.
+    """
+    trace = _anyTrace(real_section)
+    row = real_section._column_rows[trace]
+    expected = real_section.getDict()
+
+    _corruptName(real_section._columns, row)
+    _corruptColor(real_section._columns, row)
+
+    assert real_section.getDict() == expected, (
+        "getDict changed when only the store was corrupted, so something is "
+        "reading the store as if it were authoritative"
+    )
+    ## And the divergence is still loud when the section is asked to check.
+    with pytest.raises(ColumnarDualWriteMismatch):
+        real_section._assertColumnsMatchObjectModel("a corrupted shadow copy")
+
+
+def test_a_section_that_never_ran_its_constructor_is_unaffected():
     """`Section.__new__` with a handful of hand-set attributes, still working.
 
     A dozen test modules in this suite drive one `Section` method against a bare
@@ -207,11 +264,11 @@ def test_a_section_that_never_ran_its_constructor_is_unaffected(monkeypatch):
     on the first draft of this change, and is why `_columns` and `_column_rows`
     are class-level defaults as well as instance ones.
 
-    The gate is set here on purpose: even asked for a store, a section that
-    never ran `__init__` has none, because that is the only place one is built.
+    KEPT UNCHANGED except for dropping the gate it used to set. It matters more
+    now than it did: `_columns is None` used to be the shipped state and is now
+    the ONLY remaining one, so this is the whole of what still has to tolerate
+    it.
     """
-    monkeypatch.setenv(GATE, "1")
-
     bare = section_module.Section.__new__(section_module.Section)
     bare.n = 1
     bare.contours = {}
@@ -228,46 +285,29 @@ def test_a_section_that_never_ran_its_constructor_is_unaffected(monkeypatch):
     assert section_module.Section._column_rows == {}
 
 
-def test_the_gate_is_read_per_section_not_cached_at_import(
-    real_series, monkeypatch
-):
-    """One process, two sections, two answers.
-
-    `dualWriteRequested()` is called from `Section.__init__` rather than
-    evaluated once at import, so a test that turns the gate on cannot leak a
-    store into a section another test loads afterwards.
-    """
-    snum = sorted(real_series.sections)[0]
-
-    monkeypatch.setenv(GATE, "1")
-    gated = real_series.loadSection(snum)
-    monkeypatch.delenv(GATE)
-    ungated = real_series.loadSection(snum)
-
-    assert gated._columns is not None
-    assert ungated._columns is None
-
-
-## Files allowed to name the gate: the one module that defines and reads it, and
-## the tests and changelog that describe it. Anything else is a shipped file
-## that could put the harness into a user's session.
+## Files allowed to name the retired gate: the tests and changelog that record
+## that it was removed. Anything else is a live reference to a gate that no
+## longer exists.
 def _mentionsAllowed(path : Path) -> bool:
     relative = path.relative_to(REPO_ROOT)
-    if path == SECTION_SOURCE:
-        return True
     if relative.parts[0] in ("tests", "changelog.d", "CHANGELOG.md"):
         return True
     return False
 
 
-def test_no_shipped_file_anywhere_in_the_repository_mentions_the_gate():
-    """The safety condition, checked structurally rather than asserted.
+def test_no_environment_variable_anywhere_decides_whether_the_store_exists():
+    """The successor to the invisibility scan, asking the inverted question.
 
-    Reads every file in the repository that could carry text. If the gate's name
-    ever appears in a launcher, a `.spec`, a CI workflow, an installer script or
-    any module other than the one that defines it, this fails -- which is the
-    failure a reviewer wants when somebody later tries to wire the harness to a
-    settings toggle or export it from a launch script.
+    This test used to prove the gate's name appeared in exactly one shipped
+    file, so that no launcher could turn the harness on. The gate is gone, so
+    the property worth protecting inverted with it: **the name must appear in NO
+    shipped file at all**. A gate removed by deleting its `if` and left named in
+    a launcher, a workflow or a settings module is a gate somebody rewires, and
+    the failure mode of a half-removed gate is worse than the gate -- a store
+    that exists on one machine and not another, with a consumer reading it.
+
+    The scan machinery is kept exactly as it was, because it was hardened for a
+    reason and the reason still applies; only the assertion changed.
 
     THE SELECTION IS A DENY-LIST, AND THAT IS THE POINT
     ---------------------------------------------------
@@ -302,7 +342,7 @@ def test_no_shipped_file_anywhere_in_the_repository_mentions_the_gate():
     }
     ## Any hidden directory except `.github`, plus the two build/vendor trees.
     ## `.github` is deliberately NOT skipped: a CI workflow exporting the gate
-    ## into a job is one of the ways this could become reachable.
+    ## into a job is one of the ways a half-removed gate comes back.
     skip_dirs = {"__pycache__", "node_modules", "build", "dist"}
 
     def skipped(relative) -> bool:
@@ -332,7 +372,7 @@ def test_no_shipped_file_anywhere_in_the_repository_mentions_the_gate():
         except (UnicodeDecodeError, OSError, ValueError):
             continue
         scanned += 1
-        if GATE in text:
+        if RETIRED_GATE in text:
             offenders.append(str(relative))
 
     ## A selection bug that silently emptied the walk would otherwise leave this
@@ -357,81 +397,147 @@ def test_no_shipped_file_anywhere_in_the_repository_mentions_the_gate():
         )
 
     assert offenders == [], (
-        "the test-only dual-write gate is named outside the module that "
-        f"defines it, so a real session could reach it: {offenders}"
+        "the retired dual-write gate is still named in a shipped file, so the "
+        "removal is half done and somebody can rewire it: "
+        f"{offenders}"
     )
 
 
-def test_the_module_that_owns_the_gate_never_writes_an_environment_variable():
-    """`section.py` reads the environment and never writes it.
+def test_section_py_neither_reads_nor_writes_the_environment():
+    """`section.py` has no environment dependency left at all.
 
-    The previous test proves nothing else names the gate. This one proves the
-    one file that does cannot set it either -- no `os.environ[...] = `, no
-    `setdefault`, no `putenv`, no `environ.update` -- so the harness cannot turn
-    itself on from inside the application under any code path at all.
+    This used to prove only that the module could not *write* the gate. It now
+    proves the stronger thing the removal is supposed to have achieved: the
+    module does not consult the environment either, so there is no value any
+    launcher, profile or CI job can set that changes whether a section carries a
+    store. `os` is still imported and still used for paths; only `os.environ`
+    and the `getenv`/`putenv` family are banned.
     """
     tree = ast.parse(SECTION_SOURCE.read_text(encoding="utf-8"))
 
-    writes = []
+    reaches = []
     for node in ast.walk(tree):
-        if isinstance(node, (ast.Assign, ast.AugAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            for target in targets:
-                if (
-                    isinstance(target, ast.Subscript)
-                    and "environ" in ast.dump(target.value)
-                ):
-                    writes.append(ast.dump(target))
+        if isinstance(node, ast.Attribute) and node.attr == "environ":
+            reaches.append("os.environ")
+        if isinstance(node, ast.Name) and node.id == "environ":
+            reaches.append("bare environ")
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            dumped = ast.dump(node.func)
-            if node.func.attr in ("setdefault", "update", "pop", "clear") and "environ" in dumped:
-                writes.append(dumped)
-            if node.func.attr in ("putenv", "unsetenv"):
-                writes.append(dumped)
+            if node.func.attr in ("getenv", "putenv", "unsetenv"):
+                reaches.append(node.func.attr)
 
-    assert writes == [], f"section.py writes the environment: {writes}"
-
-
-def test_nothing_outside_section_py_knows_the_harness_exists():
-    """No call site outside `Section` was changed, and none can be.
-
-    The dual write is meant to be invisible to the rest of the application: no
-    module imports the mismatch exception, calls a hook, or reaches for the
-    store hung off a section. Scanned by name because each of these names is
-    distinctive enough that a hit is a real reference rather than a coincidence.
-
-    `self._columns` is deliberately not in this list. It collided with an
-    unrelated `TraceView._columns` (`columnar_store.py`, Phase 1 slices 4/6) the
-    first time both landed on the same tree: the name is common enough that two
-    independent classes picked it for unrelated fields. The other six names are
-    confirmed harness-specific (grepped repo-wide, zero hits outside this file)
-    and carry the actual leak-detection weight.
-    """
-    names = (
-        "_dualWrite",
-        "resyncColumnarStore",
-        "ColumnarDualWriteMismatch",
-        "_column_rows",
-        "DUAL_WRITE_ENV_VAR",
-        "dualWriteRequested",
+    assert reaches == [], (
+        f"section.py still consults or edits the environment: {reaches}"
     )
-    offenders = {}
+
+
+## The modules allowed to call `resyncColumnarStore`, and what each is
+## repairing. Enumerated rather than counted so that adding a fourth is a
+## visible edit to this list with a reviewer looking at it. Every one of these
+## edits a section's traces or contours WITHOUT going through a `Section`
+## mutator, so no dual-write hook sees it -- and every one of them was a
+## `ColumnarDualWriteMismatch` raised in a real session before it called the
+## repair. There are six sites across the three modules:
+##
+##   state_manager.py   undoState, redoState            whole-dict / per-key rebind
+##   series.py          deleteObjects                   contour key deleted
+##   series.py          hideObjects                     trace.setHidden in place
+##   series.py          hideAllTraces                   trace.setHidden in place
+##   series.py          restoreObjectVisibility         trace.setHidden in place
+##   conversions.py     seriesToLabels group deletion   contour keys deleted
+REPAIR_SITES = {
+    "modules/backend/func/state_manager.py": "undoState / redoState",
+    "modules/datatypes/series.py": (
+        "deleteObjects / hideObjects / hideAllTraces / restoreObjectVisibility"
+    ),
+    "modules/backend/autoseg/conversions.py": "seriesToLabels group deletion",
+}
+
+
+def test_only_section_py_writes_the_store_and_the_repair_sites_are_pinned():
+    """`Section` still owns every write to the store. The repair is public.
+
+    Replaces `test_nothing_outside_section_py_knows_the_harness_exists`, whose
+    assertion is now false: three modules legitimately name
+    `resyncColumnarStore`, because always-on made their out-of-class trace and
+    contour edits into crashes that only a rebuild can fix.
+
+    What survives, and is the property that actually protects the design, is
+    narrower and sharper than "nobody has heard of it": **nothing outside
+    `section.py` performs a store write.** No module calls a `_dualWrite` hook,
+    reaches into `_column_rows`, or drives `SectionColumns`' six mutation entry
+    points against a section's store. The single exception is
+    `resyncColumnarStore`, the public repair, and it is allowed only at the
+    sites named in `REPAIR_SITES`.
+
+    `self._columns` is deliberately not scanned. It collided with an unrelated
+    `TraceView._columns` (`columnar_store.py`, Phase 1 slices 4/6) the first
+    time both landed on the same tree: the name is common enough that two
+    independent classes picked it for unrelated fields.
+    """
+    ## Scanned through the AST rather than by substring, which is the difference
+    ## between "this file references the name" and "this file mentions the name
+    ## in a comment saying why it calls the repair". The repair sites explain
+    ## themselves in prose, and prose is not a call.
+    private_names = ("_column_rows", "ColumnarDualWriteMismatch")
+
+    def identifiers(tree):
+        found = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                found.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                found.add(node.attr)
+        return found
+
+    private_offenders = {}
+    repair_callers = {}
     for path in sorted(PACKAGE_ROOT.rglob("*.py")):
         if path.resolve() == SECTION_SOURCE:
             continue
-        text = path.read_text(encoding="utf-8")
-        hits = [name for name in names if name in text]
-        if hits:
-            offenders[str(path.relative_to(PACKAGE_ROOT))] = hits
+        relative = str(path.relative_to(PACKAGE_ROOT))
+        names = identifiers(ast.parse(path.read_text(encoding="utf-8")))
 
-    assert offenders == {}, f"the harness leaked out of Section: {offenders}"
+        hits = sorted(
+            name for name in names
+            if name in private_names or name.startswith("_dualWrite")
+        )
+        if hits:
+            private_offenders[relative] = hits
+
+        if "resyncColumnarStore" in names:
+            repair_callers[relative] = True
+
+    assert private_offenders == {}, (
+        "the dual write's private surface leaked out of Section: "
+        f"{private_offenders}"
+    )
+    assert set(repair_callers) == set(REPAIR_SITES), (
+        "the set of out-of-class sites calling resyncColumnarStore() changed. "
+        "Every one of these replaces Section.contours from outside Section and "
+        "is a ColumnarDualWriteMismatch in a real session without the repair, "
+        f"so adding or losing one is a design change: {sorted(repair_callers)} "
+        f"against {sorted(REPAIR_SITES)}"
+    )
+
+
+def test_the_retired_gate_is_gone_from_the_module_that_defined_it():
+    """No constant, no predicate, no dormant branch.
+
+    A gate left as a constant nobody reads is a gate a later change re-wires by
+    adding one `if`. `section.py` must not carry the name, the predicate that
+    read it, or an exported symbol either could hang off.
+    """
+    source = SECTION_SOURCE.read_text(encoding="utf-8")
+    assert RETIRED_GATE not in source
+    assert not hasattr(section_module, "DUAL_WRITE_ENV_VAR")
+    assert not hasattr(section_module, "dualWriteRequested")
 
 
 # =============================================================================
 # The dual write itself, on real material
 # =============================================================================
 
-def test_a_freshly_loaded_gated_section_already_agrees(real_section):
+def test_a_freshly_loaded_section_already_agrees(real_section):
     """Construction alone puts the two representations in step.
 
     `Section.__init__` builds the store from the contours it just parsed, and
@@ -703,7 +809,7 @@ def test_tags_negative_and_hidden_survive_a_mutation_on_synthetic_material(
     assert frozenset({"kept", "added"}) in stored_tags
 
 
-def test_importTraces_rebuilds_the_store_from_the_result(real_series, gate_on):
+def test_importTraces_rebuilds_the_store_from_the_result(real_series):
     """The one path that replaces contour lists wholesale instead of mutating.
 
     `Contour.importTraces` rebinds `self.traces` outright, so there is no
@@ -1017,20 +1123,69 @@ def test_an_out_of_class_rebind_is_caught_even_though_every_value_matches(
     assert "resyncColumnarStore" in message
 
 
-def test_the_stale_row_map_is_caught_by_a_real_mutation_not_only_a_bare_check(
-    real_section
+@pytest.mark.parametrize(
+    "drive",
+    [
+        pytest.param(lambda s: s.removeTrace(_anyTrace(s)), id="removeTrace"),
+        pytest.param(
+            lambda s: s.hideTraces([_anyTrace(s)], hide=True), id="hideTraces"
+        ),
+        pytest.param(
+            lambda s: s.closeTraces([_anyTrace(s)], closed=False), id="closeTraces"
+        ),
+        pytest.param(lambda s: s.setMag(s.mag * 2), id="setMag"),
+    ],
+)
+def test_a_mutation_touching_an_existing_trace_still_names_a_stale_row_map(
+    real_section, drive
 ):
     """Driven through a `Section` method, because that is how it would happen.
 
-    `_assertColumnsMatchObjectModel` called by hand proves the comparison works.
-    This proves the comparison is reached: the very next real mutation after the
-    rebind stops the run, whatever kind of mutation it is.
+    REWRITTEN, AND THE REWRITE IS THE HONEST PART
+    ----------------------------------------------
+    This used to drive `addTrace` and require the raise, on the strength of the
+    whole-section check running after every mutation. Always-on made that check
+    unaffordable per mutation (85-129 ms on `autoseg745`), so the per-mutation
+    check is targeted at the row that moved -- and `addTrace` after an
+    undo-style rebind writes a brand-new row that is perfectly correct, so
+    **`addTrace` no longer detects a stale row map.** That is a real narrowing,
+    it is pinned by `test_addTrace_alone_no_longer_detects_a_stale_row_map`
+    below rather than left for somebody to discover, and it is why the four
+    out-of-class rebind sites now call the repair instead of relying on
+    detection.
+
+    What survives is the case that matters more: any mutation that touches a
+    trace the section already held goes through `_rowFor`, which cannot find the
+    replaced object in the identity map and says so. That is every edit a user
+    performs on existing work.
     """
     _undoStyleRestore(real_section)
 
     with pytest.raises(ColumnarDualWriteMismatch) as caught:
-        real_section.addTrace(_aTrace(real_section))
+        drive(real_section)
 
+    assert "holds no row for" in str(caught.value)
+
+
+def test_addTrace_alone_no_longer_detects_a_stale_row_map(real_section):
+    """The gap the narrowed check leaves, pinned rather than left to be found.
+
+    A brand-new trace gets a brand-new row, and a targeted check compares that
+    row against that trace and finds them in agreement -- correctly, because
+    they are. Nothing about the append can see that every OTHER row is now keyed
+    on a discarded object. `save()` catches it, and the four out-of-class rebind
+    sites do not reach here at all because they repair first.
+
+    If a future change puts a whole-section comparison back on the mutation
+    path, this test fails, and that is the right outcome: it means the cost
+    trade was reopened and somebody should look at the measurement again.
+    """
+    _undoStyleRestore(real_section)
+
+    real_section.addTrace(_aTrace(real_section))  # does not raise
+
+    with pytest.raises(ColumnarDualWriteMismatch) as caught:
+        real_section._assertColumnsMatchObjectModel("the coarse net, by hand")
     assert "the row map is stale" in str(caught.value)
 
 
@@ -1067,3 +1222,295 @@ def test_a_trace_removed_from_its_contour_from_outside_is_caught(real_section):
         real_section._assertColumnsMatchObjectModel("an out-of-class removal")
 
     assert "the row map is stale" in str(caught.value)
+
+
+# =============================================================================
+# The out-of-class repair sites: the paths always-on turned into crashes
+# =============================================================================
+#
+# Under the gate none of these could reach a section carrying a store, and the
+# source comment said only that they "owe the resync". Always-on made each one a
+# `ColumnarDualWriteMismatch` raised at the user on the next edit, which was the
+# single largest thing this change had to fix. Each is driven for real here --
+# not simulated with `_undoStyleRestore` -- because a repair call that is present
+# but unreachable, or placed before the rebind instead of after it, would pass
+# every simulated test and still crash a session.
+
+def test_deleting_an_object_leaves_every_touched_section_consistent(real_series):
+    """`Series.deleteObjects` drops a contour key from outside `Section`.
+
+    It also removes from a list it is iterating, so `removeTrace` is not reached
+    for every trace of a multi-trace contour. Either alone leaves rows in the
+    store for traces the object model no longer has.
+    """
+    name = sorted(real_series.data["objects"])[0]
+
+    touched = [
+        snum for snum, section in real_series.enumerateSections(show_progress=False)
+        if name in section.contours and len(section.contours[name])
+    ]
+    assert touched, "the fixture object is on no section"
+
+    real_series.deleteObjects([name])
+
+    for snum in touched:
+        section = real_series.loadSection(snum)
+        assert name not in section.contours or section.contours[name].isEmpty()
+        section._assertColumnsMatchObjectModel("after deleteObjects")
+        ## And the section takes another edit without raising, which is what the
+        ## user does next and what used to fail.
+        section.addTrace(_aTrace(section))
+        section.save()
+
+
+def test_a_section_edited_after_an_undo_does_not_raise(real_section, real_series):
+    """The undo restore, driven through `SectionStates` itself.
+
+    `undoState` replaces `section.contours` from outside `Section` -- the whole
+    dict on the single-state branch, one key at a time on the multi-state one --
+    and both branches end in the repair. Without it the `addTrace` at the bottom
+    of this test raises `ColumnarDualWriteMismatch`, which is a crash in the
+    user's face on the first stroke after Ctrl+Z.
+    """
+    from PyReconstruct.modules.backend.func.state_manager import SectionStates
+
+    states = SectionStates(real_section, real_series)
+
+    before = len(real_section.tracesAsList())
+    states.addState(real_section, real_series)
+    real_section.addTrace(_aTrace(real_section, name="undone_by_the_dual_write_test"))
+    assert len(real_section.tracesAsList()) == before + 1
+
+    states.undoState(real_section, real_series)
+    assert len(real_section.tracesAsList()) == before, (
+        "the undo restored nothing, so this test is not exercising the rebind"
+    )
+
+    ## The rebind really did replace the trace objects: this is the state that
+    ## used to leave `_column_rows` keyed on discarded traces.
+    real_section._assertColumnsMatchObjectModel("after an undo")
+    assert set(map(id, real_section._column_rows)) == {
+        id(t) for t in real_section.tracesAsList()
+    }
+
+    ## The next real edit, which is what actually broke.
+    real_section.addTrace(_aTrace(real_section, name="the_stroke_after_the_undo"))
+    real_section.save()
+
+
+def test_a_section_edited_after_a_redo_does_not_raise(real_section, real_series):
+    """Same for `redoState`, which restores contour keys one at a time.
+
+    Asserted on the store rather than on how much the redo restored: what this
+    test owns is that the rebind leaves a consistent store and a section that
+    accepts another edit. The fixture's redo happens to restore the pre-edit
+    contours here, and pinning that number would make this test fail for
+    reasons that have nothing to do with the dual write.
+    """
+    from PyReconstruct.modules.backend.func.state_manager import SectionStates
+
+    states = SectionStates(real_section, real_series)
+
+    states.addState(real_section, real_series)
+    real_section.addTrace(_aTrace(real_section, name="redone_by_the_dual_write_test"))
+    states.undoState(real_section, real_series)
+    assert states.redo_states, "nothing to redo, so this test proves nothing"
+
+    states.redoState(real_section, real_series)
+
+    real_section._assertColumnsMatchObjectModel("after a redo")
+    assert set(map(id, real_section._column_rows)) == {
+        id(t) for t in real_section.tracesAsList()
+    }
+    real_section.addTrace(_aTrace(real_section, name="the_stroke_after_the_redo"))
+    real_section.save()
+
+
+def test_the_generation_counter_survives_a_rebuild(real_section):
+    """A resync must not restart the counter at 0.
+
+    `SectionColumns`' own docstring says the generation "is monotonic and is
+    never reset by anything", because a cache stores the value it was built at
+    and compares. A rebuild makes a NEW store, so without carrying the count
+    forward an undo would hand every cache a generation below the one it holds
+    and every cache would conclude it was current -- the stale-render bug class
+    the counter exists to prevent, arriving through the repair. Unreachable
+    under the gate, because nothing outside a test rebuilt a store; live now.
+    """
+    for _ in range(5):
+        real_section.addTrace(_aTrace(real_section))
+    before = real_section._columns.generation
+    assert before > 0, "the setup did not move the counter at all"
+
+    real_section.resyncColumnarStore()
+
+    assert real_section._columns.generation >= before, (
+        f"the rebuilt store restarted its generation at "
+        f"{real_section._columns.generation}, below the {before} a cache may "
+        "already hold"
+    )
+    ## And it keeps moving from there.
+    real_section.addTrace(_aTrace(real_section))
+    assert real_section._columns.generation > before
+
+
+def test_the_whole_section_check_runs_on_save(real_section):
+    """The coarse net's new home.
+
+    Per-mutation checking is targeted at the row that moved and cannot see drift
+    caused from outside the class. `save()` is the one non-per-frame path that
+    is already O(section), so the whole-section comparison runs there -- one
+    save cycle after any such drift at worst, rather than never.
+    """
+    trace = _anyTrace(real_section)
+    real_section.contours[trace.name].remove(trace)  # out of class, no hook
+
+    with pytest.raises(ColumnarDualWriteMismatch) as caught:
+        real_section.save()
+
+    assert "save" in str(caught.value)
+
+
+# =============================================================================
+# Track C: a normal consumer can reach the store
+# =============================================================================
+
+def test_a_normal_consumer_reaches_a_live_store_on_every_section(real_series):
+    """What the decision was made to unblock, checked as a consumer would.
+
+    No environment set, no gate, nothing test-only: load the series the way any
+    code in the application does and every section answers with a store that
+    agrees with its contours. This is the precondition the first consumer flip
+    (`svg_conversion.py`) found missing, and the whole reason D2 was reopened.
+
+    Deliberately NOT flipping a consumer here -- that is separate work, and it
+    is separately blocked on `SectionColumns.contourNames()` being sorted-only
+    where `Section.contours` is insertion-ordered, which this change does not
+    address and does not claim to.
+    """
+    from PyReconstruct.modules.datatypes.columnar_store import ContourView
+
+    checked = 0
+    for snum, section in real_series.enumerateSections(show_progress=False):
+        store = section._columns
+        assert store is not None, f"section {snum} has no store"
+        assert len(store) == len(section.tracesAsList())
+
+        for name in store.contourNames():
+            view = ContourView(store, name)
+            assert len(view) == len(section.contours[name])
+            checked += 1
+
+    assert checked > 0, "the fixture series produced no contour to read"
+
+
+def test_the_store_ordering_mismatch_is_still_open_and_still_reproduces(
+    real_section
+):
+    """The known, deliberately unfixed difference, pinned so it stays visible.
+
+    `SectionColumns.contourNames()` is sorted; `Section.contours` is insertion
+    ordered. The first attempted consumer flip found this and it is his call,
+    not this change's -- so it is recorded as a live difference rather than
+    quietly worked around. If somebody fixes it, this test fails and says why.
+    """
+    real_section.addTrace(_aTrace(real_section, name="aaa_added_last"))
+
+    object_order = list(real_section.contours)
+    store_order = real_section._columns.contourNames()
+
+    assert object_order[-1] == "aaa_added_last"
+    assert store_order[0] == "aaa_added_last"
+    assert object_order != store_order, (
+        "the store's contour ordering now matches the object model's, so the "
+        "open ordering question was answered somewhere -- update the rewiring "
+        "spec and delete this test"
+    )
+
+
+# =============================================================================
+# The narrowing itself, pinned so that putting it back is a visible act
+# =============================================================================
+#
+# Two places gave up whole-section checking when this became a production path,
+# both because of the same measurement (`autoseg745`: a whole-section check is
+# ~85 ms on the median section, ~129 ms on the busiest, against a 0.002 ms
+# `addTrace`). Neither is a quiet loss: each is asserted here, so a change that
+# restores the old scope turns these red and reopens the cost question with a
+# reviewer looking at it.
+
+def test_a_mutation_does_not_materialize_the_whole_section(real_section, monkeypatch):
+    """The per-mutation check touches one row, not every row.
+
+    `materializeContours` is the O(section) read; a single-row mutation must not
+    reach it. This is the assertion that makes the per-mutation cost a property
+    of the code rather than a claim in a comment.
+    """
+    calls = []
+    real = SectionColumns.materializeContours
+
+    def counted(self):
+        calls.append(1)
+        return real(self)
+
+    monkeypatch.setattr(SectionColumns, "materializeContours", counted)
+
+    trace = _aTrace(real_section)
+    real_section.addTrace(trace)
+    real_section.hideTraces([trace], hide=True)
+    real_section.closeTraces([trace], closed=False)
+    real_section.removeTrace(trace)
+
+    assert calls == [], (
+        f"{len(calls)} whole-section materializations for four single-row "
+        "mutations; the per-mutation check went back to O(section)"
+    )
+
+
+def test_building_a_store_does_not_run_the_whole_section_comparison(
+    real_series, monkeypatch
+):
+    """A store is built at every section load, so the build cannot be O(section)
+    twice.
+
+    `fromSection` copies values straight out of the object model, so the only
+    divergence a build-time value comparison can find is a bug in the store's own
+    encode/decode -- which does not vary section to section and which
+    `test_columnar_store_parity.py` covers directly. Running it per load cost a
+    measured 11x on section load and 8.2x on a full-series pass.
+    """
+    calls = []
+    real = SectionColumns.materializeContours
+
+    def counted(self):
+        calls.append(1)
+        return real(self)
+
+    monkeypatch.setattr(SectionColumns, "materializeContours", counted)
+
+    section = real_series.loadSection(sorted(real_series.sections)[0])
+    assert section._columns is not None
+    assert calls == [], "building a store materialized the whole section"
+
+
+def test_building_a_store_still_checks_the_row_arity(real_section, monkeypatch):
+    """What the build DOES still check, and why it is worth its O(contours).
+
+    The row map is built by zipping each contour's traces against the rows the
+    store reports for that contour. If those ever stop lining up -- a change to
+    `fromSection`'s walk order, a contour index that drops a row -- every trace
+    on the section is silently mapped to the wrong row, and every later check
+    then compares the wrong pair. That is a per-section question, so it stays.
+    """
+    real = SectionColumns.rowsForContour
+
+    def short(self, name):
+        rows = real(self, name)
+        return rows[:-1] if len(rows) > 1 else rows
+
+    monkeypatch.setattr(SectionColumns, "rowsForContour", short)
+
+    with pytest.raises(ColumnarDualWriteMismatch) as caught:
+        real_section.resyncColumnarStore()
+
+    assert "building the store" in str(caught.value)

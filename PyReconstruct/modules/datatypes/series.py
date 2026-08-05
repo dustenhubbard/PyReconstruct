@@ -1833,6 +1833,15 @@ class Series():
                         section.removeTrace(trace)
                     del(section.contours[obj_name])
                     modified = True
+            if modified:
+                # The `del` above drops a contour key from outside `Section`,
+                # and the loop it follows removes from a list it is iterating,
+                # so `removeTrace` is not reached for every trace in a contour
+                # holding more than one. Either alone leaves the columnar store
+                # holding rows for traces the object model no longer has.
+                # Rebuild it from the result; without this the next edit on this
+                # section raises `ColumnarDualWriteMismatch`.
+                section.resyncColumnarStore()
             return modified  # deleting object will automatically be logged
 
         self._forEachObjectSection(
@@ -2947,6 +2956,13 @@ class Series():
                         trace.setHidden(hide)
                         modified = True
                     section.modified_contours.add(name)
+            if modified:
+                # `setHidden` writes the trace in place, from outside `Section`,
+                # so no dual-write hook saw it and the columnar store still
+                # holds the old flag. Rebuild from the result. Not optional --
+                # `Section.save()` checks the two against each other and would
+                # raise `ColumnarDualWriteMismatch` at the user.
+                section.resyncColumnarStore()
             return modified
 
         self._forEachObjectSection(
@@ -3051,6 +3067,8 @@ class Series():
                     section.modified_contours.add(name)
                     modified = True
             if modified:
+                # In-place `setHidden` from outside `Section`; see hideObjects.
+                section.resyncColumnarStore()
                 section.save()
                 changed_any = True
 
@@ -3079,6 +3097,8 @@ class Series():
                 trace.setHidden(hidden)
             for name in section.contours:
                 section.modified_contours.add(name)
+            # In-place `setHidden` from outside `Section`; see hideObjects.
+            section.resyncColumnarStore()
             section.save()
         
         if log_event:
