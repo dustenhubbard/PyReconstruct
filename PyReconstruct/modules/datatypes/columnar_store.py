@@ -1141,15 +1141,21 @@ class ContourView():
     far the last slice got, and widening it is the write half's call.
 
     Second, and independent of that: it would not be the same operation.
-    `Contour.remove(trace)` *detaches* an object that stays alive and is usually
+    `Contour.remove(trace)` *detaches* an object that stays alive and is often
     re-added a line later. Its only production callers are `Section.removeTrace`
-    and `Section.importTraces`, and five of `removeTrace`'s own six callers --
-    `editTraceAttributes`, `editTraceRadius`, `editTraceShape`, `makeNegative`,
-    `translateTraces` -- are remove / mutate / add on the same object;
-    `deleteTraces` is the only one that means it. `removeRow` tombstones: the
-    row number retires for good and every `TraceView` over it raises from then
-    on, so the *mutate* step of that pattern would have nothing left to write
-    through. A `ContourView.remove` would therefore be a differently-shaped
+    and `Section.importTraces`, and six of `removeTrace`'s own eleven callers --
+    `Section.editTraceAttributes`, `Section.editTraceRadius`,
+    `Section.editTraceShape`, `Section.makeNegative`, `Section.translateTraces`
+    and `Series.splitObject` -- go on using the removed object afterwards
+    (remove / mutate / add it back, or remove / `.copy()` / add the copy, as
+    `splitObject` does). The other five mean the removal: `Section.deleteTraces`
+    and, in `series.py`, `deleteObjects`, `deleteAllTraces`,
+    `deleteMalformedTraces` and `deleteDuplicateTraces`. The count is
+    package-wide -- `section.py` and `series.py` both -- and an AST walk in the
+    tests holds it there. `removeRow` tombstones: the row number retires for
+    good and every `TraceView` over it raises from then on, so the *mutate* step
+    of that pattern would have nothing left to write through. A
+    `ContourView.remove` would therefore be a differently-shaped
     operation wearing `Contour.remove`'s name, which is the failure this class
     exists to avoid. That is a finding for the write half to answer, and it is
     pinned by a test rather than left here as prose.

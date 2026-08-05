@@ -49,6 +49,7 @@ as an option. The store still reaches its backing only through the five-method
 interface, so these tests exercise the seam a future layout would arrive
 behind.
 """
+import ast
 import inspect
 import json
 import shutil
@@ -2330,8 +2331,9 @@ def test_membership_is_object_identity_on_a_contour_and_row_identity_on_a_view()
 # -----------------------------------
 #   1. `remove` -- not because it cannot be built (it can, in three lines on top
 #      of `_rowOf`) but because `Contour.remove` DETACHES an object that is
-#      usually re-added a line later, while `removeRow` TOMBSTONES the row for
-#      good. Five of `Section.removeTrace`'s six callers are remove/mutate/add.
+#      often re-added a line later, while `removeRow` TOMBSTONES the row for
+#      good. Six of `Section.removeTrace`'s eleven callers go on using the
+#      removed object; five mean the removal.
 #      Measured in `test_remove_would_not_be_the_operation_contour_remove_is`.
 #
 #   2. `importTraces` calls two `Trace` methods `TraceView` deliberately lacks:
@@ -2508,6 +2510,130 @@ def test_a_removed_rows_view_stops_being_a_member_immediately():
     assert [view.index(v) for v in held[1:]] == [0, 1]
 
 
+def _outermostFunctions(tree):
+    """Every function in `tree` that is not nested inside another function.
+
+    Nested functions are folded into their enclosing one rather than reported
+    separately, because `series.py`'s deletion methods do their removing inside
+    a local `edit(section)` closure passed to `_forEachObjectSection`: the
+    caller a reader would name is the method, not the closure.
+    """
+    found = []
+
+    def visit(node):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                found.append(child)   # deliberately not descending
+            else:
+                visit(child)          # class bodies, `if`/`try` blocks, ...
+
+    visit(tree)
+    return found
+
+
+def _removeTraceCallersIn(paths, root):
+    """Map `"<path>:<function>" -> does that function re-add what it removed?`
+
+    The classifier is `addTrace` appearing anywhere in the same function, which
+    is what separates `Section.editTraceAttributes` (remove / mutate / add the
+    same object) and `Series.splitObject` (remove / `.copy()` / add the copy)
+    from `Section.deleteTraces` and `series.py`'s four deletion methods, which
+    mean the removal.
+
+    Takes the paths rather than finding them, so the test below can point it at
+    a source file of its own and watch the classification move.
+    """
+    callers = {}
+    for path in sorted(paths):
+        for function in _outermostFunctions(ast.parse(path.read_text(encoding="utf-8"))):
+            calls = {call.func.attr for call in ast.walk(function)
+                     if isinstance(call, ast.Call)
+                     and isinstance(call.func, ast.Attribute)}
+            if "removeTrace" in calls:
+                key = f"{path.relative_to(root).as_posix()}:{function.name}"
+                callers[key] = "addTrace" in calls
+    return callers
+
+
+def _removeTraceCallers():
+    """`_removeTraceCallersIn` over the whole `PyReconstruct` package.
+
+    Over the package, not over `inspect.getsource(Section)`, which is what an
+    earlier draft walked: a walk of one class sees six of the eleven callers
+    and is structurally blind to the five in `series.py` -- four of them
+    unconditional deletions, which is how "only `deleteTraces` means it" got
+    into a docstring (review-274 N1/N2).
+    """
+    from PyReconstruct.modules.datatypes import section
+
+    root = Path(inspect.getfile(section)).parents[2]
+    assert root.name == "PyReconstruct", root
+    return _removeTraceCallersIn(root.rglob("*.py"), root)
+
+
+def test_the_removeTrace_caller_walk_sees_series_py_and_reclassifies_on_change(tmp_path):
+    """The tripwire's own tripwire: does the walk move when the call graph does?
+
+    A count nobody has watched change is not evidence. Two things are checked
+    here, both against source this test writes itself:
+
+      * a caller outside `class Section` is seen at all -- the failure that put
+        "five of six" into production source; and
+      * a caller that starts re-using the object it removed is *reclassified*,
+        not merely counted, so the ratio the `remove` argument rests on cannot
+        drift silently in either direction.
+    """
+    package = tmp_path / "PyReconstruct"
+    package.mkdir()
+    (package / "section.py").write_text(
+        "class Section:\n"
+        "    def deleteTraces(self, traces):\n"
+        "        for trace in traces:\n"
+        "            self.removeTrace(trace)\n",
+        encoding="utf-8",
+    )
+    ## Outside any class, and inside a nested closure: both of the shapes the
+    ## old `inspect.getsource(Section)` walk could not see.
+    (package / "series.py").write_text(
+        "class Series:\n"
+        "    def splitObject(self, name):\n"
+        "        def edit(section):\n"
+        "            for trace in section.contours[name]:\n"
+        "                section.removeTrace(trace)\n"
+        "                section.addTrace(trace.copy())\n"
+        "        self._forEachObjectSection(edit)\n",
+        encoding="utf-8",
+    )
+
+    before = _removeTraceCallersIn(package.rglob("*.py"), package)
+    assert before == {"section.py:deleteTraces": False,
+                      "series.py:splitObject": True}, before
+
+    ## Now make the unconditional deletion re-use what it removed. The count is
+    ## unchanged; the classification is not.
+    (package / "section.py").write_text(
+        "class Section:\n"
+        "    def deleteTraces(self, traces):\n"
+        "        for trace in traces:\n"
+        "            self.removeTrace(trace)\n"
+        "            self.addTrace(trace)\n",
+        encoding="utf-8",
+    )
+    after = _removeTraceCallersIn(package.rglob("*.py"), package)
+    assert len(after) == len(before)
+    assert after["section.py:deleteTraces"] is True
+    assert sum(after.values()) == sum(before.values()) + 1
+
+    ## And a new caller anywhere in the package enters the set.
+    (package / "gui.py").write_text(
+        "def someHandler(section, trace):\n"
+        "    section.removeTrace(trace)\n",
+        encoding="utf-8",
+    )
+    grown = _removeTraceCallersIn(package.rglob("*.py"), package)
+    assert set(grown) - set(after) == {"gui.py:someHandler"}
+
+
 def test_remove_would_not_be_the_operation_contour_remove_is():
     """Blocker 1, in what survives of it: `remove` is buildable and is not built.
 
@@ -2515,13 +2641,24 @@ def test_remove_would_not_be_the_operation_contour_remove_is():
     `_rowOf` has the row. It is still absent, for two reasons, and this test
     pins the second because it is the one that is not a matter of taste.
 
-    `Contour.remove(trace)` DETACHES: the object survives the call and is
-    usually re-added a line later. `Section.removeTrace` is its only production
-    caller besides `importTraces`, and five of `removeTrace`'s own six callers
-    are remove / mutate / add on the same object -- only `deleteTraces` means
-    it. `SectionColumns.removeRow` TOMBSTONES: the row number retires and every
-    view over it raises from then on, so the *mutate* step has nothing left to
-    write through, as this test measures.
+    `Contour.remove(trace)` DETACHES: the object survives the call and is often
+    re-added a line later. `Section.removeTrace` is its only production caller
+    besides `importTraces`, and six of `removeTrace`'s own eleven callers go on
+    using the removed object afterwards -- five of them are remove / mutate /
+    add on the same object (`Section.editTraceAttributes`, `editTraceRadius`,
+    `editTraceShape`, `makeNegative`, `translateTraces`) and the sixth,
+    `Series.splitObject`, is remove / `.copy()` / add-the-copy. The other five
+    mean the removal: `Section.deleteTraces` and, in `series.py`,
+    `deleteObjects`, `deleteAllTraces`, `deleteMalformedTraces` and
+    `deleteDuplicateTraces`. `SectionColumns.removeRow` TOMBSTONES: the row
+    number retires and every view over it raises from then on, so the *mutate*
+    step has nothing left to write through, as this test measures.
+
+    An earlier draft of this test said "five of six, and only `deleteTraces`
+    means it". That count came from an AST walk over `inspect.getsource(Section)`
+    -- one class -- which cannot see the five callers that live in `series.py`,
+    four of which are unconditional deletions too. The walk below is over the
+    whole `PyReconstruct` package for that reason.
 
     A `ContourView.remove` would therefore be a differently-shaped operation
     under `Contour.remove`'s name. Whether the shim carries it anyway is the
@@ -2531,31 +2668,38 @@ def test_remove_would_not_be_the_operation_contour_remove_is():
     assert not hasattr(ContourView, "remove")
     assert not hasattr(ContourView, "append")
 
-    ## The remove/mutate/add shape, read out of `section.py` with an AST walk
-    ## rather than asserted from memory, so "five of six" has a source and
+    ## The remove/mutate/add shape, read out of the package with an AST walk
+    ## rather than asserted from memory, so "six of eleven" has a source and
     ## changes shape loudly if the call graph does.
-    import ast
+    readds = _removeTraceCallers()
 
-    from PyReconstruct.modules.datatypes.section import Section
-
-    readds = {}
-    for node in ast.walk(ast.parse(inspect.getsource(Section))):
-        if not isinstance(node, ast.FunctionDef):
-            continue
-        calls = [call.func.attr for call in ast.walk(node)
-                 if isinstance(call, ast.Call)
-                 and isinstance(call.func, ast.Attribute)]
-        if "removeTrace" in calls:
-            readds[node.name] = "addTrace" in calls
-
-    assert set(readds) == {"editTraceAttributes", "editTraceRadius",
-                           "editTraceShape", "makeNegative", "deleteTraces",
-                           "translateTraces"}, readds
-    assert sum(readds.values()) == 5, (
+    assert set(readds) == {
+        "modules/datatypes/section.py:editTraceAttributes",
+        "modules/datatypes/section.py:editTraceRadius",
+        "modules/datatypes/section.py:editTraceShape",
+        "modules/datatypes/section.py:makeNegative",
+        "modules/datatypes/section.py:translateTraces",
+        "modules/datatypes/section.py:deleteTraces",
+        "modules/datatypes/series.py:deleteObjects",
+        "modules/datatypes/series.py:deleteAllTraces",
+        "modules/datatypes/series.py:deleteMalformedTraces",
+        "modules/datatypes/series.py:deleteDuplicateTraces",
+        "modules/datatypes/series.py:splitObject",
+    }, readds
+    assert len(readds) == 11, readds
+    assert sum(readds.values()) == 6, (
         f"the remove/mutate/add shape has changed: {readds}. The argument for "
         f"keeping `remove` off the view rests on it."
     )
-    assert readds["deleteTraces"] is False, "the one caller that means it"
+    ## The five that mean the removal -- named, so a caller that starts reusing
+    ## the object it just removed flips one of these and fails here.
+    assert [key for key, readd in sorted(readds.items()) if not readd] == [
+        "modules/datatypes/section.py:deleteTraces",
+        "modules/datatypes/series.py:deleteAllTraces",
+        "modules/datatypes/series.py:deleteDuplicateTraces",
+        "modules/datatypes/series.py:deleteMalformedTraces",
+        "modules/datatypes/series.py:deleteObjects",
+    ], readds
 
     ## And the reason that shape cannot route through `removeRow`: the object
     ## the object model would go on mutating is dead here.
@@ -2627,21 +2771,36 @@ def _threeRowContour():
 
 
 ## The argument shapes a within-contour reorder entry point could plausibly
-## take. Not an exhaustive fuzz: the point is that the probe below is driven by
-## what an API *does* when called, not by what it is *called*, so a reorder
-## added under a name nobody guessed is still found.
+## take, as `(positional, keyword)` pairs. Not an exhaustive fuzz: the point is
+## that the probe below is driven by what an API *does* when called, not by what
+## it is *called*, so a reorder added under a name nobody guessed is still
+## found. The keyword and callable shapes are here because name-independence was
+## not enough on its own: review-274 N3 planted `arrangeContour(name, *, order)`
+## and `sortContourBy(name, key)`, both capability-identical reorders, and both
+## escaped a matrix of positional tuples by raising `TypeError` on every one.
 _REORDER_PROBE_ARGUMENTS = (
-    ("axon", [2, 1, 0]),          # reindexContour(name, rows)
-    ([2, 1, 0], "axon"),
-    ([2, 1, 0],),
-    ("axon", 0, 2),               # moveWithinContour(name, from, to)
-    ("axon", 2, 0),
-    (0, 2),                       # moveRow(row, position) / swapRows(a, b)
-    (2, 0),
-    (0, -1),
-    ("axon", 2),
-    ("axon",),
-    (2,),
+    (("axon", [2, 1, 0]), {}),          # reindexContour(name, rows)
+    (([2, 1, 0], "axon"), {}),
+    (([2, 1, 0],), {}),
+    (("axon", 0, 2), {}),               # moveWithinContour(name, from, to)
+    (("axon", 2, 0), {}),
+    ((0, 2), {}),                       # moveRow(row, position) / swapRows(a, b)
+    ((2, 0), {}),
+    ((0, -1), {}),
+    (("axon", 2), {}),
+    (("axon",), {}),
+    ((2,), {}),
+    ## Keyword-only orders: arrangeContour(name, *, order) and its spellings.
+    (("axon",), {"order": [2, 1, 0]}),
+    (("axon",), {"rows": [2, 1, 0]}),
+    (("axon",), {"indices": [2, 1, 0]}),
+    ((), {"name": "axon", "order": [2, 1, 0]}),
+    ((), {"name": "axon", "rows": [2, 1, 0]}),
+    ## Sort-by-callable: sortContourBy(name, key), positionally and by keyword.
+    (("axon", (lambda row: -row)), {}),
+    (("axon",), {"key": (lambda row: -row)}),
+    (("axon",), {"reverse": True}),
+    ((), {"name": "axon", "key": (lambda row: -row)}),
 )
 
 
@@ -2663,10 +2822,10 @@ def _entryPointsThatReorderCleanly():
             continue
         if not callable(getattr(SectionColumns, name, None)):
             continue
-        for arguments in _REORDER_PROBE_ARGUMENTS:
+        for arguments, keywords in _REORDER_PROBE_ARGUMENTS:
             store, rows = _threeRowContour()
             try:
-                getattr(store, name)(*arguments)
+                getattr(store, name)(*arguments, **keywords)
             except Exception:
                 continue
             after = store.rowsForContour("axon")
@@ -2676,7 +2835,7 @@ def _entryPointsThatReorderCleanly():
                 continue                       # rows were retired: not clean
             if store.getAllModifiedNames() - {"axon"}:
                 continue                       # a foreign name leaked: not clean
-            found.append((name, arguments, after))
+            found.append((name, (arguments, keywords), after))
     return found
 
 
@@ -2687,9 +2846,10 @@ def test_no_entry_point_reorders_a_contour_cleanly():
     substrings "insert", "reorder", "move" and "swap". That is a pin on names,
     not on what the store can do: a genuine within-contour reorder planted under
     the name `reindexContour` passed it, and the whole suite stayed green
-    (review-274 F3). The test below the next one plants exactly that mutation and
-    proves this probe fires on it, so "behavioral" is demonstrated here rather
-    than asserted.
+    (review-274 F3). The two tests directly below plant exactly that mutation,
+    and two more that escape by *signature* rather than by name (review-274 N3),
+    and prove this probe fires on all three -- so "behavioral" is demonstrated
+    here rather than asserted.
 
     What the probe cannot reach, and deliberately: the two reorder routes that
     already exist. Destroy-and-rebuild takes many calls and renumbers, and the
@@ -2738,10 +2898,50 @@ def test_the_reorder_tripwire_fires_on_a_reorder_added_under_an_unguessed_name(
         "this test is no longer demonstrating what it claims"
     )
 
-    ## The new one, on the same class: it fires.
+    ## The new one, on the same class: it fires. Deduplicated by name, because
+    ## the widened matrix reaches this signature by three spellings.
     found = _entryPointsThatReorderCleanly()
-    assert [entry[0] for entry in found] == ["reindexContour"], found
-    assert found[0][2] == [2, 1, 0]
+    assert sorted({entry[0] for entry in found}) == ["reindexContour"], found
+    assert all(entry[2] == [2, 1, 0] for entry in found), found
+
+
+def test_the_reorder_tripwire_fires_on_reorders_whose_SIGNATURE_is_unguessed(
+        monkeypatch):
+    """The same tripwire against the second escape door: argument shape.
+
+    Name-independence was demonstrated above and is not the whole story. The
+    probe calls candidates with a matrix of argument shapes and swallows every
+    exception, so a capability-identical reorder whose signature is outside the
+    matrix used to raise `TypeError`, be swallowed, and never be probed at all
+    (review-274 N3). These are the reviewer's two escaping mutations, verbatim:
+    one keyword-only, one taking a callable. Both are caught now.
+    """
+    def arrangeContour(self, name, *, order):
+        """Keyword-only: a capability-identical reorder the old matrix missed."""
+        assert sorted(order) == sorted(self._index[name])
+        self._index[name] = list(order)
+        self._bump()
+
+    def sortContourBy(self, name, key):
+        """Takes a callable: also outside the old matrix."""
+        self._index[name] = sorted(self._index[name], key=key)
+        self._bump()
+
+    for reorder in (arrangeContour, sortContourBy):
+        monkeypatch.setattr(SectionColumns, reorder.__name__, reorder,
+                            raising=False)
+        ## Neither name contains "insert", "reorder", "move" or "swap" either,
+        ## so the old nominal check is not what is doing the work here.
+        assert not any(k in reorder.__name__.lower()
+                       for k in ("insert", "reorder", "move", "swap"))
+        found = _entryPointsThatReorderCleanly()
+        ## Deduplicated: more than one shape in the matrix may reach the same
+        ## method (`arrangeContour` answers both the keyword-only spelling and
+        ## the all-keywords one), and what is being asserted is that it is
+        ## reached at all.
+        assert sorted({entry[0] for entry in found}) == [reorder.__name__], found
+        assert all(entry[2] == [2, 1, 0] for entry in found), found
+        monkeypatch.delattr(SectionColumns, reorder.__name__)
 
 
 def test_the_setAttribute_round_trip_reorders_without_renumbering_but_pollutes():
