@@ -46,9 +46,13 @@ and ``getEditorsFromHistory`` asks for it. What is pinned here:
     physical line and resumes at the line after it, so the well-formed rows the
     join swept up are read on their own instead of being discarded with it, and
     ``skipped_rows`` holds one entry per lost file line instead of one entry
-    covering several. Safe without any decision about the format, because the
-    handler is reached only on an attempt that has already raised: it cannot
-    change any log that parses today.
+    covering several -- except when a line handed back re-joins and *parses*,
+    where the lines it absorbs go unrecorded just as they did before. Safe
+    without any decision about the format, because the handler is reached only
+    on an attempt that has already raised: it cannot change any log that parses
+    today. It can, on an already-failing log, turn a loud loss into a silent
+    fabrication -- reachable from the writer, bounded, and described in the
+    handler comment in ``log.py``.
   - the join SUCCEEDS. NOT fixed, and pinned as a known limitation. A single
     fabricated ``Log`` stands in for both rows, nothing reaches
     ``skipped_rows``, no warning prints, and it fires on the default path too.
@@ -58,8 +62,10 @@ and ``getEditorsFromHistory`` asks for it. What is pinned here:
     tests write the price down rather than paying it.
 
   The live shape of the second half, measured with the timestamps the app
-  actually writes: a two-field orphan line followed by a series-level row puts
-  the next row's ``"-"`` obj_name in the section slot, the join parses, and
+  actually writes: a two-field orphan line followed by a row whose obj_name
+  reads as a section range -- the ``"-"`` every series-level row writes, or a
+  numeric object name, which ``normalizeObjectName`` permits -- puts that
+  obj_name in the section slot, the join parses, and
   ``getEditorsFromHistory`` reports the next row's *timestamp* as an editor.
 """
 
@@ -536,7 +542,9 @@ def test_a_two_field_orphan_before_a_series_level_row_invents_an_editor():
     ``test_the_writer_uses_a_colon_in_the_time_field``). ``k=2`` puts the next
     row's *obj_name* there, and every series-level row writes ``"-"`` in that
     field -- so ``k=2`` parses whenever the next row is series-level, which is
-    an ordinary thing for a row to be.
+    an ordinary thing for a row to be. A series-level follower is sufficient,
+    not necessary: ``normalizeObjectName`` permits digits, so an object
+    literally named ``5`` puts a readable section range there too.
 
     What that costs: carol's row is gone, an editor nobody was is invented in
     its place -- here the next row's own timestamp, read as a username -- and
@@ -619,17 +627,32 @@ def test_the_fabrication_is_reachable_through_the_real_recovery_path(series, cap
     app writes ``existing_log.csv`` and read back the way ``getFullHistory``
     reads it, with the timestamps ``getDateTime`` returns.
 
-    The reachable trigger is a literal newline in the EVENT text of a
-    series-level row, leaving exactly one comma after it. ``Series`` writes
-    such events with names it never normalizes -- ``Series.modifyAlignments``
-    writes ``f"Rename alignment {old_a} to {new_a}"``, and
+    The reachable trigger is a literal newline in the EVENT text of a row --
+    the one pinned here happens to be series-level, but that is not required;
+    ``Series.editZtraceAttributes``' rename row is object-level and reaches the
+    same outcome -- leaving exactly one comma after it, followed by a row whose
+    obj_name reads as a section range. ``Series`` writes such events with names
+    it never normalizes -- ``Series.modifyAlignments`` writes
+    ``f"Rename alignment {old_a} to {new_a}"``, and
     ``Series.editZtraceAttributes`` writes both
     ``f"Rename ztrace to {new_name}"`` and ``f"Create ztrace from {name}"``.
     Only ``Trace.name`` goes through ``normalizeObjectName``; ztrace and
     alignment names are plain attributes, and ``QLineEdit`` keeps a pasted
-    newline, so a paste into either rename box is enough. A newline in an
-    *obj_name* cannot reach this shape -- the section and event fields trail
-    it, so an obj_name orphan is ``k>=3``.
+    newline, so a paste into either rename box is enough. The ztrace box needs
+    one extra condition, because its rename writes a *pair* of rows and the
+    second usually drags the chain back into loudness: the pasted name's first
+    line must be ``-`` or numeric, so that the pair supplies its own ``"-"``
+    section field (``new_name = "-\\n, b"`` does it). Both boxes are live; it
+    is alignment rename *as well as* ztrace rename, not one instead of the
+    other. Four more routes carry the same unnormalized free text into event
+    text -- brightness/contrast profile names, object group names, user column
+    names, and the per-object user-column value.
+
+    A newline in an *obj_name* cannot reach this shape where it would matter:
+    the section and event fields trail the name, so the *last* fragment of an
+    obj_name-split row -- the only one a fresh row follows -- is ``k>=3``.
+    Interior fragments of a multi-newline obj_name can be ``k=2``, but another
+    fragment of the same row follows them rather than a row.
 
     What the user is told: nothing. No warning prints, and the series then
     claims an editor that is a timestamp.

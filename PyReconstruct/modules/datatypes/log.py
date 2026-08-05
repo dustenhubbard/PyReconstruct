@@ -333,7 +333,11 @@ class LogSet():
         * the join does NOT parse -- recovered. Only the first physical line
           is recorded as skipped and the scan resumes at the line after it, so
           every line the failed join swept up gets a fresh attempt on its own.
-          The count of skipped rows is then one entry per lost file line.
+          The count of skipped rows is then one entry per lost file line --
+          with one exception, which is the second bullet reached from here: if
+          a line handed back re-joins and PARSES, the lines it absorbs are not
+          recorded either, so that one case undercounts exactly the way the
+          old handler did. See the caveat on the handler below.
         * the join DOES parse -- still lost, and silently. One fabricated Log
           stands in for both rows, nothing reaches skipped_rows, and this half
           fires on the default path too, where skip_corrupt never comes into
@@ -408,10 +412,25 @@ class LogSet():
                     # reports the next row's TIME as an editor, with nothing in
                     # skipped_rows and no warning printed. Measured, not
                     # inferred. It needs a literal newline in the EVENT text of
-                    # a series-level row leaving exactly one comma after it,
-                    # and the next row to be series-level. A newline in an
-                    # obj_name cannot reach k=2 -- the section and event fields
-                    # trail it, so an obj_name orphan is k>=3.
+                    # SOME row, leaving exactly one comma after it, and then a
+                    # follower whose obj_name lands in the section slot and
+                    # reads as one. Neither half is as narrow as it looks:
+                    #   * the row carrying the newline need NOT be series-level.
+                    #     Series.editZtraceAttributes' "Rename ztrace to ..."
+                    #     row is object-level and reaches the fabrication too.
+                    #   * the FOLLOWER need not be series-level either. "-" is
+                    #     the common case, but normalizeObjectName permits
+                    #     digits, so an object literally named "5" (or "1-3",
+                    #     or "1 2") works as well.
+                    # A newline in an obj_name cannot reach k=2 in the position
+                    # that matters: the section and event fields trail the name
+                    # unconditionally, so the LAST fragment of an obj_name-split
+                    # row -- the only fragment a fresh row follows -- is k>=3.
+                    # INTERIOR fragments of a multi-newline obj_name can be k=2
+                    # (obj_name "a\nx, y\nc" leaves a bare "x, y"), but what
+                    # follows them is another fragment of the same row, not a
+                    # row, so nothing comes of it. "always k>=3" would be the
+                    # wrong word for it.
                     #
                     # Reachable from the app's own writer, not just a
                     # hand-built list. Trace.name's setter routes through
@@ -429,7 +448,35 @@ class LogSet():
                     # (Series.modifyAlignments writes
                     # f"Rename alignment {old_a} to {new_a}"). QLineEdit keeps
                     # a pasted newline, and both rename boxes are QLineEdits,
-                    # so a paste is enough. Flag names are NOT a route, checked
+                    # so a paste is enough.
+                    #
+                    # Both rename boxes are live routes, and the ztrace one is
+                    # NOT excluded by its paired second row. editZtraceAttributes
+                    # writes two rows per rename, and for most pasted names the
+                    # second drags the chain back into loudness -- but not when
+                    # the name's FIRST line is "-" or numeric, because then the
+                    # pair supplies its own "-" section field. new_name
+                    # "-\n, b" parses end to end and yields a timestamp editor,
+                    # with an object-level follower and no warning. So the
+                    # correct statement is alignment rename AS WELL AS ztrace
+                    # rename, not one instead of the other.
+                    #
+                    # And these are not the only two. The same unnormalized
+                    # free text reaches event text from at least four more
+                    # places, all measured to fabricate the same silent editor:
+                    #   * brightness/contrast profile create/rename/delete
+                    #     (Series.modifyBCProfiles; QInputDialog.getText in
+                    #     dialog/bc_profiles.py)
+                    #   * object group add/remove ("Add to group '{name}'" in
+                    #     field_widget_3_object; QInputDialog.getText in
+                    #     dialog/object_group.py)
+                    #   * user column add/delete/edit (Series.addUserCol,
+                    #     removeUserCol, editUserCol)
+                    #   * the per-object user-column VALUE
+                    #     ("Set user column {col} as {opt}")
+                    # Five of the package's QInputDialog.getText sites feed a
+                    # name straight into log event text with no normalization
+                    # anywhere on the path. Flag names are NOT a route, checked
                     # rather than assumed: every flag call site passes
                     # obj_name=None.
                     #
@@ -478,16 +525,45 @@ class LogSet():
                     # how much is salvaged from a log that does not -- which
                     # is the whole point.
                     #
-                    # One caveat, measured rather than glossed: the lines
-                    # handed back go through the same greedy join, so on an
-                    # ALREADY-failing log a recovered orphan can in principle
-                    # join forward and fabricate where the old code merely lost
-                    # the lines. Over every 2- and 3-row file buildable from
-                    # real Log.__str__ output that never happened -- 5428 files
-                    # salvaged more rows, none fewer, and no new fabrication --
-                    # but it is reachable with hand-built content the writer
-                    # cannot emit. It is the live limitation named above being
-                    # reached from one more direction, not a new one.
+                    # One caveat, measured rather than glossed, and stated with
+                    # the bound it actually has: the lines handed back go
+                    # through the same greedy join, so on an ALREADY-failing
+                    # log a recovered orphan can join forward and fabricate
+                    # where the old code merely lost the lines. That IS
+                    # reachable from the app's own writer -- an earlier version
+                    # of this comment said it was not, and was wrong.
+                    #
+                    # The shape it needs: ONE pasted name that splits its row
+                    # across three physical lines, leaving TWO orphan fragments
+                    # of which the second is k=2, followed by a row whose
+                    # obj_name is "-" or numeric. An alignment named
+                    # "\n, b\n, b" through Series.modifyAlignments is enough.
+                    # Driven end to end on the one existing_log.csv that writes
+                    # -- same file read by both loops -- getEditorsFromHistory
+                    # returns ['dusten'] under the old handler and
+                    # ['20:19', 'dusten'] under this one: the recovery invents
+                    # an editor the old code did not. The measurement that
+                    # missed it drew from a fixed 14-line pool, which cannot
+                    # hold the three-fragment split a single name produces, so
+                    # the shape was never in the sample.
+                    #
+                    # What that costs, bounded, because the bounds are what
+                    # decide whether it is worth paying:
+                    #   * it fires ONLY on a log that already fails to parse.
+                    #     This handler is entered only after a raise, so every
+                    #     such input was already losing those rows loudly; no
+                    #     log that reads today is touched and nothing is lost
+                    #     that was not lost before.
+                    #   * no annotation or trace data is involved. The reach is
+                    #     Series.editors, MainWindow.displayAbout and the
+                    #     history table.
+                    #   * it is the k=2 limitation named above being reached
+                    #     from one more direction, not a new failure class.
+                    # What it does buy is a real trade -- on an already-broken
+                    # log a loud loss can become a silent fabrication -- and in
+                    # exactly that case the "one entry per lost file line"
+                    # count above undercounts again, since the further lines
+                    # that vanish into the invented row are never recorded.
                     log_set.skipped_rows.append(log_list[start])
                     i = start + 1
                     continue
