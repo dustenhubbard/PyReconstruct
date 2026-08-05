@@ -38,7 +38,7 @@
   The check that compares the two representations moved from "the whole section,
   after every mutation" — which measured 81 to 127 ms per edit and would have
   made dragging a selection unusable — to a targeted per-row comparison at each
-  mutation plus one full comparison at each save. Eleven places in the
+  mutation plus one full comparison at each save. Twelve places in the
   application edited traces or contours without going through `Section` and now
   rebuild the store afterwards: undo, redo, deleting an object, importing a
   segmentation, hiding objects, hiding all traces, restoring previous

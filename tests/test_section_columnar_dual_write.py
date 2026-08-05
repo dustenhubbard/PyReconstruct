@@ -441,7 +441,8 @@ def test_section_py_neither_reads_nor_writes_the_environment():
 ## edits a section's traces or contours WITHOUT going through a `Section`
 ## mutator, so no dual-write hook sees it -- and every one of them was a
 ## `ColumnarDualWriteMismatch` raised in a real session before it called the
-## repair. There are ELEVEN sites across the four modules:
+## repair. There are TWELVE sites across the four modules -- eleven rows below,
+## and the `state_manager.py` row carries two:
 ##
 ##   state_manager.py         undoState, redoState        whole-dict / per-key rebind
 ##   series.py                deleteObjects               contour key deleted
@@ -459,9 +460,9 @@ def test_section_py_neither_reads_nor_writes_the_environment():
 ## seven" (the original PR), then "eight" (a reviewer read `findFlag`), then
 ## "nine and ten" (a reviewer read `smoothObject` and `deleteDuplicateTraces` --
 ## AFTER the static scan below had been built specifically to make that
-## impossible), and now eleven (`cutTrace`, found by widening the scan three
-## ways at once). Four consecutive "complete" sets have been wrong. Nothing
-## about the number eleven is more trustworthy than the number eight was; what
+## impossible), and now twelve (`smoothTraces` and `cutTrace`, found by widening
+## the scan three ways at once). Four consecutive "complete" sets have been
+## wrong. Nothing about the number twelve is more trustworthy than eight was; what
 ## has changed is that the scan below now derives its inputs instead of
 ## enumerating them, so the next one has fewer places to hide. See the F6
 ## discussion in the PR body for the argument that this is the wrong strategy.
@@ -864,7 +865,7 @@ OUT_OF_CLASS_TRACE_EDITS = {
     "modules/gui/main/field_widget_2_trace.py::FieldWidgetTrace.cutTrace":
         "REPAIRED: `example_trace.tags.add(tag)` merges tags in place on "
         "`section.selected_traces[0]` -- the list is copied, the traces are "
-        "not -- then resyncColumnarStore(). The ELEVENTH site. It survived "
+        "not -- then resyncColumnarStore(). The TWELFTH site. It survived "
         "even the widened scan until two further gaps were closed: the write "
         "is an in-place mutation of the column's own container (not an "
         "assignment and not a Trace method), and the reach is "
@@ -881,9 +882,9 @@ OUT_OF_CLASS_TRACE_EDITS = {
         "used as grid stamps; nothing written is in a section yet",
     "modules/gui/main/field_widget_2_trace.py::FieldWidgetTrace.smoothTraces":
         "REPAIRED: `trace.smooth()` in place on the section's own selection, "
-        "then resyncColumnarStore(). Found by a reviewer as a SCAN GAP rather "
-        "than as a crash: it takes its traces as a parameter and named no "
-        "section at all, so the reach predicate could not see it",
+        "then resyncColumnarStore(). The ELEVENTH site, found by a reviewer as "
+        "a SCAN GAP rather than as a crash: it takes its traces as a parameter "
+        "and named no section at all, so the reach predicate could not see it",
     "modules/gui/main/field_widget_7_view.py::FieldWidgetView.setTracingTrace":
         "DETACHED: `t = trace.copy()` before .name is stripped of increment "
         "characters; the copy becomes the tracing template",
@@ -1204,7 +1205,7 @@ def _storeBackedColumnWrites(nodes, function=None):
                 _rootName(target.value),
             ))
 
-        ## Route three, and the one that hid an eleventh site: mutating the
+        ## Route three, and the one that hid a twelfth site: mutating the
         ## column's own container in place. `trace.tags.add(tag)` writes `tags`
         ## exactly as `trace.addTag(tag)` does, but it is neither an assignment
         ## to a column nor a call to a `Trace` method, so both of the arms above
@@ -1283,9 +1284,10 @@ def test_no_module_outside_section_py_edits_a_store_backed_trace_column():
     `REPAIR_SITES` pins which modules may call the repair; it cannot enumerate
     the modules that perform an out-of-class *edit*, and that is the class that
     actually costs a user their session. Seven such sites were found by running
-    the suite and watching it raise; an eighth (`findFlag`) was found only by a
-    reviewer reading the source, on a path an ordinary click reaches. A ninth
-    would be found the same way, or by a user.
+    the suite and watching it raise; the other five (`findFlag`, `smoothObject`,
+    `deleteDuplicateTraces`, `smoothTraces` and `cutTrace`) were found only by
+    reviewers reading the source, on paths an ordinary click reaches. A
+    thirteenth would be found the same way, or by a user.
 
     So this scans for the shape instead of counting instances: a function
     outside `section.py` that reaches traces through a section
@@ -2696,7 +2698,7 @@ def _aScalpelAcross(field, trace):
 def test_a_refused_scalpel_cut_leaves_the_section_saveable(
     main_window, local_series_settings, field_notices
 ):
-    """`FieldWidgetTrace.cutTrace`, driven -- the pin for the ELEVENTH site.
+    """`FieldWidgetTrace.cutTrace`, driven -- the pin for the TWELFTH site.
 
     THE USER PATH
     -------------
@@ -2750,7 +2752,7 @@ def test_a_refused_scalpel_cut_leaves_the_section_saveable(
 def test_smoothing_the_selection_leaves_the_section_saveable(
     main_window, local_series_settings
 ):
-    """`FieldWidgetTrace.smoothTraces`, driven -- the pin for a site with no test.
+    """`FieldWidgetTrace.smoothTraces`, driven -- the pin for the ELEVENTH site.
 
     "Smooth traces" is a shipped field action on the selection. `traces` is the
     section's own selection, not copies, so `Trace.smooth` rewrites `points` in
@@ -2845,7 +2847,7 @@ def test_smoothTraces_without_the_repair_really_would_have_drifted(
 def test_merging_tags_across_a_selection_leaves_the_section_saveable(
     real_section
 ):
-    """`FieldWidgetTrace.cutTrace`'s tag merge -- the ELEVENTH site.
+    """`FieldWidgetTrace.cutTrace`'s tag merge -- the TWELFTH site.
 
     `traces = self.section.selected_traces.copy()` copies the LIST; the traces
     in it are the section's own. `example_trace.tags.add(tag)` then writes a

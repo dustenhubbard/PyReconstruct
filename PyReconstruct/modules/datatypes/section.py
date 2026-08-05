@@ -87,7 +87,7 @@ from PyReconstruct.modules.backend.exports import export_svg, export_png
 ##
 ## `resyncColumnarStore()` is the public repair for that last case, and it is not
 ## hypothetical. Always-on turned every out-of-class mutation in the tree into a
-## `ColumnarDualWriteMismatch` raised at the user, and there are **ELEVEN**, on
+## `ColumnarDualWriteMismatch` raised at the user, and there are **TWELVE**, on
 ## paths a user reaches constantly:
 ##
 ##     backend/func/state_manager.py    undoState, redoState  (contour rebind)
@@ -102,13 +102,13 @@ from PyReconstruct.modules.backend.exports import export_svg, export_png
 ##     gui/main/field_widget_2_trace.py smoothTraces          (in-place write)
 ##     gui/main/field_widget_2_trace.py cutTrace's tag merge  (in-place write)
 ##
-## (That is eleven sites across ten rows: `state_manager.py` carries two.)
+## (That is twelve sites across eleven rows: `state_manager.py` carries two.)
 ##
 ## Every one of them now calls the repair. The invariant this establishes is
 ## worth stating plainly because it is new and it is enforced by a raise: **a
 ## trace or contour mutated outside `Section` owes a `resyncColumnarStore()`
 ## before the section is saved.** That was free advice under the gate. It is a
-## rule now, and the eleven sites above are what it caught.
+## rule now, and the twelve sites above are what it caught.
 ##
 ## THE COUNT ABOVE HAS BEEN WRONG FOUR TIMES. READ IT AS A WARNING.
 ## ----------------------------------------------------------------
@@ -130,8 +130,10 @@ from PyReconstruct.modules.backend.exports import export_svg, export_png
 ## the source, exactly as `findFlag` had been. The scan checked two of the nine
 ## `Trace` methods that write a store-backed column, so `Trace.smooth` and
 ## `Trace.mergeTags` walked straight through it. Widening it then exposed an
-## eleventh, `cutTrace`, hidden behind two further blind spots: the write was an
-## in-place mutation of a column's own container, and the reach was
+## eleventh, `smoothTraces`, which takes its traces as a parameter and names no
+## section at all, so the reach predicate could not see it whatever it wrote;
+## and a twelfth, `cutTrace`, hidden behind two further blind spots: the write
+## was an in-place mutation of a column's own container, and the reach was
 ## `selected_traces` rather than `.contours`.
 ##
 ## The scan is now considerably harder to slip past -- its setter list is
@@ -139,12 +141,12 @@ from PyReconstruct.modules.backend.exports import export_svg, export_png
 ## routes instead of two, and three reach routes instead of one. But the honest
 ## summary is that four consecutive "complete" sets have been wrong, the third
 ## of them after the enumeration had been mechanised specifically to prevent
-## that. Nothing about "eleven" is more trustworthy than "eight" was.
+## that. Nothing about "twelve" is more trustworthy than "eight" was.
 ##
 ## The alternative that removes the category rather than policing it is to
 ## REBUILD the store at `save()` instead of comparing it, which was measured
 ## 2-3.3x cheaper than the comparison and deletes the allow-list, the scan, the
-## `REPAIR_SITES` pin and every one of the eleven repair calls above. That is a
+## `REPAIR_SITES` pin and every one of the twelve repair calls above. That is a
 ## design decision for the maintainer, tracked as D11 in
 ## `specs/phase1-rewiring-slices-2026-08-04.md`; the PR body sets out the
 ## evidence. It is not implemented here.
@@ -934,7 +936,7 @@ class Section():
     # Paths that edit a section's traces or contours from OUTSIDE this class are
     # the reason always-on was more than deleting an `if`. Under the gate they
     # were unreachable with a store present, and the comment here said only that
-    # they "owe the resync". **There are ELEVEN**, they are all on hot user
+    # they "owe the resync". **There are TWELVE**, they are all on hot user
     # paths, and with a store always present every one of them was a
     # `ColumnarDualWriteMismatch` raised in a real session -- undo, redo,
     # deleting an object, autoseg's group deletion, the three hide paths,
@@ -954,12 +956,15 @@ class Section():
     #   gui/main/field_widget_2_trace.py FieldWidgetTrace.smoothTraces
     #   gui/main/field_widget_2_trace.py FieldWidgetTrace.cutTrace
     #
+    # (Eleven rows, twelve sites: the `state_manager.py` row carries two.)
+    #
     # Two shapes, and the second is the one that keeps being missed: a *rebind*
     # (the contour dict or a key is replaced) and an *in-place write* (a trace
     # the section still holds has one of the eight columns written on it). The
-    # first four rows are rebinds, the last seven are in-place writes.
+    # first three rows are rebinds -- four sites, since `state_manager.py`
+    # carries two -- and the last eight rows are in-place writes.
     #
-    # That is a real limit on this design, not a fixed bug: a twelfth such site
+    # That is a real limit on this design, not a fixed bug: a thirteenth such site
     # added later fails the same way. It fails loudly and at the first save
     # after the edit rather than silently, and the message names the remedy.
     # `tests/test_section_columnar_dual_write.py` scans the source for the edit
@@ -987,7 +992,7 @@ class Section():
 
         The public repair for a section whose traces or contours were edited
         from outside this class, and the only way a store is ever created.
-        `__init__` calls it once per section; the import path and the eleven
+        `__init__` calls it once per section; the import path and the twelve
         out-of-class edit sites call it after they are done.
 
         THE GENERATION COUNTER IS CARRIED FORWARD, NOT RESET
