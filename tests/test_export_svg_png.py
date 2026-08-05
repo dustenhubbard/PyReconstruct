@@ -4,17 +4,32 @@ The bug: ``PyReconstruct/modules/backend/exports/svg_conversion.py`` imports
 ``svgwrite`` (for ``export_svg``) and ``cairosvg`` (for ``export_png``), and
 neither package was declared in ``pyproject.toml``, ``requirements.txt`` or
 ``uv.lock``. ``git log -S svgwrite`` shows they arrived with the feature commits
-that wrote the module and were never added to a dependency file by any of them,
-so ``File > Export > SVG``/``PNG`` -- wired to ``Section.exportAsSVG`` and
-``Section.exportAsPNG`` via ``main_window.py`` -- raised
-``ModuleNotFoundError: No module named 'svgwrite'`` in every correctly-installed
-environment. Both imports are function-local, which is why nothing else in the
-app noticed: importing the module, the package, or ``Section`` all succeed, and
-the failure is deferred to the one call that the user makes.
+that wrote the module and were never added to a dependency file by any of them.
+
+What that cost a user was **not** a traceback. ``File > Export > SVG`` and
+``File > Export > PNG`` (``main_window.py``) each open with a
+``modules_available(...)`` guard that predates this branch -- both lines came in
+with ``91c33027``, the same upstream commit that added the export -- and there
+is no other caller of ``exportAsSVG``/``exportAsPNG`` in the application. So the
+guard caught the ``ModuleNotFoundError`` every time and put up a dialog offering
+to ``pip install`` the two packages over the network, or no-oped on decline.
+
+That is still a genuine packaging defect: a shipped feature nagged every user to
+self-install two packages the distribution should have carried, and the export
+did not work until they accepted. It is a smaller and differently-shaped defect
+than "the export crashes", which is what an earlier draft of this file said.
 
 Nothing caught it because nothing tested it. No test in the suite touched
 ``export_svg``, ``export_png``, ``exportAsSVG`` or ``exportAsPNG``, so the only
 signal available was a user trying to export.
+
+Declaring ``cairosvg`` had a second-order consequence that this branch also
+fixes, because the guard is what made it visible: ``modules_available`` caught
+``ModuleNotFoundError`` only, and ``import cairosvg`` raises ``OSError`` when
+native Cairo is absent. Once every user has the wheel, that ``OSError`` escapes
+the guard as a crash on any machine without Cairo. The guard is widened in
+``mod_imports.py`` on this branch and covered by
+``tests/test_modules_available_native_library.py``.
 
 The four tests below are layered so that a regression is reported at the layer
 it actually happened at:
@@ -127,8 +142,8 @@ def test_export_packages_are_declared(package):
     names = [d.split("==")[0].split(">")[0].split("<")[0].strip() for d in declared]
     assert package in names, (
         f"{package} is imported by modules/backend/exports/svg_conversion.py but "
-        f"is not in [project.dependencies]; SVG/PNG export raises "
-        f"ModuleNotFoundError without it"
+        f"is not in [project.dependencies]; without it SVG/PNG export cannot "
+        f"run and the main_window guard nags the user to pip-install it"
     )
 
     requirements = (REPO_ROOT / "requirements.txt").read_text().splitlines()
@@ -218,7 +233,7 @@ def test_export_as_svg_writes_a_real_svg(exportable_series, tmp_path):
         assert path.get("d", "").startswith("M "), f"empty path for {path.get('id')}"
 
 
-def test_export_as_png_writes_a_real_png(exportable_series, tmp_path):
+def test_export_as_png_writes_a_real_png(exportable_series, tmp_path, monkeypatch):
     """``Section.exportAsPNG`` rasterizes the SVG to a PNG at the requested scale.
 
     This is the one test here that can skip, and the reason is a genuine
@@ -248,6 +263,23 @@ def test_export_as_png_writes_a_real_png(exportable_series, tmp_path):
     section = exportable_series.loadSection(min(exportable_series.sections.keys()))
     height, width = section.img_dims
 
+    # Record where the intermediate SVG actually lands so the cleanup check
+    # below has a real path to test. `export_png` calls `mkstemp(suffix=".svg")`
+    # with no `dir=`, so it goes to the *system* temp directory -- globbing the
+    # PNG's own parent (which is tmp_path) would look in a directory the file
+    # was never written to and pass whether or not the cleanup ran.
+    from PyReconstruct.modules.backend.exports import svg_conversion
+
+    tmp_svgs = []
+    real_mkstemp = svg_conversion.mkstemp
+
+    def recording_mkstemp(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        tmp_svgs.append(path)
+        return fd, path
+
+    monkeypatch.setattr(svg_conversion, "mkstemp", recording_mkstemp)
+
     scale = 0.25  # small on purpose: a full-size raster is slow and proves no more
     out = tmp_path / "section.png"
     try:
@@ -275,4 +307,9 @@ def test_export_as_png_writes_a_real_png(exportable_series, tmp_path):
     assert len(data) > 2000, "PNG is too small to contain the rendered section"
 
     # export_png writes the intermediate SVG to a mkstemp path and unlinks it.
-    assert not list(Path(out).parent.glob("*.svg"))
+    # Asserted against the path mkstemp really returned: delete the `unlink`
+    # from export_png and this fails, which is the only reason to keep it.
+    assert len(tmp_svgs) == 1, "export_png did not take the mkstemp path once"
+    assert not Path(tmp_svgs[0]).exists(), (
+        f"export_png left its intermediate SVG behind at {tmp_svgs[0]}"
+    )
