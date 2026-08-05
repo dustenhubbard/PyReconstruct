@@ -156,7 +156,7 @@ from PyReconstruct.modules.backend.exports import export_svg, export_png
 ## object model instead (`_rebuildColumnarStoreForSave`, called where the
 ## comparison used to run). The object model is authoritative; the store is
 ## derived from it; so there is nothing left to compare, and the store cannot be
-## stale at `save()` time no matter what mutated the section since the last one.
+## stale at `save()` time whenever a store can be built from the section at all.
 ##
 ## **What that removes, precisely:** an out-of-class edit can no longer leave a
 ## section unsaveable, and can no longer abort a multi-section operation partway
@@ -164,6 +164,22 @@ from PyReconstruct.modules.backend.exports import export_svg, export_png
 ## their own loop). The thirteenth site, whenever it is found, is not a crash in
 ## a user's session and not a data-loss risk. It is also cheaper: rebuilding the
 ## busiest section of `autoseg745` costs about half what comparing it did.
+##
+## **And that sentence needed a second pass to be true, which is worth keeping
+## here because the first version of it read as settled.** Review of this change
+## found a shape where the rebuild itself raised: the build indexes its rows by
+## `trace.name` (`SectionColumns.fromSection`) and reads them back by contour
+## key, so an out-of-class RENAME -- which leaves `Section.contours`'s key and
+## `trace.name` disagreeing -- made the build fail its own arity check before
+## any drift was computed. `save()` raised, exactly as before D11; and because
+## the build assigns `self._columns` before filling `self._column_rows`, the
+## failed save left the section with an empty row map, so every later hooked
+## edit raised "holds no row for" as well. The save-time rebuild now restores
+## the outgoing store and map on any failure and REPORTS rather than raises, so
+## the claim above holds for that shape too. What it is NOT is a repair of the
+## underlying disagreement: `resyncColumnarStore()` still raises on the same
+## shape, because there the caller is asking for a store to be built and there
+## is none to build. The claim is about `save()`, and only about `save()`.
 ##
 ## **What it does NOT remove, and this is the part it would be easy to overclaim
 ## -- the twelve repair calls above are still load-bearing and still there.**
@@ -1063,9 +1079,11 @@ class Section():
         # the user when it did not. The enumeration of edit sites that check
         # existed to police was wrong four review rounds running, so the
         # question is no longer asked: the store is rebuilt from the object
-        # model, which owns every value, and cannot then be stale whatever
-        # mutated the section since the last save. The module header sets out
-        # what that removes and, just as importantly, what it does not.
+        # model, which owns every value, and cannot then be stale whenever a
+        # store can be built from the section at all. The module header sets
+        # out what that removes, what it does not, and the one shape (an
+        # out-of-class rename) where no store can be built and the section
+        # keeps the one it had with a warning in the log instead.
         #
         # AFTER THE WRITE, NOT BEFORE, AND THAT ORDERING IS STILL THE POINT
         # ------------------------------------------------------------------
@@ -1080,11 +1098,19 @@ class Section():
         # section unsaveable for the rest of the session.
         #
         # The rebuild inherits that ordering rather than making it unnecessary.
-        # It reports drift by printing rather than raising, so it cannot veto a
-        # save at all -- but `resyncColumnarStore` can still raise on its own
-        # arity check, which is a genuine store-construction bug, and even that
-        # must not cost a user bytes that were already correct.
-        # `test_a_shadow_mismatch_no_longer_costs_the_save` pins it.
+        # It reports by printing rather than raising -- both drift and a
+        # rebuild that could not be built at all -- so it cannot veto a save.
+        # `resyncColumnarStore` CAN still raise on the build's arity check, and
+        # the first version of this comment called that "a genuine
+        # store-construction bug"; review showed the attribution was wrong. The
+        # check also fires on a healthy store when the OBJECT MODEL is
+        # self-contradictory -- an out-of-class rename leaves the contour key
+        # and `trace.name` disagreeing -- which is why the save path reports it
+        # instead of raising, and why the ordering still matters: the bytes
+        # above were written from the object model and were already correct.
+        # `test_a_shadow_mismatch_no_longer_costs_the_save` and
+        # `test_a_rebuild_that_cannot_be_built_leaves_the_section_usable`
+        # pin the two halves.
         self._rebuildColumnarStoreForSave()
 
     def tracesAsList(self) -> list[Trace]:
@@ -1210,8 +1236,12 @@ class Section():
     # the smaller amount is the honest number rather than zero. It used to make
     # the section UNSAVEABLE for the rest of the session, because `save()`
     # compared and raised and nothing on that path repaired anything. `save()`
-    # now rebuilds, so it never raises for drift and reports it in the log
-    # instead -- but the window BETWEEN the out-of-class edit and that save is
+    # now rebuilds, so it does not raise -- not for drift, and not for a
+    # rebuild that cannot be built at all -- and reports in the log instead.
+    # (The second half of that is the review fix: an out-of-class RENAME makes
+    # the build fail its own arity check, and the first version of this change
+    # both raised and emptied the row map on that path. See the module header.)
+    # But the window BETWEEN the out-of-class edit and that save is
     # untouched, and it is where these sites actually bit: a rebind sends the
     # next mutation of a surviving trace through `_rowFor`, which raises "holds
     # no row for", and an in-place write sends it through
@@ -1368,8 +1398,20 @@ class Section():
         not, which made a missed out-of-class edit site into an unsaveable
         section. This one does not ask. The object model owns every value, the
         store is derived from it, so rebuilding makes the store correct
-        regardless of what mutated the section since the last save -- and a
-        thirteenth edit site, whenever it turns up, cannot cost anybody a save.
+        whenever a store can be built -- and a thirteenth edit site, whenever
+        it turns up, cannot cost anybody a save.
+
+        **"Cannot cost a save" is a claim about this method not raising, and
+        it took two goes to be true.** Review of this change found the shape
+        that falsified the first version: an out-of-class rename leaves
+        `Section.contours`'s key and `trace.name` disagreeing, and the rebuild
+        then raised out of its own arity check before any drift was computed --
+        so the save still raised, and worse, the half-built row map it left
+        behind made every later hooked edit raise too. Both halves are handled
+        below, and pinned by
+        `test_a_rebuild_that_cannot_be_built_leaves_the_section_usable`. So the
+        sentence above is now about the rebuild being tolerant of BOTH
+        outcomes, not only of drift.
 
         **THE REBUILD IS DISCARDED WHEN IT CHANGES NOTHING, AND THAT IS NOT AN
         OPTIMIZATION.** A rebuild produces a new store with a higher generation
@@ -1397,7 +1439,22 @@ class Section():
         change's to make, and it is pinned as a known limitation rather than
         left to be discovered.
 
-        Drift is PRINTED, never raised. See `_storeDrift`.
+        Drift is PRINTED, never raised. See `_storeDrift`. So is a rebuild that
+        cannot be built at all: see the `except` below, which is the reason
+        this method can honestly say `save()` does not raise for an
+        out-of-class edit. It is not enough for the rebuild to be tolerant of
+        drift, because the build has an arity check of its own that an
+        out-of-class RENAME trips before any drift is computed.
+
+        **WHAT IT STILL DOES NOT FIX, and the honest limit on the sentence
+        above.** When the rebuild cannot be built, the section keeps the store
+        it had rather than getting a corrected one, so the underlying
+        disagreement is reported and survives. `resyncColumnarStore()`, the
+        documented public repair, still raises on the same shape -- it is the
+        caller asking for a store to be built, and there is no store to build.
+        The claim this method makes is about `save()` alone: an out-of-class
+        edit cannot cost a save and cannot cost the session, not that every
+        out-of-class edit is repairable.
         """
         if self._columns is None:
             return
@@ -1412,7 +1469,58 @@ class Section():
         ## that intercepts it -- including the tests that revert one repair
         ## call to show it is load-bearing, which would silently disable
         ## `save()`'s rebuild as well and report no drift for the wrong reason.
-        self._rebuildColumnarStore()
+        ##
+        ## THE REBUILD CAN FAIL, AND FAILING MUST NOT COST THE SECTION ITS ROW
+        ## MAP. `_rebuildColumnarStore` assigns `self._columns` first and then
+        ## fills `self._column_rows` contour by contour, so a raise partway
+        ## through leaves the section holding a new store and a half-built map
+        ## -- and since it raises on the FIRST contour whose arity disagrees,
+        ## "half-built" is usually "empty". Every later hooked mutation then
+        ## goes through `_rowFor` and raises "holds no row for", which turns a
+        ## save that could not rebuild into a section nobody can edit for the
+        ## rest of the session. That is strictly worse than what this method
+        ## replaced, and it lands on the one path D11 exists to make safe, so
+        ## the outgoing store and map are put back whatever happens.
+        try:
+            self._rebuildColumnarStore()
+        except ColumnarDualWriteMismatch as unbuildable:
+            ## The store the section already had is intact and is what
+            ## `getDict()` just wrote from, so keeping it is not a fallback so
+            ## much as declining to trade it for a store that does not exist.
+            self._columns = before
+            self._column_rows = before_map
+            ## REPORTED, NOT RAISED -- the same rule as drift, for the same
+            ## reason, and this is the case that used to break it. The build's
+            ## arity check is a statement about the object model as much as
+            ## about the store: an out-of-class RENAME leaves
+            ## `Section.contours`'s key and `trace.name` disagreeing, and since
+            ## `SectionColumns.fromSection` indexes rows by `trace.name` while
+            ## the readback asks for them by contour key, a perfectly healthy
+            ## store cannot be rebuilt at all. Raising here would refuse
+            ## nothing (the bytes are already on disk, written from the object
+            ## model, under the contour key -- which is the name the file
+            ## round-trips) while costing the user the rest of the session.
+            ##
+            ## The check itself is NOT weakened: `resyncColumnarStore`, the
+            ## import path and every section load still raise on it, and
+            ## `test_building_a_store_still_checks_the_row_arity` still pins
+            ## that. What changed is only that `save()` stopped being one of
+            ## the places it can crash.
+            self._warnAboutTheStore(
+                f"the columnar store for section {self.n} could not be rebuilt "
+                f"at save and the store it already had was kept. No data was "
+                f"lost -- the object model is authoritative and it is what was "
+                f"written -- but something has left this section's traces or "
+                f"contours in a shape a store cannot be built from, most "
+                f"likely an edit made outside Section:\n  {unbuildable}"
+            )
+            return
+        except BaseException:
+            ## Anything else is unexpected and still deserves to reach the
+            ## caller; it just must not reach them through a bricked section.
+            self._columns = before
+            self._column_rows = before_map
+            raise
 
         drift = _storeDrift(before, before_map, self._columns, self._column_rows)
         if not drift:
@@ -1420,20 +1528,25 @@ class Section():
             self._column_rows = before_map
             return
 
-        ## stderr rather than stdout, and `print` rather than a logger because
-        ## this tree has no logging framework: `backend/func/logging_setup.py`
-        ## tees both standard streams into a per-user log file, which is what
-        ## Help > View log file shows and what a bug report carries. A warning
-        ## nobody can retrieve would not be a signal.
-        print(
-            f"WARNING: the columnar store for section {self.n} had drifted "
+        self._warnAboutTheStore(
+            f"the columnar store for section {self.n} had drifted "
             f"from the object model and was rebuilt at save. No data was lost "
             f"-- the object model is authoritative and it is what was written "
             f"-- but something edited this section's traces or contours "
             f"outside Section without calling resyncColumnarStore():\n  "
-            + "\n  ".join(drift),
-            file=sys.stderr,
+            + "\n  ".join(drift)
         )
+
+    def _warnAboutTheStore(self, message : str):
+        """Report a save-time store problem where a user can retrieve it.
+
+        stderr rather than stdout, and `print` rather than a logger because
+        this tree has no logging framework: `backend/func/logging_setup.py`
+        tees both standard streams into a per-user log file, which is what
+        Help > View log file shows and what a bug report carries. A warning
+        nobody can retrieve would not be a signal.
+        """
+        print(f"WARNING: {message}", file=sys.stderr)
 
     def _dualWriteResync(self):
         """Rebuild the store, if there is one.

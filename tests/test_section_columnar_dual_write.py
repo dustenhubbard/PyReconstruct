@@ -3428,9 +3428,17 @@ def test_a_shadow_mismatch_no_longer_costs_the_save(real_section, capsys):
 
     **(2) is a printed report rather than a raise since D11**, which replaced
     the comparison with a rebuild. The ordering it was written for survives the
-    change and is still the right one: `resyncColumnarStore` can raise on its
-    own arity check, which is a genuine store-construction bug, and even that
-    must not withhold bytes that were already correct.
+    change and is still the right one: `resyncColumnarStore` can raise on the
+    build's arity check, and even that must not withhold bytes that were
+    already correct.
+
+    That check was originally described here as "a genuine store-construction
+    bug". Review of D11 showed the attribution was wrong, and the correction
+    matters because it is the whole reason the save path had to be made
+    tolerant of it rather than left to raise: the check also fires on a
+    perfectly healthy store when the OBJECT MODEL is self-contradictory, which
+    an out-of-class rename makes it. See
+    `test_a_rebuild_that_cannot_be_built_leaves_the_section_usable`.
     """
     import json
 
@@ -3474,6 +3482,158 @@ def test_a_shadow_mismatch_no_longer_costs_the_save(real_section, capsys):
     ## And the section is not poisoned for the session: the repair works and
     ## the very next save is clean, rather than raising forever.
     real_section.resyncColumnarStore()
+    real_section.save()
+
+
+def test_a_rebuild_that_cannot_be_built_leaves_the_section_usable(
+    real_section, capsys
+):
+    """A save whose rebuild fails must not cost the section its row map.
+
+    THE SHAPE, AND WHY IT IS NOT A STORE BUG
+    ----------------------------------------
+    `SectionColumns.fromSection` indexes each row under `trace.name`, while
+    `_rebuildColumnarStore` reads the rows back by CONTOUR KEY to check that
+    the two line up. Those are the same string for every section the
+    application produces -- until something renames a trace in place from
+    outside `Section`, which leaves `Section.contours`'s key saying `'d03'`
+    and the trace it holds saying something else. The build then reports zero
+    rows for `'d03'` against one trace and raises, on a store that was
+    perfectly healthy and against an object model `getDict()` had just
+    serialized correctly (under the contour key, which is the name the file
+    round-trips).
+
+    WHAT THIS PINS
+    --------------
+    The first version of D11 raised out of that path, and because
+    `_rebuildColumnarStore` assigns `self._columns` before it fills
+    `self._column_rows`, the raise left the section holding a new store and an
+    EMPTY row map. Every subsequent hooked mutation -- of any trace on the
+    section, not only the renamed one -- then went through `_rowFor` and
+    raised "holds no row for". So a single save turned a section that was
+    merely unsaveable into one nobody could edit for the rest of the session,
+    on the exact path D11 exists to make safe. Reported in review of the
+    change; this is its pin.
+
+    Four things, and the fourth is the one the original defect broke:
+
+      1. `save()` does not raise,
+      2. the failure is REPORTED, where a user can retrieve it,
+      3. the section keeps the store and row map it already had, rather than
+         a half-built pair, and
+      4. it stays editable and re-saveable afterwards.
+
+    WHAT IT DELIBERATELY DOES NOT CLAIM
+    -----------------------------------
+    The disagreement is not repaired -- there is no store to build -- so
+    `resyncColumnarStore()` still raises on the same section, and the renamed
+    trace itself still fails the per-mutation check that names the
+    disagreement. Both are asserted below rather than left implicit, because
+    "the save is safe" and "the section is repaired" are different claims and
+    only the first is being made.
+    """
+    victim = _anyTrace(real_section)
+    other = next(
+        trace for trace in real_section.tracesAsList() if trace is not victim
+    )
+    store = real_section._columns
+    row_map = real_section._column_rows
+    live = len(real_section.tracesAsList())
+
+    ## The thirteenth-site shape: a rename nothing mirrored, and nothing
+    ## repaired.
+    victim.name = "renamed_out_of_class"
+
+    capsys.readouterr()
+    real_section.save()                                   # (1) does not raise
+
+    ## (2) and it says which section and what happened.
+    message = _driftReports(capsys)
+    assert f"section {real_section.n}" in message, (
+        f"the unbuildable rebuild was not reported: {message!r}"
+    )
+    assert "could not be rebuilt" in message, (
+        f"the report did not say the rebuild failed: {message!r}"
+    )
+
+    ## (3) the section still holds exactly what it held before the save --
+    ## the objects themselves, not merely equal ones.
+    assert real_section._columns is store, (
+        "the failed rebuild was adopted anyway"
+    )
+    assert real_section._column_rows is row_map, (
+        "the failed rebuild left its half-built row map behind"
+    )
+    assert len(real_section._column_rows) == live, (
+        f"the row map holds {len(real_section._column_rows)} entries for "
+        f"{live} live traces; the failed save emptied it"
+    )
+
+    ## (4) the section is not bricked. An ordinary hooked edit of an unrelated
+    ## trace is what used to raise "holds no row for" immediately.
+    real_section.closeTraces([other], closed=not other.closed)
+    real_section.save()
+
+    ## And the limits, stated rather than assumed. The renamed trace's own row
+    ## is still named by the per-mutation check, which is the discipline
+    ## signal D11 is not supposed to give up: the save absorbed the cost, not
+    ## the evidence.
+    with pytest.raises(ColumnarDualWriteMismatch) as caught:
+        real_section.closeTraces([victim], closed=not victim.closed)
+    assert "name:" in str(caught.value), (
+        f"the renamed trace's row was reached but not attributed: "
+        f"{caught.value}"
+    )
+
+    ## ...and the disagreement itself survives, because nothing repaired it.
+    ## `resyncColumnarStore()` is the caller asking for a store to be built,
+    ## and there is still none to build.
+    with pytest.raises(ColumnarDualWriteMismatch) as caught:
+        real_section.resyncColumnarStore()
+    assert "building the store" in str(caught.value)
+
+
+def test_a_rebuild_that_fails_for_any_other_reason_still_restores_the_map(
+    real_section, monkeypatch
+):
+    """The unexpected failure still reaches the caller, just not through a
+    bricked section.
+
+    The tolerance above is deliberately narrow: only
+    `ColumnarDualWriteMismatch` is downgraded to a report, because only that
+    one has a known, benign reading. Anything else out of the rebuild is a
+    real fault and must still raise. What must NOT differ between the two is
+    the section's state afterwards -- an aborted rebuild leaves a half-built
+    row map whatever aborted it.
+
+    The failure is planted in `rowsForContour` rather than in `fromSection`
+    deliberately: `fromSection` raises BEFORE `_rebuildColumnarStore` has
+    assigned anything, so a failure there could never have left a half-built
+    pair and a test that used it would pass with or without the guard.
+    `rowsForContour` runs inside the row-map loop, which is where the damage
+    was.
+    """
+    store = real_section._columns
+    row_map = real_section._column_rows
+    live = len(real_section.tracesAsList())
+
+    def explode(self, name):
+        raise RuntimeError("rowsForContour fell over")
+
+    monkeypatch.setattr(SectionColumns, "rowsForContour", explode)
+
+    with pytest.raises(RuntimeError, match="rowsForContour fell over"):
+        real_section.save()
+
+    assert real_section._columns is store
+    assert real_section._column_rows is row_map
+    assert len(real_section._column_rows) == live
+
+    monkeypatch.undo()
+    ## And it is still an ordinary, editable, saveable section.
+    real_section.closeTraces(
+        [_anyTrace(real_section)], closed=not _anyTrace(real_section).closed
+    )
     real_section.save()
 
 

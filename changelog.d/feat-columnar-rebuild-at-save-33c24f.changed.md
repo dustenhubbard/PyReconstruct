@@ -26,3 +26,9 @@
   situation left it raising on every save for the rest of the session and could
   abort a multi-section operation, such as smoothing an object or deleting
   duplicate traces, partway through.
+
+  That holds even when the store cannot be rebuilt at all. One kind of
+  out-of-class edit — renaming a trace in place — leaves the section in a shape
+  no store can be built from, and saving then keeps the store the section
+  already had and writes the reason to the log instead of raising. The section
+  is still saveable and still editable afterwards.
