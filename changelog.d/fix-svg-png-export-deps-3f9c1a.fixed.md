@@ -21,6 +21,15 @@
   still offers the pip install that fixes it, a missing *native library* names
   the system remedy instead and does not offer an install that cannot help.
 
+  The same failure had a second way in, which is closed here as well. If you
+  accept the install offer and the `pip install` succeeds, the guard imports
+  the package once more to report where it landed -- and on a machine with no
+  system Cairo that import raises the same `OSError`, which used to escape as
+  a crash report. It is now caught, reported with the system remedy rather
+  than as a success, and the install is treated as unsuccessful, so the
+  feature declines cleanly instead of running on and failing at the export.
+  You are not offered the install a second time, since you have just run it.
+
   For PNG, therefore, declaring the package is necessary but not sufficient:
   the machine also needs `libcairo2` (Debian/Ubuntu), `brew install cairo` plus
   `DYLD_FALLBACK_LIBRARY_PATH` (macOS), or a Cairo DLL on `PATH` (Windows).

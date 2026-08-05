@@ -133,7 +133,13 @@ def modules_available(modules: Union[str, List[str]], notify: bool=True) -> bool
                 pip_outcomes = map(install_module, unavailable)
 
                 ## A successful pip install still does not make the feature
-                ## usable if a native library is missing alongside it.
+                ## usable if a native library is missing alongside it. Two
+                ## cases, and they need separate handling: a *different* module
+                ## in this same call already went into the unloadable bucket
+                ## (`not unloadable`), or the just-installed module is itself
+                ## the native wrapper, which `install_module` finds when it
+                ## imports the module to report where it landed and reports
+                ## by returning False.
                 return all(list(pip_outcomes)) and not unloadable
 
     return False
@@ -159,8 +165,24 @@ def install_module(module: Union[str, Tuple[str, str]]) -> bool:
 
     if output.returncode == 0:
 
+        try:
+
+            installed_to = module_path(module)
+
+        except OSError as e:
+
+            ## pip succeeded but the package wraps a native library that will
+            ## not load, so `module_path`'s own `__import__` raises the OSError
+            ## `modules_available`'s probe already handles. Uncaught here it
+            ## reaches customExcepthook as a crash report. Report the real
+            ## remedy and count the install as failed: the feature is still
+            ## unusable, and re-offering pip cannot supply a system library.
+            note(native_library_message({module: e}))
+
+            return False
+
         note(
-            f"{module} successfully installed to:\n\n{module_path(module)}"
+            f"{module} successfully installed to:\n\n{installed_to}"
         )
 
         return True
