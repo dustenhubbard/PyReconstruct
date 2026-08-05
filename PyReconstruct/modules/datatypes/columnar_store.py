@@ -546,22 +546,28 @@ class SectionColumns():
         """
         store = cls(section.n, coordinates=coordinates, id_issuer=id_issuer,
                     generation=generation)
-        ## One carried id can be spent once. `carried_ids` is an identity map,
-        ## so a `Trace` object that somehow sits in two contour lists at once
-        ## would otherwise be looked up twice and hand the same id to two live
-        ## rows -- which is precisely the duplicate this whole change exists to
-        ## prevent, arriving through the fix rather than the fault. The second
-        ## row falls through to the issuer instead.
+        ## One carried id can be spent once, and `spent` holds the ID rather
+        ## than the trace it came from, because the id is what must not be
+        ## handed out twice. Two ways one id reaches two rows: a `Trace` object
+        ## sitting in two contour lists at once, so an identity map is looked up
+        ## twice; or two DISTINCT traces mapped to the same id in `carried_ids`,
+        ## which a map keyed on trace identity cannot see at all. Both end in
+        ## two live rows sharing one id -- precisely the duplicate this whole
+        ## change exists to prevent, arriving through the fix rather than the
+        ## fault, and invisible to the issuer because a carried id is never
+        ## offered to `adopt()`. The second row falls through to the issuer
+        ## instead. (`None in spent` is False, so the `is not None` test is
+        ## needed only before adding.)
         spent = set()
         for name in sorted(section.contours, key=str):
             for trace in section.contours[name]:
                 trace_id = None
                 if carried_ids is not None:
                     trace_id = carried_ids.get(trace)
-                    if trace_id is not None and id(trace) in spent:
+                    if trace_id in spent:
                         trace_id = None
                     elif trace_id is not None:
-                        spent.add(id(trace))
+                        spent.add(trace_id)
                 store.appendRow(
                     name=trace.name,
                     points=trace.points,
@@ -690,6 +696,16 @@ class SectionColumns():
         channel a caller with its own user-facing conflict vocabulary should
         read -- an import that wants to say "3 traces arrived under ids this
         series already uses" says it from here.
+
+        SCOPED TO THIS STORE'S LIFETIME, so read it before the next
+        `resyncColumnarStore()` or `save()`. A rebuild replaces the store
+        wholesale and does not carry this record across -- deliberately, since
+        the tuple's row number is meaningless once rows have been renumbered.
+        That matters because the resync that erases it tends to sit on the last
+        line of the method that produced it. The channels that DO outlive a
+        rebuild are `id_issuer.collisions` (the issuer is carried across) and
+        the printed warning, which `backend/func/logging_setup.py` tees into the
+        per-user log file.
         """
         return tuple(self._foreign_id_reissues)
 
@@ -824,6 +840,26 @@ class SectionColumns():
                 "pass trace_id instead if the id is genuinely this series' own."
             )
         name = normalizeObjectName(name)
+        ## Resolved BEFORE the first column is written, and deliberately so.
+        ## `_resolveID`'s foreign arm reaches `adopt()`, whose first statement
+        ## rejects a malformed id by raising -- a third raising path, alongside
+        ## the two guards above, and the only one that can be reached with
+        ## untrusted input, since `foreign_id` exists to accept ids from outside
+        ## this series. Resolving after the columns were appended left the store
+        ## at mismatched arity: `_names` and the coordinate backing had advanced
+        ## while `_ids` had not, and because the assertion below compares the
+        ## two columns that BOTH advanced, the next append passed and every
+        ## later row's id was off by one. The prospective row number is
+        ## `len(self._names)`, which the assertion below then confirms is the
+        ## row the backing actually produced.
+        ##
+        ## The tradeoff, stated rather than left implicit: on the clash-and-
+        ## reissue path `_resolveID` appends to `_foreign_id_reissues` and
+        ## prints, so should a LATER line here raise, that record would describe
+        ## a row that was never appended. That is strictly narrower than what it
+        ## replaces -- a spurious entry in a report nobody reads yet, against
+        ## silent id corruption in every row of the store.
+        new_id = self._resolveID(trace_id, foreign_id, name, len(self._names))
         row = self._coordinates.append(points)
         assert row == len(self._names), (
             "the coordinate backing and the attribute columns have drifted out "
@@ -836,7 +872,7 @@ class SectionColumns():
             self._bools[attribute].append(bool(value))
         self._fill_modes.append(self._encodeFillMode(row, fill_mode))
         self._tags.append(frozenset(tags))
-        self._ids.append(self._resolveID(trace_id, foreign_id, name, row))
+        self._ids.append(new_id)
         self._live.append(True)
         self._live_count += 1
 

@@ -1268,6 +1268,57 @@ def test_a_foreign_id_needs_an_issuer_to_register_with():
     assert store.getID(_aRow(store, trace_id="fromtheefile")) == "fromtheefile"
 
 
+def test_a_malformed_foreign_id_leaves_the_store_untouched():
+    """The refusal has to arrive before the first column is written.
+
+    `adopt()` rejects a malformed id by raising, and `foreign_id` is the one
+    parameter whose entire purpose is to accept an id from OUTSIDE this series,
+    which is by definition untrusted. Resolving the id after the columns had
+    been appended left `_names`, `_tags` and the coordinate backing advanced
+    while `_ids`, `_live` and `_live_count` were not -- and the arity assertion
+    on the NEXT append cannot catch that, because it compares `row` against
+    `len(self._names)` and the failed call advanced BOTH. So the next append
+    succeeded and `_ids` was off by one against the rows it described, for the
+    rest of the store's life. That is worse than the missing id the module
+    docstring already refuses: `getID` went on answering, with another row's id.
+    """
+    from PyReconstruct.modules.datatypes.trace_id import TraceIDIssuer
+
+    issuer = TraceIDIssuer()
+    store = SectionColumns(1, id_issuer=issuer)
+    kept = {row: store.getID(row)
+            for row in (_aRow(store), _aRow(store, name="dendrite"))}
+    assert all(kept.values())
+    before = len(store._names)
+    taken_before = len(issuer.taken)
+
+    with pytest.raises(ValueError, match="11 characters"):
+        _aRow(store, foreign_id="not-a-valid-id")
+
+    ## Nothing moved: no column, no id record, and not the issuer either --
+    ## `adopt` decodes before it registers, so the refused id is not in `taken`.
+    assert len(store._names) == before, "a column advanced past the refusal"
+    assert len(store._ids) == before
+    assert len(store._tags) == before
+    assert store.rowCount == before and len(store) == before
+    assert store.foreign_id_reissues == ()
+    assert len(issuer.taken) == taken_before, (
+        "the issuer registered the id it refused as malformed"
+    )
+    assert {row: store.getID(row) for row in kept} == kept
+
+    ## The shift itself: the next append must be the row the failed one was
+    ## going to be, and must not slide the existing rows' ids up by one.
+    fresh = _aRow(store, name="dendrite")
+    assert fresh == before, f"the failed append consumed row {before}"
+    assert {row: store.getID(row) for row in kept} == kept, (
+        "the existing rows' ids shifted under the row that failed to append"
+    )
+    assert store.getID(fresh) not in kept.values(), (
+        "the new row was handed an id another row already holds"
+    )
+
+
 def test_the_foreign_id_clash_report_is_capped_but_the_record_is_not(capsys):
     """A common-ancestor merge clashes on every trace, not on a rare one.
 
@@ -1357,6 +1408,50 @@ def test_a_rebuild_carries_the_ids_it_is_given_and_issues_for_the_rest(
     assert len(issuer.taken) == taken_before + 1, (
         "the rebuild leaked ids into the issuer's index: only the one trace "
         "without a carried id should have drawn a new one"
+    )
+    assert issuer.collisions == (), "the carry reported a clash against itself"
+
+    ## Two DISTINCT traces mapped to ONE id -- the shape a guard keyed on trace
+    ## identity cannot see, because both lookups are of different objects. The
+    ## issuer cannot catch it either: a carried id is deliberately never offered
+    ## to `adopt()`, so its collision log stays empty while two live rows share
+    ## one id. That is the R1 duplicate this whole mechanism exists to prevent,
+    ## and the rebuild would otherwise propagate it forward on every save.
+    assert len(carried) >= 2
+    one, other = list(carried)[:2]
+    shared = carried[one]
+    doubled = dict(carried)
+    doubled[other] = shared          # `one` already holds it
+    taken_before_doubled = len(issuer.taken)
+
+    third = SectionColumns.fromSection(
+        section, id_issuer=issuer, carried_ids=doubled,
+    )
+    tripled = {}
+    for name in sorted(section.contours, key=str):
+        for trace, row in zip(section.contours[name].getTraces(),
+                              third.rowsForContour(name)):
+            tripled[trace] = third.getID(row)
+
+    pair = [tripled[one], tripled[other]]
+    assert pair.count(shared) == 1, (
+        f"one carried id was spent {pair.count(shared)} times, not once: {pair}"
+    )
+    fell_through = next(i for i in pair if i != shared)
+    assert fell_through is not None, "the second row was left with no id at all"
+    assert fell_through not in doubled.values(), (
+        "the trace whose carried id was already spent was handed an id another "
+        "trace holds, rather than a fresh one"
+    )
+    assert fell_through in issuer.taken, "the fresh id was not registered"
+    assert len(set(tripled.values())) == len(tripled), (
+        "TWO LIVE ROWS SHARE ONE ID: the R1 duplicate, arriving through the "
+        "rebuild's own carry"
+    )
+    ## Exactly two draws: the newcomer that has no carried id, and the trace
+    ## whose id was already spent. Nothing else re-identified.
+    assert len(issuer.taken) == taken_before_doubled + 2, (
+        "the rebuild drew more ids than the two traces that needed one"
     )
     assert issuer.collisions == (), "the carry reported a clash against itself"
 
