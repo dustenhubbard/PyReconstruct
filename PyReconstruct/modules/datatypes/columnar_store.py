@@ -183,6 +183,8 @@ all, are semantics rather than mechanics. They are held for the maintainer, and
 finds nothing here rather than an invented answer.
 """
 
+import operator
+
 import numpy as np
 
 from .contour import Contour
@@ -745,7 +747,8 @@ class SectionColumns():
                     now -- see below.
             Raises:
                 ValueError: `rows` is not a permutation of the contour's
-                    current rows.
+                    current rows, or holds an element that is not an integer
+                    row number.
 
         WHY A WHOLE-ORDER ARGUMENT RATHER THAN A MOVE OR A SWAP
         -------------------------------------------------------
@@ -766,7 +769,7 @@ class SectionColumns():
 
         THE PERMUTATION CHECK IS NOT DEFENSIVE PADDING
         ----------------------------------------------
-        Three ways to get it wrong, and each corrupts silently rather than
+        Four ways to get it wrong, and each corrupts silently rather than
         loudly. A `rows` missing one of the contour's rows drops that row out of
         the index while leaving it **live** and named for this contour, so it
         vanishes from `contourNames()`'s contour and from every view, while
@@ -776,10 +779,24 @@ class SectionColumns():
         and be indexed under another -- and `removeRow`, which looks the row's
         name up to find the index to take it out of, would then fail to find it.
         A `rows` with a duplicate makes one row appear twice in a contour that
-        holds it once. All three are caught by comparing sorted row lists, which
-        also settles liveness for free: `removeRow` takes a row out of the index
-        as it tombstones it, so a row that is in the index is live, and a
+        holds it once. Those three are caught by comparing sorted row lists,
+        which also settles liveness for free: `removeRow` takes a row out of the
+        index as it tombstones it, so a row that is in the index is live, and a
         permutation of the index is a list of live rows.
+
+        The fourth is the one a sorted comparison cannot catch, because it is a
+        comparison of *values*: `2.0 == 2`, so a `rows` holding `float` or
+        `numpy.float64` elements is a valid permutation by value and is stored
+        verbatim. Nothing complains -- the contour is marked modified and the
+        store reads as healthy -- until `materializeContours()` subscripts a
+        list with a float and raises a bare `TypeError` naming neither this
+        contour nor this call. numpy is a hard dependency here and an order
+        computed through it can carry float dtype, so this is a reachable input
+        rather than a contrived one. Each element is therefore coerced
+        through `operator.index`, the integer-index protocol itself, which is
+        the discriminator that gets this exactly right: `isinstance(row, int)`
+        would reject `numpy.int64`, which every other row-number path in this
+        store accepts and which must keep working.
 
         WHAT THE TRACKING DOES, AND WHY IT IS ONE NAME AND NOT NONE
         -----------------------------------------------------------
@@ -803,7 +820,23 @@ class SectionColumns():
         """
         name = normalizeObjectName(name)
         current = self._index.get(name, [])
-        ordered = list(rows)
+        ## Every element through the integer-index protocol, not a value or a
+        ## type check. `operator.index` is the same discriminator a list
+        ## subscript runs, so it accepts exactly what the index can hold --
+        ## `int`, `bool` and `numpy.int64`/`numpy.uint8` -- and rejects `float`
+        ## and `numpy.float64`, which a value comparison cannot do because
+        ## `2.0 == 2`. It also normalizes: what lands in `_index` is an exact
+        ## `int` whatever integral type the caller computed its order in.
+        ordered = []
+        for row in rows:
+            try:
+                ordered.append(operator.index(row))
+            except TypeError as error:
+                raise ValueError(
+                    f"reorderContour needs integer row numbers for contour "
+                    f"{name!r}: {row!r} is a {type(row).__name__}, which cannot "
+                    f"index a contour's row list"
+                ) from error
         if sorted(ordered) != sorted(current):
             raise ValueError(
                 f"reorderContour needs a permutation of contour {name!r}'s own "

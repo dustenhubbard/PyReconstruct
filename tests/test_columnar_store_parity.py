@@ -52,6 +52,7 @@ behind.
 import ast
 import inspect
 import json
+import random
 import shutil
 from pathlib import Path
 
@@ -3210,15 +3211,46 @@ def test_reorderContour_realizes_an_arbitrary_permutation_on_real_contours(
     a NON-reversal permutation, because a reversal is the one permutation a
     buggy implementation can reach by accident. The same standard applies to the
     replacement, and it is applied here on every multi-row contour of the real
-    fixture series rather than on a three-row fixture: each is rotated by one,
-    which is a permutation with no fixed point and no symmetry to hide behind,
-    and then rotated back and checked against the order it started in.
+    fixture series rather than on a three-row fixture.
+
+    WHAT THIS MATERIAL CAN AND CANNOT DELIVER (review-277 F04)
+    ----------------------------------------------------------
+    An earlier form of this test rotated every contour by one and claimed that
+    as "no fixed point and no symmetry to hide behind". That claim was false on
+    most of what it ran against. The fixture series' contour row-count
+    distribution is `{1: 212, 2: 7, 3: 2}`: of the nine multi-row contours here,
+    SEVEN hold exactly two rows, and for a two-row contour rotate-by-one *is*
+    the reversal -- the exact permutation the docstring said it was avoiding.
+    Only two contours hold three rows.
+
+    So the two sizes are exercised differently and counted separately, rather
+    than being described with one claim that is only true of two of them:
+
+    * **Three rows or more** -- a seeded shuffle, rejected and redrawn until it
+      is neither the identity nor the reversal. This is the honest form of the
+      original claim, and `checked_nontrivial` below asserts it was actually
+      reached rather than skipped past.
+    * **Exactly two rows** -- the swap, which is the *only* non-identity
+      permutation a two-row contour has. There is no non-trivial permutation to
+      exercise at this size and no amount of shuffling invents one; what these
+      seven contours cover is that a reorder of a real contour preserves row
+      numbers, held views and tracking, not that it survives an arbitrary
+      permutation.
+
+    Seeded rather than free-running: a permutation test that draws differently
+    on every run either flakes or hides, and the seed makes a failure something
+    that can be reproduced from the failure message alone.
 
     The views are built BEFORE the reorder and read after it, so this also says
     on real material what the fixture test says on invented material: a held
-    view survives a reorder of the contour under it.
+    view survives a reorder of the contour under it. And the new order is
+    checked through `materializeContours` as well as through the index, because
+    within-contour order being *serialized* is the whole justification for a
+    reorder marking the contour modified.
     """
-    checked = 0
+    rng = random.Random(20260805)
+    checked_nontrivial = 0
+    checked_two_row = 0
     for section in loaded_sections:
         store = SectionColumns.fromSection(section)
         store.clearTracking()
@@ -3229,16 +3261,41 @@ def test_reorderContour_realizes_an_arbitrary_permutation_on_real_contours(
             held = {row: TraceView(store, row) for row in original}
             points = {row: view.points for row, view in held.items()}
 
-            rotated = original[1:] + original[:1]
-            store.reorderContour(name, rotated)
-            assert store.rowsForContour(name) == rotated
+            if len(original) >= 3:
+                ## Redrawn until it is neither the identity nor the reversal.
+                ## Both exist among the draws and both are the cases a buggy
+                ## implementation reaches by accident.
+                for _ in range(100):
+                    permuted = rng.sample(original, len(original))
+                    if permuted != original and permuted != original[::-1]:
+                        break
+                else:  # pragma: no cover - 1/3! odds per draw, 100 draws
+                    raise AssertionError(f"no non-trivial draw for {name}")
+                assert permuted != original
+                assert permuted != original[::-1]
+                checked_nontrivial += 1
+            else:
+                ## The only non-identity permutation two rows have. Not a
+                ## non-trivial permutation, and not claimed as one.
+                permuted = original[::-1]
+                checked_two_row += 1
+
+            store.reorderContour(name, permuted)
+            assert store.rowsForContour(name) == permuted, (
+                f"{name} did not take the order {permuted} (seeded shuffle)"
+            )
             assert all(view.points == points[row] for row, view in held.items())
             assert store.getAllModifiedNames() <= set(store.contourNames())
+
+            ## The order reaches the serialized form, not just the index.
+            materialized = store.materializeContours()
+            assert [trace.points for trace in materialized[name]] == [
+                points[row] for row in permuted
+            ], f"{name}'s materialized order is not the order it was given"
 
             store.reorderContour(name, original)
             assert store.rowsForContour(name) == original
             assert all(view.points == points[row] for row, view in held.items())
-            checked += 1
 
         ## Whatever was reordered, nothing that is not a contour was tracked --
         ## the property the round trip could not have held on this material.
@@ -3247,7 +3304,14 @@ def test_reorderContour_realizes_an_arbitrary_permutation_on_real_contours(
         materialized = store.materializeContours()
         assert sorted(materialized) == sorted(store.contourNames())
 
-    assert checked > 0, "the fixture offered no multi-row contour to permute"
+    ## Both counted, and the strong half asserted separately: if the fixture
+    ## ever loses its three-row contours, this test must fail rather than
+    ## quietly fall back to seven reversals and keep claiming "arbitrary".
+    assert checked_two_row > 0, "the fixture offered no two-row contour"
+    assert checked_nontrivial > 0, (
+        "the fixture offered no contour of three or more rows, so no "
+        "non-trivial permutation was exercised at all"
+    )
 
 
 def test_reorderContour_refuses_anything_that_is_not_a_permutation():
@@ -3281,6 +3345,76 @@ def test_reorderContour_refuses_anything_that_is_not_a_permutation():
     ## The refusal is not a name check: the right rows in a new order pass.
     store.reorderContour("axon", [1, 0, 2])
     assert store.rowsForContour("axon") == [1, 0, 2]
+
+
+def test_reorderContour_refuses_non_integral_row_numbers_but_keeps_numpy_ints():
+    """review-277 F01: the corruption a *value* comparison cannot see.
+
+    `sorted(ordered) != sorted(current)` compares values, and `2.0 == 2`, so a
+    `rows` holding `float` or `numpy.float64` elements was a valid permutation
+    by value: it passed the guard, was written into the index verbatim, and
+    marked the contour modified. The store then read as healthy and the damage
+    surfaced somewhere else entirely -- `materializeContours()` subscripting a
+    list with a float, raising a bare `TypeError` that named neither the contour
+    nor the call that broke it. That is a fourth silent-corruption mode in a
+    validator whose own docstring says it catches all of them.
+
+    The fix is `operator.index` per element rather than a type check, and the
+    second half of this test is why: `isinstance(row, int)` would also reject
+    `numpy.int64`, which every other row-number path in this store accepts
+    today. numpy is a hard dependency and an order computed through it arrives
+    with a numpy dtype either way -- `int64` must keep working for the same
+    reason `float64` must not.
+    """
+    store, rows = _threeRowContour()
+    store.clearTracking()
+    before = _rowStateForComparison(store)
+
+    ## Each of these is a permutation by value and only by value.
+    refused = [
+        [2.0, 1, 0],
+        [2, 1.0, 0],
+        list(np.array([2.0, 1.0, 0.0])),
+        [np.float64(2), 1, 0],
+    ]
+    for bad in refused:
+        with pytest.raises(ValueError) as caught:
+            store.reorderContour("axon", bad)
+        ## The message names the offending value and its type, so the caller is
+        ## not left to find it -- which is the whole complaint against the
+        ## `TypeError` this replaces.
+        message = str(caught.value)
+        assert "integer row numbers" in message, message
+        assert "float" in message, message
+        assert _rowStateForComparison(store) == before, (
+            f"the store changed while refusing {bad}"
+        )
+        assert store.getAllModifiedNames() == set(), (
+            f"a refused reorder tracked a name: {bad}"
+        )
+
+    ## Non-numeric elements reach the same documented `ValueError` rather than
+    ## the `TypeError` that `sorted()` used to raise from inside the guard.
+    for bad in ([0, 1, None], [0, 1, "2"], [0, 1, (2,)]):
+        with pytest.raises(ValueError):
+            store.reorderContour("axon", bad)
+        assert _rowStateForComparison(store) == before
+
+    ## And the half that must NOT change: numpy integers are row numbers.
+    store.reorderContour("axon", [np.int64(2), np.int64(1), np.int64(0)])
+    assert store.rowsForContour("axon") == [2, 1, 0]
+    assert store.getAllModifiedNames() == {"axon"}
+
+    ## Coerced to exact `int` on the way in, not merely accepted: what the index
+    ## holds is a plain Python int whatever integral dtype the caller used.
+    assert all(type(row) is int for row in store.rowsForContour("axon"))
+
+    ## The proof that this is the corruption that was reachable before: the
+    ## store still materializes, in the requested order.
+    materialized = store.materializeContours()
+    assert [trace.points for trace in materialized["axon"]] == [
+        store.getPoints(row) for row in [2, 1, 0]
+    ]
 
 
 def test_reorderContour_normalizes_its_name_and_no_ops_on_the_current_order():
