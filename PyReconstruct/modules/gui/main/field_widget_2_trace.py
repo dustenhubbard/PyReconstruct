@@ -245,6 +245,17 @@ class FieldWidgetTrace(FieldWidgetBase):
                 else:
                     for trace in contour:
                         trace.hidden = True
+            # `hidden` is written on the trace in place, from outside
+            # `Section`, so no dual-write hook saw it and the columnar store
+            # still holds the old flags. Rebuild from the result. Not optional
+            # -- every `Section` carries a store, `hidden` is one of the eight
+            # columns it compares, and `Section.save()` checks the two against
+            # each other. Without this, clicking an import-conflict flag drifts
+            # the store on an ordinary user path (import traces -> conflict
+            # flags -> click one) and the next save raises
+            # `ColumnarDualWriteMismatch` at the user. See `series.py`'s
+            # `hideObjects` for the same shape.
+            self.section.resyncColumnarStore()
 
         # set the selected flags
         show_flags = self.series.getOption("show_flags")

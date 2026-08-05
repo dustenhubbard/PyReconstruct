@@ -64,8 +64,8 @@ from PyReconstruct.modules.backend.exports import export_svg, export_png
 ## `autoseg745` (745 MB, 636 sections, 323,534 traces, median section 503 traces
 ## and busiest 1,291):
 ##
-##     addTrace, median section     0.0020 ms  ->  85.3 ms
-##     addTrace, busiest section    0.0027 ms  -> 129.2 ms
+##     addTrace, median section     0.0020 ms  ->  80.7 ms
+##     addTrace, busiest section    0.0027 ms  -> 126.7 ms
 ##
 ## A drag translates the whole selection once per frame, and a translate is a
 ## remove/add pair per trace, so keeping that check would have made a real series
@@ -87,21 +87,43 @@ from PyReconstruct.modules.backend.exports import export_svg, export_png
 ##
 ## `resyncColumnarStore()` is the public repair for that last case, and it is not
 ## hypothetical. Always-on turned every out-of-class mutation in the tree into a
-## `ColumnarDualWriteMismatch` raised at the user, and there were seven, on paths
-## a user reaches constantly:
+## `ColumnarDualWriteMismatch` raised at the user, and there are **EIGHT**, on
+## paths a user reaches constantly:
 ##
-##     backend/func/state_manager.py   undoState, redoState   (contour rebind)
-##     datatypes/series.py             deleteObjects          (contour rebind)
-##     backend/autoseg/conversions.py  group deletion         (contour rebind)
-##     datatypes/series.py             hideObjects            (in-place write)
-##     datatypes/series.py             hideAllTraces          (in-place write)
-##     datatypes/series.py             restoreObjectVisibility(in-place write)
+##     backend/func/state_manager.py    undoState, redoState  (contour rebind)
+##     datatypes/series.py              deleteObjects         (contour rebind)
+##     backend/autoseg/conversions.py   group deletion        (contour rebind)
+##     datatypes/series.py              hideObjects           (in-place write)
+##     datatypes/series.py              hideAllTraces         (in-place write)
+##     datatypes/series.py              restoreObjectVisibility(in-place write)
+##     gui/main/field_widget_2_trace.py findFlag              (in-place write)
+##
+## (That is eight sites across seven rows: `state_manager.py` carries two.)
 ##
 ## Every one of them now calls the repair. The invariant this establishes is
 ## worth stating plainly because it is new and it is enforced by a raise: **a
 ## trace or contour mutated outside `Section` owes a `resyncColumnarStore()`
 ## before the section is saved.** That was free advice under the gate. It is a
-## rule now, and the six sites above are what it caught on its first run.
+## rule now, and the eight sites above are what it caught.
+##
+## SEVEN OF THE EIGHT WERE FOUND BY RUNNING THE SUITE. THE EIGHTH WAS NOT.
+## -----------------------------------------------------------------------
+## `findFlag` hides every contour but one, in place, when the user clicks an
+## `import-conflict_*` flag. Nothing in the suite clicked one, so it survived
+## the change that found the other seven and shipped as a crash on an ordinary
+## user path -- and, because `save()` raised before writing at the time, as a
+## section that stayed unsaveable for the rest of the session.
+##
+## Two things changed as a result, and both are the point rather than the
+## footnote. `save()`'s comparison now runs AFTER the write, so a stale shadow
+## copy can never cost a user their valid data again (see `save`). And the
+## *edit* class is now scanned statically rather than enumerated by whatever
+## the suite happened to execute:
+## `tests/test_section_columnar_dual_write.py::test_no_module_outside_section_
+## py_edits_a_store_backed_trace_column` fails on any function outside this
+## module that reaches traces through a section and writes one of the eight
+## store-backed columns without being on an explicit, reasoned allow-list.
+## A ninth site is now a red test at review time instead of a bug report.
 
 
 class ColumnarDualWriteMismatch(AssertionError):
@@ -356,9 +378,9 @@ class Section():
         ## and the obvious alternative is to build on first touch so that a user
         ## who only reads a series never pays. The tax is real and is stated
         ## exactly in the PR: on `autoseg745` a section load goes from 0.0111 s
-        ## to 0.0225 s and a full-series pass from 11.6 s to 23.0 s, both about
-        ## 2x, with the whole cost being `SectionColumns.fromSection` walking the
-        ## section's traces once.
+        ## to 0.0319 s (2.86x) and a full-series pass from 11.6 s to 25.1 s
+        ## (2.16x), with the whole cost being `SectionColumns.fromSection`
+        ## walking the section's traces once.
         ##
         ## It is still the right place, for a reason about correctness rather
         ## than speed: a lazily built store is built from whatever the object
@@ -732,15 +754,6 @@ class Section():
         if self.n not in self.series.sections:
             return
 
-        # The whole-section consistency check, at the one non-per-frame point
-        # that is already O(section). Per-mutation checking is targeted at the
-        # row that moved (see `_assertRowMatchesTrace`), which cannot see drift
-        # caused by something replacing contours from outside this class; this
-        # is where that is caught, one save cycle after it happened at worst.
-        # Deliberately before the write, so a section whose store disagrees with
-        # its object model raises rather than being written and then raising.
-        self._assertColumnsMatchObjectModel("save")
-
         # update the series data
         if update_series_data:
             self.series.data.updateSection(self, update_traces=True)
@@ -770,7 +783,38 @@ class Section():
             except OSError:
                 pass
             raise
-    
+
+        # The whole-section consistency check, at the one non-per-frame point
+        # that is already O(section). Per-mutation checking is targeted at the
+        # row that moved (see `_assertRowMatchesTrace`), which cannot see drift
+        # caused by something replacing contours from outside this class; this
+        # is where that is caught, one save cycle after it happened at worst.
+        #
+        # AFTER THE WRITE, NOT BEFORE, AND THAT ORDERING IS THE WHOLE POINT
+        # ------------------------------------------------------------------
+        # This ran before the write until review, on the reasoning that a
+        # section whose store disagrees with its object model should raise
+        # rather than be written and then raise. That is exactly backwards for
+        # what the two representations are. The object model is authoritative
+        # and `getDict()` above serialized it; the store is a shadow copy that
+        # NOTHING reads. So a fault in the shadow copy's bookkeeping was
+        # vetoing the persistence of the model that owns every value: the
+        # user's edits were valid, would have serialized correctly, and were
+        # refused anyway -- and because nothing on the failing path repairs the
+        # store, the refusal recurred on every subsequent save, leaving the
+        # section unsaveable for the rest of the session. There is no integrity
+        # reason to withhold correct bytes because a copy of them is stale.
+        #
+        # Moving the call changes only WHEN the user's valid data reaches disk
+        # relative to the mismatch report, not what the check compares or
+        # whether it is reported: the comparison is the same call on the same
+        # two representations, it still raises `ColumnarDualWriteMismatch`, it
+        # is still never logged or swallowed, and it still reaches
+        # `customExcepthook`. Divergence stays loud; it just no longer costs a
+        # save. `test_a_shadow_mismatch_no_longer_costs_the_save` pins both
+        # halves of that.
+        self._assertColumnsMatchObjectModel("save")
+
     def tracesAsList(self) -> list[Trace]:
         """Return the trace dictionary as a list. Does NOT copy traces.
         
@@ -858,23 +902,34 @@ class Section():
     # worth stating plainly: the consistency check proves nothing about the
     # inside of an import. Modelling an import as store operations is later work.
     #
-    # Paths that replace `Section.contours` from OUTSIDE this class are the
-    # reason always-on was more than deleting an `if`. Under the gate they were
-    # unreachable with a store present, and the comment here said only that they
-    # "owe the resync". There are five, they are all on hot user paths, and with
-    # a store always present every one of them was a `ColumnarDualWriteMismatch`
-    # raised in a real session on the next mutation -- undo, redo, deleting an
-    # object, and autoseg's group deletion. They now call
-    # `resyncColumnarStore()`:
+    # Paths that edit a section's traces or contours from OUTSIDE this class are
+    # the reason always-on was more than deleting an `if`. Under the gate they
+    # were unreachable with a store present, and the comment here said only that
+    # they "owe the resync". **There are EIGHT**, they are all on hot user paths,
+    # and with a store always present every one of them was a
+    # `ColumnarDualWriteMismatch` raised in a real session -- undo, redo,
+    # deleting an object, autoseg's group deletion, the three hide paths, and
+    # clicking an import-conflict flag. They now call `resyncColumnarStore()`:
     #
-    #   backend/func/state_manager.py  SectionStates.undoState / .redoState
-    #   datatypes/series.py            Series.deleteObjects
-    #   backend/autoseg/conversions.py seriesToLabels
+    #   backend/func/state_manager.py    SectionStates.undoState / .redoState
+    #   datatypes/series.py              Series.deleteObjects
+    #   backend/autoseg/conversions.py   seriesToLabels
+    #   datatypes/series.py              Series.hideObjects
+    #   datatypes/series.py              Series.hideAllTraces
+    #   datatypes/series.py              Series.restoreObjectVisibility
+    #   gui/main/field_widget_2_trace.py FieldWidgetTrace.findFlag
     #
-    # That is a real limit on this design, not a fixed bug: a sixth such site
-    # added later fails the same way. It fails loudly and at the first mutation
-    # after the rebind rather than silently, which is the property the row-map
-    # identity comparison below buys, and the message names the remedy.
+    # Two shapes, and the second is the one that kept being missed: a *rebind*
+    # (the contour dict or a key is replaced) and an *in-place write* (a trace
+    # the section still holds has one of the eight columns written on it). The
+    # first four rows are rebinds, the last four are in-place writes.
+    #
+    # That is a real limit on this design, not a fixed bug: a ninth such site
+    # added later fails the same way. It fails loudly and at the first save
+    # after the edit rather than silently, and the message names the remedy --
+    # and, since `findFlag` proved that "we found them all" was not a property,
+    # `tests/test_section_columnar_dual_write.py` now scans the source for the
+    # edit shape so a ninth site is a red test rather than a user's crash.
     #
     # Forgetting the resync used to fail SILENTLY. It no longer does. An
     # undo restore rebinds `self.contours` to `Contour.copy()` products, which
@@ -890,10 +945,10 @@ class Section():
     def resyncColumnarStore(self):
         """Build (or rebuild) the parallel store from the object model.
 
-        The public repair for a section whose contours were replaced from
-        outside this class, and the only way a store is ever created. `__init__`
-        calls it once per section; the import path and the five out-of-class
-        rebind sites call it after they are done.
+        The public repair for a section whose traces or contours were edited
+        from outside this class, and the only way a store is ever created.
+        `__init__` calls it once per section; the import path and the eight
+        out-of-class edit sites call it after they are done.
 
         THE GENERATION COUNTER IS CARRIED FORWARD, NOT RESET
         ----------------------------------------------------
@@ -921,8 +976,18 @@ class Section():
         """
         from .columnar_store import SectionColumns
 
+        ## `+ 1`, not `previous`. `fromSection` bumps once per appended row, so
+        ## seeding with `previous` relies on the rebuild having at least one row
+        ## to move the counter past the value a cache may already hold. A resync
+        ## that produces ZERO rows does not advance at all -- and
+        ## `Series.deleteObjects` reaches exactly that shape, deleting every
+        ## contour key on a section and then calling the repair. A cache holding
+        ## the old generation would conclude it was current against a store that
+        ## had just been emptied, which is the stale-render bug the counter
+        ## exists to prevent. Seeding one above the outgoing count makes the
+        ## rebuild itself the advance, whatever it rebuilds into.
         previous = self._columns.generation if self._columns is not None else 0
-        self._columns = SectionColumns.fromSection(self, generation=previous)
+        self._columns = SectionColumns.fromSection(self, generation=previous + 1)
         self._column_rows = {}
 
         ## `fromSection` walks `sorted(contours, key=str)` and each contour's
@@ -948,12 +1013,12 @@ class Section():
         ## the second of the two places this change narrowed the check, so it is
         ## called out rather than buried.
         ##
-        ## Measured on `autoseg745`: it costs about 85 ms on that series' median
-        ## section and 129 ms on its busiest, and a store is built at every
-        ## section load, so keeping it made loading one section 0.011 s -> 0.124 s
-        ## (11x) and a full-series pass 11.6 s -> 95.8 s (8.2x). A user scrolls
-        ## sections with the mouse wheel; 124 ms per scroll step is a different
-        ## application.
+        ## Measured on `autoseg745`: it costs about 81 ms on that series' median
+        ## section and 127 ms on its busiest, and a store is built at every
+        ## section load, so keeping it made loading one section 0.0111 s ->
+        ## 0.1264 s (11.4x) and a full-series pass 11.6 s -> 90.8 s (7.8x). A
+        ## user scrolls sections with the mouse wheel; 126 ms per scroll step is
+        ## a different application.
         ##
         ## What it bought does not justify that, which is the part that makes
         ## this a narrowing and not a loss. A build copies values straight out of
@@ -1145,17 +1210,22 @@ class Section():
         O(section): it rebuilds every trace on the section and compares every
         field. Under the test-only gate it ran after every single mutation,
         which was the right trade for a harness. Measured on `autoseg745` it
-        costs about 85 ms on that series' median section (503 traces) and 129 ms
+        costs about 81 ms on that series' median section (503 traces) and 127 ms
         on its busiest (1,291), against a 0.002 ms `addTrace` -- so keeping it
         per-mutation would have made dragging a selection unusable, and a
         selection drag runs a remove/add pair per selected trace per frame.
 
         It runs at exactly one place on the production path: **`save()`**, which
         already serializes every trace on the section, so this is a constant
-        factor (measured 1.7x on the busiest section, 90.6 ms -> 155 ms) rather
-        than a new complexity class, on a path that is not per-frame. That is
-        where drift caused from outside this class is caught -- one save cycle
-        after it happened at worst, rather than never.
+        factor rather than a new complexity class, on a path that is not
+        per-frame. It is not a small constant, and the PR says so rather than
+        rounding it away: **`save()` on the busiest section goes 90.6 ms ->
+        219.6 ms, 2.42x**, and on the median section 60.9 ms -> 139.6 ms,
+        2.29x. That is where drift caused from outside this class is caught --
+        one save cycle after it happened at worst, rather than never.
+
+        It runs **after** the write, not before; see `save()` for why that
+        ordering is deliberate.
 
         Everything in between is covered by `_assertRowMatchesTrace` and
         `_assertLiveCountMatches`. Tests call this one directly, which is the
