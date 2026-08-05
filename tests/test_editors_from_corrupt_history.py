@@ -37,16 +37,30 @@ and ``getEditorsFromHistory`` asks for it. What is pinned here:
   ``getEditorsFromHistory`` (``Series.__init__``, ``MainWindow.displayAbout``,
   both of which only ever add names) see the recovered rows;
 * and the limit of all of the above. "A bad row costs only itself" holds for a
-  row that arrives whole, and NOT for a row short of six comma fields, which
-  ``fromList``'s greedy continuation join first glues to whatever follows. The
-  last section of this module pins that, because it is a live behaviour and not
-  a hypothetical: the swallowed row is lost, and depending on what the
-  concatenation parses as, lost either loudly (both rows in one
-  ``skipped_rows`` entry, so the printed count undercounts the file lines) or
-  silently (a fabricated ``Log`` in place of both, nothing recorded, on the
-  default path too). Fixing it means choosing what counts as a continuation,
-  which changes every default caller and is a maintainer's call; these tests
-  exist so that choice is a deliberate one and not an accident.
+  row that arrives whole, and only half holds for a row short of six comma
+  fields, which ``fromList``'s greedy continuation join first glues to whatever
+  follows. The last section of this module is about that join, and it splits
+  the behaviour in two because the two halves are not the same kind of problem:
+
+  - the join FAILS to parse. Fixed here. The handler now records only the first
+    physical line and resumes at the line after it, so the well-formed rows the
+    join swept up are read on their own instead of being discarded with it, and
+    ``skipped_rows`` holds one entry per lost file line instead of one entry
+    covering several. Safe without any decision about the format, because the
+    handler is reached only on an attempt that has already raised: it cannot
+    change any log that parses today.
+  - the join SUCCEEDS. NOT fixed, and pinned as a known limitation. A single
+    fabricated ``Log`` stands in for both rows, nothing reaches
+    ``skipped_rows``, no warning prints, and it fires on the default path too.
+    Curing it means deciding what may count as a continuation, and every such
+    rule makes an uncompletable short head RAISE where it used to fabricate --
+    a change every default caller sees. That is a maintainer's call, so these
+    tests write the price down rather than paying it.
+
+  The live shape of the second half, measured with the timestamps the app
+  actually writes: a two-field orphan line followed by a series-level row puts
+  the next row's ``"-"`` obj_name in the section slot, the join parses, and
+  ``getEditorsFromHistory`` reports the next row's *timestamp* as an editor.
 """
 
 import os
@@ -70,8 +84,8 @@ HEADER = "Date, Time, User, Obj, Sections, Event\n"
 # A row that reads, and a row that does not. The bad one is the documented
 # real-world shape: the object name holds ", ", so the split yields seven fields
 # and the section range is read off the name's own tail.
-GOOD = "26-06-29, 1200, alice, obj_a, 5, Modify trace(s)"
-BAD = "26-06-30, 1300, bob, weird, name, 7, Modify trace(s)"
+GOOD = "26-06-29, 12:00, alice, obj_a, 5, Modify trace(s)"
+BAD = "26-06-30, 13:00, bob, weird, name, 7, Modify trace(s)"
 
 # The other failing shape, and the only one that reaches the IndexError half of
 # the handler: a final row that stops partway through. fromList's continuation
@@ -80,7 +94,7 @@ BAD = "26-06-30, 1300, bob, weird, name, 7, Modify trace(s)"
 # row is short of six comma fields, so a short row with nothing after it runs
 # the index off the end. Position is what picks the arm: the same text with a
 # row after it gets joined to that row and fails in fromStr instead.
-TRUNCATED = "26-07-03, 1600, bob"
+TRUNCATED = "26-07-03, 16:00, bob"
 
 
 @pytest.fixture
@@ -119,7 +133,7 @@ def test_the_bad_row_really_is_a_parse_failure():
     row readable turns into a visible failure rather than a silently vacuous
     test.
     """
-    assert BAD == str(Log("26-06-30", "1300", "bob", "weird, name", 7,
+    assert BAD == str(Log("26-06-30", "13:00", "bob", "weird, name", 7,
                           "Modify trace(s)"))
     with pytest.raises(ValueError):
         Log.fromStr(BAD)
@@ -169,7 +183,7 @@ def test_the_log_writer_itself_can_leave_a_short_last_line(series):
     So a single real row can hit *both* arms: ValueError on its head, then
     IndexError on its orphaned tail. Both are skipped, alice is kept.
     """
-    row = str(Log("26-06-30", "1300", "bob", "a, b, c\nd", 7, "Modify trace(s)"))
+    row = str(Log("26-06-30", "13:00", "bob", "a, b, c\nd", 7, "Modify trace(s)"))
     assert "\n" in row, "the writer emits the name verbatim, newline included"
     head, tail = row.split("\n")
     assert len(head.split(",")) >= 6, "head is self-contained; the join never runs"
@@ -202,7 +216,7 @@ def test_the_bad_row_can_be_anywhere_in_the_file(series):
     on whether it sat above or below the bad one -- which is not a property
     anyone would choose. Now neither position loses anything but the bad row.
     """
-    late = "26-07-01, 1400, carol, obj_c, 9, Modify trace(s)"
+    late = "26-07-01, 14:00, carol, obj_c, 9, Modify trace(s)"
     for rows in ([BAD, GOOD, late], [GOOD, BAD, late], [GOOD, late, BAD]):
         write_log(series, *rows)
         assert series.getEditorsFromHistory() == {"alice", "carol"}
@@ -210,7 +224,7 @@ def test_the_bad_row_can_be_anywhere_in_the_file(series):
 
 def test_several_bad_rows_cost_only_themselves(series):
     """The recovery is per row, not "tolerate one and give up"."""
-    other_bad = "26-07-02, 1500, dave, another, bad, 3, Modify trace(s)"
+    other_bad = "26-07-02, 15:00, dave, another, bad, 3, Modify trace(s)"
     write_log(series, BAD, GOOD, other_bad)
 
     assert series.getEditorsFromHistory() == {"alice"}
@@ -262,7 +276,7 @@ def test_a_truncated_final_row_does_not_break_opening_the_series(series):
 def test_a_clean_log_is_unchanged(series):
     """The ordinary case still reads every row, and this is what makes the
     test above discriminating rather than a tautology."""
-    write_log(series, GOOD, "26-07-01, 1400, carol, obj_c, 9, Modify trace(s)")
+    write_log(series, GOOD, "26-07-01, 14:00, carol, obj_c, 9, Modify trace(s)")
 
     assert series.getEditorsFromHistory() == {"alice", "carol"}
 
@@ -385,116 +399,253 @@ def test_reopening_the_series_keeps_the_surviving_editor(series):
 
 
 # --------------------------------------------------------------------------- #
-# the limit of the guarantee: the greedy continuation join
+# the greedy continuation join: what it costs, and which half of that is fixed
 #
 # Everything above is about a row that arrives whole. A row SHORT of six comma
 # fields is glued to the line after it first, and the join cannot tell a real
-# continuation from an unrelated next row. These pin what that costs. They are
-# not endorsements -- they are here so that changing the join is a decision
-# somebody makes on purpose, with the price of the current behaviour written
-# down next to it.
+# continuation from an unrelated next row -- so it can take a well-formed row
+# belonging to somebody else before ``fromStr`` ever sees that row alone.
+#
+# Which of two things happens then depends on what the concatenation parses as,
+# and the two have very different fixes:
+#
+# * the join FAILS to parse. Fixed. The handler records only the first physical
+#   line and resumes at the line after it, so every line the join swept up is
+#   re-read on its own. That handler is reached only on an attempt that already
+#   raised, so it cannot change any log that parses today -- it is a recovery,
+#   not a parsing rule, and needed no decision about the format.
+# * the join SUCCEEDS. Still live, and silent: a fabricated ``Log`` stands in
+#   for both rows, nothing is recorded, and it fires on the default path too.
+#   Curing that means refusing the join, which changes what every default
+#   caller sees, so it is a maintainer's call. Pinned below rather than fixed.
+#
+# The pins below are not endorsements. They are here so that the live half is
+# written down with the price next to it, and so that changing the join is a
+# decision somebody makes on purpose.
 # --------------------------------------------------------------------------- #
-LATE = "26-07-01, 1400, carol, obj_c, 9, Modify trace(s)"
+LATE = "26-07-01, 14:00, carol, obj_c, 9, Modify trace(s)"
+
+# A series-level row: every ``addLog(None, ...)`` call site writes one, and
+# there are on the order of forty of them -- alignment and profile events,
+# "Reorder sections", "Modify transform", "Create series", every import. Both
+# the object and the section slot come back as the ``"-"`` ``Log.__str__``
+# writes for an empty field, which is what makes them the second half of the
+# live fabrication below.
+SERIES_LEVEL = "26-07-01, 14:00, carol, -, -, Create series"
 
 
-def test_a_short_row_that_is_not_last_swallows_the_row_after_it():
-    """The loud half: two file lines lost, one ``skipped_rows`` entry.
+def test_the_writer_uses_a_colon_in_the_time_field():
+    """The premise the shapes below rest on, asserted rather than assumed.
+
+    Which of the next row's fields lands in the section-range slot -- the only
+    slot that has to read as an integer -- is what decides whether a join
+    parses, and for one alignment that field is the next row's *time*. So a
+    test written against an ``HHMM`` timestamp can pin a fabrication this app
+    cannot produce. ``getDateTime`` has written ``"%H:%M"`` since the commit
+    that created the log (``c46d5204``, Aug 2023); ``git log --all -S '"%H%M"'``
+    finds nothing. Recorded here so the constants in this module cannot drift
+    back to a shape no version of the product has ever written.
+    """
+    from PyReconstruct.modules.constants import getDateTime
+
+    assert ":" in getDateTime()[1]
+    assert ":" in str(Log(*getDateTime(), "alice", "obj_a", 5, "Modify")).split(", ")[1]
+
+
+def test_a_row_swallowed_by_a_FAILED_join_is_given_back():
+    """The half that is fixed, and the regression guard for it.
 
     ``TRUNCATED`` is short, so the join runs and takes ``LATE`` -- a perfectly
-    well-formed row belonging to somebody else -- before ``fromStr`` ever sees
-    it alone. The concatenation does not parse, so both go as one.
+    well-formed row belonging to somebody else. The concatenation does not
+    parse. It used to cost carol her row: both lines went into ``skipped_rows``
+    as ONE entry, so the count callers print undercounted the file lines too.
+
+    Now the failure records only the line that was actually short and the scan
+    resumes at the next line, so carol's row is read on its own and survives,
+    and the recorded entry is one file line rather than two rows' worth.
     """
     ls = LogSet.fromList([GOOD, TRUNCATED, LATE], skip_corrupt=True)
 
-    assert [l.user for l in ls.all_logs] == ["alice"], "carol's row was swallowed"
-    assert len(ls.skipped_rows) == 1, "two file lines, one recorded entry"
-    # the recorded entry is the concatenation, so carol's text is inside it --
-    # which is what makes the printed count undercount the lines that were lost
-    assert TRUNCATED in ls.skipped_rows[0]
-    assert "carol" in ls.skipped_rows[0]
-
-
-def test_position_alone_decides_whether_the_next_row_survives():
-    """The control that makes the test above non-vacuous.
-
-    The same three rows, the short one last. Nothing about ``LATE`` changed;
-    only where the short row sits. carol survives, so the loss is caused by
-    position and not by anything wrong with her row.
-    """
-    ls = LogSet.fromList([GOOD, LATE, TRUNCATED], skip_corrupt=True)
-
-    assert [l.user for l in ls.all_logs] == ["alice", "carol"]
+    assert [l.user for l in ls.all_logs] == ["alice", "carol"], (
+        "the well-formed row the join swallowed must be given a second read"
+    )
     assert len(ls.skipped_rows) == 1
     assert ls.skipped_rows[0].strip() == TRUNCATED
+    assert "carol" not in ls.skipped_rows[0], (
+        "the recorded entry must be the short line alone, not the concatenation"
+    )
 
 
-def test_a_swallowed_row_can_vanish_with_nothing_recorded_at_all():
-    """The silent half, and the worse one.
+def test_position_no_longer_decides_whether_the_next_row_survives():
+    """The control, and the point of the fix stated as an invariant.
 
-    When the concatenation happens to reach six ``", "`` fields it PARSES, and
-    one fabricated ``Log`` stands in for both rows. ``skipped_rows`` stays
-    empty for it, so no caller can report the loss, and the invented row
-    carries ``"-"`` as its user -- the placeholder ``Log.__str__`` writes for
-    an empty field, which ``getEditorsFromHistory`` then adds as though it were
-    a person.
-
-    The input is the app's own writer's output: an object name holding two
-    ``", "`` and a newline (see
-    ``test_the_log_writer_itself_can_leave_a_short_last_line`` for why such a
-    name reaches the log at all), which splits into a self-contained head and a
-    four-field orphan tail.
+    The same three rows with the short one last always worked. The same three
+    rows with the short one in the middle used to lose carol -- so a row's fate
+    turned on where the damage sat relative to it, which is not a property
+    anyone would choose. Both orders now agree, and both record the short line
+    and nothing else.
     """
-    row = str(Log("26-06-30", "1300", "bob", "a, b, c\nd, e", None,
+    middle = LogSet.fromList([GOOD, TRUNCATED, LATE], skip_corrupt=True)
+    last = LogSet.fromList([GOOD, LATE, TRUNCATED], skip_corrupt=True)
+
+    assert [l.user for l in middle.all_logs] == [l.user for l in last.all_logs]
+    assert [s.strip() for s in middle.skipped_rows] == [TRUNCATED]
+    assert [s.strip() for s in last.skipped_rows] == [TRUNCATED]
+
+
+def test_the_recovery_cannot_reach_a_log_that_parses():
+    """Why the fix above needed no judgement call about the format.
+
+    The recovery lives entirely in the handler for a join that has ALREADY
+    raised. There is no way for it to make a currently-succeeding parse succeed
+    differently, so no caller whose log reads sees any change -- which is what
+    made this half a commit rather than a design decision, and is worth pinning
+    so a later "improvement" that moves logic out of the handler and into the
+    join is a visible change rather than a quiet one.
+    """
+    clean = [GOOD, LATE, SERIES_LEVEL]
+    for skip in (False, True):
+        ls = LogSet.fromList(list(clean), skip_corrupt=skip)
+        assert [str(l) for l in ls.all_logs] == clean
+        assert ls.skipped_rows == []
+
+    # and a row that fails on its own still costs exactly itself
+    ls = LogSet.fromList([GOOD, BAD, LATE], skip_corrupt=True)
+    assert [l.user for l in ls.all_logs] == ["alice", "carol"]
+    assert len(ls.skipped_rows) == 1
+
+
+# --------------------------------------------------------------------------- #
+# the half that is NOT fixed: a join that succeeds, and fabricates
+#
+# KNOWN LIMITATION, pinned deliberately and not worked around. Curing it means
+# deciding what may count as a continuation, and any such rule makes a short
+# head that is never completed RAISE where it used to fabricate -- a change
+# every default caller sees. That is a maintainer's call, so these tests record
+# the price rather than paying it, the same way ``test_contour_name_collision``
+# records the collision it does not resolve.
+# --------------------------------------------------------------------------- #
+def test_a_two_field_orphan_before_a_series_level_row_invents_an_editor():
+    """The live fabrication, with the timestamps this app actually writes.
+
+    Let ``k`` be the number of ``", "`` fields on the orphan line. The
+    concatenation puts the next row's field ``k-1`` into the section-range slot
+    -- the only slot that must read as an integer -- so ``k`` alone decides
+    whether the join parses. ``k=4`` puts the next row's *time* there, which
+    needs a time with no colon and is therefore unreachable (see
+    ``test_the_writer_uses_a_colon_in_the_time_field``). ``k=2`` puts the next
+    row's *obj_name* there, and every series-level row writes ``"-"`` in that
+    field -- so ``k=2`` parses whenever the next row is series-level, which is
+    an ordinary thing for a row to be.
+
+    What that costs: carol's row is gone, an editor nobody was is invented in
+    its place -- here the next row's own timestamp, read as a username -- and
+    ``skipped_rows`` is EMPTY, so no caller can report any of it.
+    """
+    orphan = "d, e"
+    assert len(orphan.split(", ")) == 2, "k=2 is the alignment being pinned"
+
+    ls = LogSet.fromList([GOOD, orphan, SERIES_LEVEL], skip_corrupt=True)
+
+    users = [l.user for l in ls.all_logs]
+    assert "carol" not in users, "carol's whole row was folded into another"
+    assert "14:00" in users, "a raw timestamp is now standing in for a person"
+    assert ls.skipped_rows == [], "and nothing at all records the loss"
+
+
+def test_the_four_field_orphan_goes_loud_instead_and_is_recovered():
+    """The alignment an earlier draft of these tests pinned, corrected.
+
+    A ``k=4`` orphan puts the next row's *time* in the section-range slot, so
+    it parses only for a time with no colon -- and this app has never written
+    one. Under the real format the same shape fails the join and is now
+    recovered by the handler, so it fabricates nothing and loses nobody.
+
+    Kept as a test rather than deleted because it is the discriminating control
+    for the pin above: it shows that ``k`` and not "a short row" is what
+    selects the fabrication, and it would fail loudly if the writer ever went
+    back to a colon-less timestamp.
+    """
+    row = str(Log("26-06-30", "13:00", "bob", "a, b, c\nd, e", None,
                   "Modify ztrace"))
     head, tail = row.split("\n")
     assert len(head.split(",")) >= 6, "head is self-contained; the join skips it"
-    assert len(tail.split(",")) < 6, "the tail is short, so the join runs on it"
+    assert len(tail.split(", ")) == 4, "k=4 is the alignment being contrasted"
 
     ls = LogSet.fromList([head, tail, LATE], skip_corrupt=True)
 
     users = [l.user for l in ls.all_logs]
-    assert "carol" not in users, "carol's whole row was folded into another"
-    assert "-" in users, "and a user nobody was got invented in its place"
-    # the head is unreadable on its own and IS recorded; the swallowed row is
-    # not, which is the asymmetry that makes this half silent
-    assert len(ls.skipped_rows) == 1
-    assert "carol" not in ls.skipped_rows[0]
+    assert "carol" in users, "no fabrication, and the well-formed row survives"
+    assert "-" not in users, "the '-' editor needs a colon-less time; there is none"
+    assert len(ls.skipped_rows) == 2, "one entry per lost file line"
 
 
-def test_the_silent_swallow_fires_on_the_default_path_too():
+def test_the_fabrication_fires_on_the_default_path_too():
     """``skip_corrupt`` is not what admits it.
 
-    The parse succeeds, so the flag never comes into it: every default caller
-    -- the history table, the import comparison, the curation restore -- reads
-    the fabricated row too. Asserted with a shape whose head reads cleanly, so
-    nothing raises before the join is reached.
+    The join succeeds, so the flag never comes into it: the history table, the
+    import comparison and the curation restore -- every default caller -- read
+    the fabricated row too. This is the half of the defect that no exception
+    handler can reach, which is why it is a decision and not a commit.
     """
-    clean_head = "26-06-30, 1300, bob, zt_old, -, Rename ztrace to new"
+    ls = LogSet.fromList([GOOD, "d, e", SERIES_LEVEL])  # default skip_corrupt
+
+    assert [l.user for l in ls.all_logs] == ["alice", "14:00"]
+    assert ls.skipped_rows == []
+
+
+def test_a_one_field_orphan_pollutes_the_next_row_instead():
+    """The other silent shape, and the cheapest one to reach.
+
+    ``k=1`` puts the next row's own section range in the section slot, so the
+    join ALWAYS parses. The next row survives and keeps its user, but the
+    orphan is glued onto its date, so the entry the app shows is not the one
+    that was written -- and, again, nothing is recorded.
+    """
+    clean_head = "26-06-30, 13:00, bob, zt_old, -, Rename ztrace to new"
     orphan = "name"
 
     ls = LogSet.fromList([clean_head, orphan, LATE])  # default: skip_corrupt=False
 
     assert [l.user for l in ls.all_logs] == ["bob", "carol"]
-    # carol's row parsed -- but the orphan was absorbed into her date, so the
-    # entry the app now shows for her is not the one that was written
     assert ls.all_logs[1].date == "name26-07-01"
     assert ls.skipped_rows == []
 
 
-def test_the_swallow_is_reachable_through_the_real_recovery_path(series, capsys):
-    """End to end, through a real series rather than a list.
+def test_the_fabrication_is_reachable_through_the_real_recovery_path(series, capsys):
+    """End to end, through a real series and the app's own writer.
 
-    The count printed to the user is the point: three file lines are gone --
-    the two the hazard row occupies and carol's -- and the figure says one.
+    Every physical line here is one ``Log.__str__`` emits, written the way the
+    app writes ``existing_log.csv`` and read back the way ``getFullHistory``
+    reads it, with the timestamps ``getDateTime`` returns.
+
+    The reachable trigger is a literal newline in the EVENT text of a
+    series-level row, leaving exactly one comma after it. ``Series`` writes
+    such events with names it never normalizes -- ``Series.modifyAlignments``
+    writes ``f"Rename alignment {old_a} to {new_a}"``, and
+    ``Series.editZtraceAttributes`` writes both
+    ``f"Rename ztrace to {new_name}"`` and ``f"Create ztrace from {name}"``.
+    Only ``Trace.name`` goes through ``normalizeObjectName``; ztrace and
+    alignment names are plain attributes, and ``QLineEdit`` keeps a pasted
+    newline, so a paste into either rename box is enough. A newline in an
+    *obj_name* cannot reach this shape -- the section and event fields trail
+    it, so an obj_name orphan is ``k>=3``.
+
+    What the user is told: nothing. No warning prints, and the series then
+    claims an editor that is a timestamp.
     """
-    row = str(Log("26-06-30", "1300", "bob", "a, b, c\nd, e", None,
-                  "Modify ztrace"))
-    head, tail = row.split("\n")
-    write_log(series, GOOD, head, tail, LATE)
+    hazard = str(Log("26-08-04", "19:14", "bob", None, None,
+                     "Rename alignment old to x\ny, z"))
+    head, tail = hazard.split("\n")
+    assert len(tail.split(", ")) == 2, "the writer produced the k=2 orphan"
+
+    write_log(series, GOOD, head, tail, SERIES_LEVEL)
 
     capsys.readouterr()
     editors = series.getEditorsFromHistory()
+    out = capsys.readouterr().out
 
     assert "carol" not in editors, "a well-formed row was swallowed by the join"
-    assert "-" in editors, "the series now claims an editor that never existed"
-    assert "1 unreadable history row" in capsys.readouterr().out
+    assert "14:00" in editors, "the series now claims an editor that never existed"
+    assert "unreadable" not in out, "and the loss is not reported at all"
+    assert series.getFullHistory(skip_corrupt=True).skipped_rows == []

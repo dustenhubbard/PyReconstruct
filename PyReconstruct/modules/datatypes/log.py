@@ -25,7 +25,11 @@ class Log():
         
             Params:
                 date (str): the date of the log creation YY-MM-DD
-                time (str): the time of the log creation HHMM
+                time (str): the time of the log creation HH:MM. The colon is
+                    not cosmetic: it is what stops a mis-joined row from
+                    reading a timestamp as a section range (see fromList).
+                    getDateTime has written "%H:%M" since the log was created,
+                    so no stored log carries the HHMM this line used to claim.
                 user (str): the username of the person making the log
                 obj_name (str): the name of the object being modified
                 section (int OR list): the section or section ranges of the log
@@ -322,15 +326,33 @@ class LogSet():
         because an earlier version of this docstring overstated it. The parse
         is row-at-a-time only for a row that arrives whole. A row holding
         FEWER than six comma fields is first joined to the lines after it by
-        the continuation loop below, and that join is greedy: a bad row can
-        and does cost the row after it. "A bad row costs only itself" is true
-        of the six-field rows that fail in Log.fromStr, and false of the short
-        ones. Both shapes are pinned in
-        tests/test_editors_from_corrupt_history.py.
+        the continuation loop below, and that join is greedy: it takes
+        whatever follows, including a well-formed row belonging to somebody
+        else. What that costs now depends on how the join ends:
+
+        * the join does NOT parse -- recovered. Only the first physical line
+          is recorded as skipped and the scan resumes at the line after it, so
+          every line the failed join swept up gets a fresh attempt on its own.
+          The count of skipped rows is then one entry per lost file line.
+        * the join DOES parse -- still lost, and silently. One fabricated Log
+          stands in for both rows, nothing reaches skipped_rows, and this half
+          fires on the default path too, where skip_corrupt never comes into
+          it. Fixing that means deciding what may count as a continuation,
+          which changes what every default caller sees; it is left alone
+          deliberately and pinned instead (see the comment on the join below).
+
+        So "a bad row costs only itself" is true of the six-field rows that
+        fail in Log.fromStr, true now of a short row whose join fails, and
+        still false of a short row whose join happens to succeed. All three
+        shapes are pinned in tests/test_editors_from_corrupt_history.py.
         """
         log_set = LogSet()
         i = 0
         while i < len(log_list):
+            # the physical line this attempt starts from. The continuation
+            # loop below advances i as it consumes lines, so this is the only
+            # record of where the attempt began once it has run.
+            start = i
             log_str = log_list[i]
             if log_str.strip():
                 try:
@@ -340,50 +362,87 @@ class LogSet():
                     # written to, so a short row is joined to the line after it
                     # until it has six comma fields.
                     #
-                    # The join is GREEDY and unguarded. That is a known
-                    # limitation, recorded here rather than fixed in passing,
-                    # because it has no way to tell a genuine continuation from
-                    # the next unrelated row: it takes whatever follows. So a
-                    # well-formed row sitting after a short one is consumed
-                    # here before Log.fromStr ever sees it on its own, and is
-                    # lost one of two ways depending on what the concatenation
-                    # happens to parse as:
+                    # The join is GREEDY and unguarded: it has no way to tell a
+                    # genuine continuation from the next unrelated row, so it
+                    # takes whatever follows. A well-formed row sitting after a
+                    # short one is therefore consumed here before Log.fromStr
+                    # ever sees it on its own. What that costs depends on what
+                    # the concatenation parses as, and only one of the two
+                    # halves is fixable without a decision about the format:
                     #
-                    #   * the join does not parse -- both rows land in
-                    #     skipped_rows as ONE entry, so the count callers print
-                    #     (Series.getEditorsFromHistory) is honest about
-                    #     logical rows and undercounts file lines; or
-                    #   * the join DOES parse -- a single fabricated Log stands
-                    #     in for both, nothing reaches skipped_rows at all, and
-                    #     the invented row can carry a user ("-", the placeholder
-                    #     __str__ writes for an empty field) that nobody was.
-                    #     This half also fires on the DEFAULT path, where
-                    #     skip_corrupt never comes into it.
+                    #   * the join does NOT parse -- fixed, in the handler
+                    #     below: only the FIRST physical line is recorded and
+                    #     the scan resumes at the line after it, so the rows
+                    #     the join swept up are re-read on their own. That
+                    #     handler runs only on an attempt that has ALREADY
+                    #     failed, so it cannot change any input that parses
+                    #     today; it is a recovery, not a parsing rule.
+                    #   * the join DOES parse -- STILL LIVE, and silent. One
+                    #     fabricated Log stands in for both rows, nothing
+                    #     reaches skipped_rows, and this half fires on the
+                    #     DEFAULT path too, where skip_corrupt never comes into
+                    #     it. Nothing here can fix it, because by the time the
+                    #     concatenation parses there is no failure to recover
+                    #     from -- the only cure is to refuse the join in the
+                    #     first place, which is the judgement call below.
+                    #
+                    # The live half, stated exactly, because a vaguer version
+                    # of it sent the last reader after the wrong mechanism.
+                    # Let k be the number of ", " fields on the orphan line.
+                    # The concatenation puts the next row's field (k-1) into
+                    # the section-range slot, the only slot that must read as
+                    # an integer, so k alone decides the outcome:
+                    #
+                    #   k=1  next row's own section range -> always parses; the
+                    #        next row survives with the orphan glued onto its
+                    #        date and the orphan is gone unrecorded
+                    #   k=2  next row's OBJ_NAME -> parses whenever that is the
+                    #        "-" __str__ writes for a series-level event
+                    #   k=3  next row's user  -> only if a username is numeric
+                    #   k=4  next row's time  -> only if the time has no colon,
+                    #        which this app has never written (getDateTime has
+                    #        used "%H:%M" since the log was created)
+                    #   k=5  never parses
+                    #
+                    # k=2 is the live fabrication: after it, getEditorsFromHistory
+                    # reports the next row's TIME as an editor, with nothing in
+                    # skipped_rows and no warning printed. Measured, not
+                    # inferred. It needs a literal newline in the EVENT text of
+                    # a series-level row leaving exactly one comma after it,
+                    # and the next row to be series-level. A newline in an
+                    # obj_name cannot reach k=2 -- the section and event fields
+                    # trail it, so an obj_name orphan is k>=3.
                     #
                     # Reachable from the app's own writer, not just a
                     # hand-built list. Trace.name's setter routes through
                     # normalizeObjectName, which collapses commas AND
                     # whitespace, so a trace name cannot carry either hazard.
-                    # Ztrace.name is a plain attribute and is normalized
-                    # nowhere -- and ztrace names DO reach the log, both as the
-                    # obj_name field (Series.createZtrace, smoothZtraces,
-                    # deleteZtraces) and inside the event text itself
-                    # (renameZtrace writes f"Rename ztrace to {new_name}").
-                    # A newline in one splits the row across physical lines in
-                    # existing_log.csv, which is where the short rows come from.
-                    # Flag names are NOT a route, checked rather than assumed:
-                    # every flag call site passes obj_name=None.
+                    # Ztrace and alignment names are plain attributes,
+                    # normalized nowhere, and both reach the log: ztrace names
+                    # as obj_name (Series.createZtrace, smoothZtraces,
+                    # deleteZtraces, the "Updated ztrace"/"Modify ztrace" sites
+                    # in Series/Section/state_manager) and inside the event
+                    # text (Series.editZtraceAttributes writes BOTH
+                    # f"Rename ztrace to {new_name}" and
+                    # f"Create ztrace from {name}"); alignment names inside the
+                    # event text of a series-level row
+                    # (Series.modifyAlignments writes
+                    # f"Rename alignment {old_a} to {new_a}"). QLineEdit keeps
+                    # a pasted newline, and both rename boxes are QLineEdits,
+                    # so a paste is enough. Flag names are NOT a route, checked
+                    # rather than assumed: every flag call site passes
+                    # obj_name=None.
                     #
-                    # Bounding the join, or recording one skipped_rows entry
-                    # per source line, changes what every default caller sees,
-                    # so which of those to want is a maintainer's call and not
-                    # a cleanup to make in passing. Measured rather than
-                    # assumed: refusing to join a line that already carries six
-                    # comma fields breaks the shapes pinned in
-                    # tests/test_editors_from_corrupt_history.py and nothing
-                    # else in the suite -- but it is a guess about the data,
-                    # since a genuine continuation whose own text holds six
-                    # commas would then stop being rejoined. That guess is
+                    # Refusing the join changes what every default caller sees
+                    # -- a short head that is never completed RAISES where it
+                    # used to fabricate -- so which rule to want is a
+                    # maintainer's call and not a cleanup to make in passing.
+                    # Measured rather than assumed: refusing to join a line
+                    # that already carries six comma fields breaks the shapes
+                    # pinned in tests/test_editors_from_corrupt_history.py and
+                    # nothing else in the suite -- but it is a guess about the
+                    # data, since a genuine continuation whose own text holds
+                    # six commas would then stop being rejoined. That guess is
                     # exactly the judgement this comment declines to make for
                     # whoever comes next; the tests pin the behavior as it
                     # stands so the choice is a deliberate one.
@@ -401,8 +460,36 @@ class LogSet():
                     # and still propagates whatever skip_corrupt says.
                     if not skip_corrupt:
                         raise
-                    log_set.skipped_rows.append(log_str)
-                    i += 1
+                    # Record the FIRST physical line of the failed attempt, not
+                    # the whole concatenation, and resume at the line after it
+                    # rather than after everything the join consumed. The join
+                    # is greedy, so those consumed lines may be perfectly
+                    # well-formed rows belonging to other users; discarding
+                    # them with the line that failed loses history nobody has
+                    # any reason to lose, and undercounts the loss besides,
+                    # since several file lines went into one entry.
+                    #
+                    # Safe by reachability rather than by judgement: this
+                    # handler is only ever entered on an attempt that ALREADY
+                    # raised, i.e. on input the previous code already gave up
+                    # on entirely. There is no way for it to make a join that
+                    # succeeds today succeed differently, so no caller whose
+                    # log parses sees any change at all. What it can change is
+                    # how much is salvaged from a log that does not -- which
+                    # is the whole point.
+                    #
+                    # One caveat, measured rather than glossed: the lines
+                    # handed back go through the same greedy join, so on an
+                    # ALREADY-failing log a recovered orphan can in principle
+                    # join forward and fabricate where the old code merely lost
+                    # the lines. Over every 2- and 3-row file buildable from
+                    # real Log.__str__ output that never happened -- 5428 files
+                    # salvaged more rows, none fewer, and no new fabrication --
+                    # but it is reachable with hand-built content the writer
+                    # cannot emit. It is the live limitation named above being
+                    # reached from one more direction, not a new one.
+                    log_set.skipped_rows.append(log_list[start])
+                    i = start + 1
                     continue
                 log_set.addExistingLog(log)
             i += 1
