@@ -49,6 +49,7 @@ as an option. The store still reaches its backing only through the five-method
 interface, so these tests exercise the seam a future layout would arrive
 behind.
 """
+import inspect
 import json
 import shutil
 from pathlib import Path
@@ -1910,11 +1911,17 @@ def test_contours_surface_is_split_exhaustively_between_this_slice_and_the_next(
     for member in sorted(CONTOUR_READ_ONLY_SURFACE):
         assert hasattr(ContourView, member), f"ContourView is missing {member}"
 
-    ## And nothing from the other two groups arrived with it. Each of these is
-    ## a slice of its own: mutation and identity are 7b's, `copy` is the
+    ## And nothing from the other two groups arrived with it. `copy` is the
     ## pattern table's whole-object-clone row, and the geometry pair waits on
     ## the batched coordinate pass that `TraceView` deliberately has no
     ## `getBounds` for.
+    ##
+    ## The identity-or-mutation group was 7b's, and 7b has now been attempted:
+    ## all five stay out, and the four measured reasons are the section at the
+    ## bottom of this file. This assertion is no longer "not yet" -- it is the
+    ## standing statement that none of them may arrive without one of D1, the
+    ## §5(B) rejection, a store reorder API, or the §10 id-carry rule being
+    ## settled first.
     for member in sorted(CONTOUR_IDENTITY_OR_MUTATION | CONTOUR_DEFERRED_ELSEWHERE):
         assert not hasattr(ContourView, member), (
             f"ContourView carries {member}, which is a later slice's"
@@ -2272,3 +2279,319 @@ def test_membership_falls_through_to_identity_on_both_classes_and_diverges():
     ## reason; `Contour` answers it through `list.index`, which is `==` again.
     assert contour.index(trace) == 0
     assert not hasattr(view, "index")
+
+
+# --- ContourView: the identity and import seam (slice 7b) ---------------------
+#
+# Slice 7b was dispatched as "`importTraces` + identity ops on `ContourView`".
+# It ships NO production code, and the four tests below are why: each one
+# measures a distinct reason the port cannot be written without a decision that
+# is not the implementer's to make. They are written as tripwires -- each fails
+# the day its blocker is lifted -- so "7b is blocked" is an executable fact with
+# an expiry, not a paragraph in a design document.
+#
+# The scope actually taken is the second of the two the dispatch offered:
+# express what identity means through a view and pin it, and defer
+# import-through-the-view. The reason is that the first option turns out not to
+# exist. Track B is "the shim itself" and Track C is "flip consumers", so a
+# Track B slice may only add surface to the shim -- and every version of the
+# identity surface either (a) provably can never succeed, or (b) redefines what
+# "the same trace" means, which is design §5(A)'s question and `DECISIONS.md`'s
+# binding entry, not a slice's.
+#
+# The four blockers, one test each:
+#
+#   1. Identity through a view can never match. `Trace` defines no `__eq__`, so
+#      `list.remove`/`index`/`in` are CPython object identity; a `ContourView`
+#      builds a fresh `TraceView` on every access, so nothing a caller can hold
+#      is ever equal to an element. A faithful `remove` would be a method that
+#      always raises `ValueError`, which is worse than an absent one. The only
+#      two ways out are §5(A)'s cached identity-stable views (D1, open) and
+#      §5(B)'s equality-over-id (recorded in `DECISIONS.md` as REJECTED).
+#
+#   2. `importTraces` calls two `Trace` methods `TraceView` deliberately lacks:
+#      `overlaps` (the geometry family, deferred to the batched coordinate pass)
+#      and `mergeTags` (outside the eight-field surface).
+#
+#   3. `importTraces` ends by rebinding `self.traces` to a REORDERED list. The
+#      store has no insert, no reorder and no move: `appendRow` is append-only
+#      and `removeRow` retires the row number for good, so the only way to
+#      reorder is to destroy and rebuild every row -- which invalidates every
+#      `TraceView` anyone holds.
+#
+#   4. That rebound list may hold traces belonging to the OTHER contour, which
+#      is a contour of a different section of a different series with a
+#      different store. `section.py` then calls `Contour.remove` on exactly
+#      those objects, by identity. Adopting a foreign trace into this store is
+#      an id-carry decision (design §10), not a mechanical append.
+
+
+def _everyWayOfGettingAnElement(view):
+    """The six ways a caller can obtain an element of a contour-shaped thing.
+
+    Written out rather than testing one of them, because `remove`, `index` and
+    `in` all take whatever the caller happens to be holding, and the question is
+    whether ANY of those routes produces something a subsequent walk recognizes.
+    """
+    return {
+        "the object __getitem__ just handed out": view[0],
+        "the first element of getTraces()": view.getTraces()[0],
+        "the first element of list(view)": list(view)[0],
+        "the first element of a slice": view[:][0],
+        "the first element of a second iteration": next(iter(view)),
+        "the last element of a negative index": view[-len(view)],
+    }
+
+
+def test_no_route_to_an_element_survives_a_second_look_so_remove_has_no_body(
+        loaded_sections):
+    """Blocker 1, on real material: identity through a view can never match.
+
+    `Contour.remove(t)` is `self.traces.remove(t)`, which walks with `==`, which
+    `Trace` does not define -- so it is `is`. Every route to an element of a
+    `ContourView` builds a new `TraceView`, so the answer is False for all of
+    them, including the object the container handed out one line earlier.
+
+    7a pinned this for one route on a one-row synthetic store. It is widened
+    here to every route and to every contour of the real series, because that is
+    the claim `remove` would have to be written against: not "a materialized
+    trace is not an element" but "nothing whatsoever is an element".
+
+    The contrast arm is the point. On the real `Contour` the same six routes
+    give six objects that ARE elements, which is exactly why the object model
+    can implement `remove` and the view cannot.
+    """
+    checked = 0
+    for section in loaded_sections:
+        store = SectionColumns.fromSection(section)
+        for name in store.contourNames():
+            contour = section.contours[name]
+            view = ContourView(store, name)
+
+            for label, candidate in _everyWayOfGettingAnElement(view).items():
+                assert not any(element is candidate for element in view), (
+                    f"{label} is identically an element of the view -- a "
+                    f"caching or identity mechanism has arrived and 7b's first "
+                    f"blocker is lifted"
+                )
+                assert candidate not in view, f"{label} compared equal"
+
+            ## The same six routes on the real Contour, which is what makes the
+            ## arm above a divergence rather than a tautology about views.
+            for label, candidate in _everyWayOfGettingAnElement(contour).items():
+                assert any(element is candidate for element in contour), label
+                assert candidate in contour, label
+
+            ## And so `Contour` can answer the two questions the view cannot.
+            assert contour.index(contour[0]) == 0
+            assert not hasattr(view, "index")
+            assert not hasattr(view, "remove")
+            checked += 1
+
+    assert checked > 200, f"expected the fixture's ~221 contours, walked {checked}"
+
+
+def test_the_import_walk_needs_two_trace_methods_the_row_view_does_not_carry():
+    """Blocker 2: `importTraces` calls `overlaps` and `mergeTags` on its elements.
+
+    Both are on `Trace` and neither is on `TraceView`, each for a reason that
+    predates this slice and that this slice is not entitled to overturn:
+
+      * `overlaps` is the geometry family. `TraceView` carries no `getBounds`,
+        no `getCentroid` and no `getOverlapRatio` because the rewiring plan's
+        pattern table makes geometry a batched whole-section pass over the
+        coordinate column. Adding a per-trace `overlaps` here would ship the
+        exact per-trace shape that work exists to replace.
+      * `mergeTags` is outside the eight fields `Trace.__init__` assigns, which
+        is `TraceView`'s whole stated surface.
+
+    A tripwire in both directions: it fails if `TraceView` grows either method
+    (7b's second blocker is then lifted) and it fails if `Contour.importTraces`
+    stops calling either (the port's shape has changed).
+    """
+    source = inspect.getsource(Contour.importTraces)
+    for method in ("overlaps", "mergeTags"):
+        assert f".{method}(" in source, (
+            f"Contour.importTraces no longer calls {method} -- the port this "
+            f"test describes has changed shape"
+        )
+        assert hasattr(Trace, method)
+        assert not hasattr(TraceView, method), (
+            f"TraceView has grown {method}; 7b's geometry/surface blocker is "
+            f"lifted and the import walk may now be portable"
+        )
+
+    ## Not a private naming accident: the geometry family is absent wholesale.
+    for geometry in ("getBounds", "getMidpoint", "getCentroid", "getRadius",
+                     "getFeret", "getOverlapRatio", "pointsMatch"):
+        assert hasattr(Trace, geometry)
+        assert not hasattr(TraceView, geometry)
+
+
+def test_the_store_cannot_express_the_reordered_list_importTraces_rebinds():
+    """Blocker 3: there is no insert, no reorder and no move on the store.
+
+    `Contour.importTraces` ends with `self.traces = traces`, and `traces` is
+    built as [matched duplicates, in positional order] + rem_s + rem_o -- a
+    different order from the one the contour had. `SectionColumns` offers six
+    mutation entry points and none of them reorders anything: `appendRow`'s own
+    docstring says "An append, never an insert", and `removeRow` says the row
+    number "retires with it and is not reused".
+
+    So the only reorder available is destroy-and-rebuild, and this test measures
+    what that costs: new row numbers, and every `TraceView` anyone was holding
+    over the old ones dead. That is not a cost a shim may impose silently, which
+    is why the port needs a store-API decision first -- the same family of
+    decision as Track C's blocker, which is already his.
+    """
+    ## No entry point names one.
+    named = [m for m in dir(SectionColumns)
+             if any(k in m.lower() for k in ("insert", "reorder", "move", "swap"))]
+    assert named == ["removeRow", "removed_rows"], (
+        f"SectionColumns has grown {named} -- if one of them reorders rows "
+        f"within a contour, 7b's third blocker is lifted"
+    )
+    assert "An append, never an insert" in SectionColumns.appendRow.__doc__
+    assert "is not reused" in SectionColumns.removeRow.__doc__
+
+    store = SectionColumns(1)
+    rows = [store.appendRow(name="axon", points=[(float(i), 0.0), (float(i), 1.0)],
+                            color=[1, 2, 3])
+            for i in range(3)]
+    assert store.rowsForContour("axon") == rows == [0, 1, 2]
+    held = [TraceView(store, row) for row in rows]
+
+    ## Ask for the reverse order, the only way the store allows.
+    for row in reversed(rows):
+        store.removeRow(row)
+    rebuilt = [store.appendRow(name="axon",
+                               points=[(float(i), 0.0), (float(i), 1.0)],
+                               color=[1, 2, 3])
+               for i in (2, 1, 0)]
+
+    ## The order is now what importTraces wanted -- at the stated price.
+    assert store.rowsForContour("axon") == rebuilt == [3, 4, 5]
+    assert not set(rebuilt) & set(rows), "row numbers were reused"
+    for view in held:
+        with pytest.raises(IndexError):
+            view.points
+
+
+def test_importTraces_hands_back_the_contours_own_objects_and_may_hand_back_the_others(
+        loaded_sections):
+    """Blocker 4: the contract the port would have to meet, measured on a real pair.
+
+    `Section.importTraces` takes the two lists `Contour.importTraces` returns
+    and, for the traces the `keep_below` policy loses, calls
+    `self.contours[cname].remove(trace2)` -- `Contour.remove`, so identity. That
+    only works because the returned lists hold the very objects the rebound
+    contour now holds. This test measures that, and measures the harder half
+    with it: one of those objects belongs to the OTHER contour, which in
+    production is a contour of a different section of a different series.
+
+    A `ContourView.importTraces` would therefore have to adopt a foreign row
+    into this store. That is design §10's id-carry question ("the id follows the
+    surviving `Trace`"), not an append -- and until it is answered there is
+    nothing for the port to do with `other`'s traces.
+
+    Built on two contours taken from the real fixture rather than on invented
+    geometry, so the overlap arithmetic is the arithmetic production runs.
+    """
+    for section in loaded_sections:
+        for name, contour in section.contours.items():
+            if len(contour) >= 2:
+                break
+        else:
+            continue
+        break
+    else:
+        pytest.fail("the fixture has no contour with two traces")
+
+    mine = contour.copy()
+    theirs = contour.copy()
+
+    ## Make one of theirs unmatchable, so both remainder pools are non-empty and
+    ## the second loop -- the one holding `rem_o_traces.remove(o_trace)` -- runs.
+    theirs[-1].points = [(x + 10_000.0, y + 10_000.0) for x, y in theirs[-1].points]
+
+    before_mine = mine.getTraces()
+    before_theirs = theirs.getTraces()
+    rem_s, rem_o = mine.importTraces(theirs, threshold=0.95, keep_above="self",
+                                     mag=section.mag)
+
+    ## Every returned trace is identically in the rebound contour: the property
+    ## `section.py`'s `self.contours[cname].remove(trace2)` depends on.
+    for returned in rem_s + rem_o:
+        assert any(element is returned for element in mine), (
+            "importTraces returned a trace that is not identically in the "
+            "contour it rebound; Section.importTraces' conflict removal relies "
+            "on exactly this"
+        )
+        assert returned in mine
+
+    ## The cross-contour half: `mine` now holds an object that is `theirs`'.
+    ## Measured BEFORE the removal below, which would take one of them away.
+    adopted = [t for t in before_theirs if any(e is t for e in mine)]
+    assert adopted, (
+        "this fixture pair produced no cross-contour adoption, so the harder "
+        "half of blocker 4 went unmeasured"
+    )
+    assert [t for t in before_mine if any(e is t for e in mine)], (
+        "the rebound contour kept none of its own objects either"
+    )
+
+    ## And `Contour.remove` does resolve them, which the view could not: this
+    ## is `section.py`'s conflict-removal line, run on its own real input.
+    victim = (rem_o or rem_s)[0]
+    mine.remove(victim)
+    assert not any(element is victim for element in mine)
+
+
+def test_the_slice_guarantee_7b_inherits_still_holds_on_real_contours(
+        loaded_sections):
+    """D5's working default, re-verified as 7b's own precondition.
+
+    Slice 7a established that `ContourView[i:]` is a bare `list` exactly as
+    `Contour[i:]` is, which is what makes `importTraces`' `.copy()`/`.pop()`/
+    `+` mechanics survive a view. A prior slice's guarantee is a fact to
+    re-check, not one to inherit, so it is re-measured here on every contour of
+    the real series -- and one notch harder than 7a's walk, which compares
+    exception TYPES: this compares the exception MESSAGE STRINGS, the level the
+    #270 review checked at but that no test held.
+
+    It matters that this is the half of 7b that is NOT blocked: the container
+    mechanics port cleanly and are pinned. What does not port is identity and
+    the rebind, which the four tests above measure.
+    """
+    checked = slices = 0
+    for section in loaded_sections:
+        store = SectionColumns.fromSection(section)
+        for name in store.contourNames():
+            contour = section.contours[name]
+            view = ContourView(store, name)
+            n = len(contour)
+
+            assert type(iter(view)) is type(iter(contour)) is type(iter([]))
+
+            for i in range(n + 2):
+                mine, theirs = contour[i:], view[i:]
+                assert type(mine) is type(theirs) is list
+                assert len(mine) == len(theirs)
+                slices += 1
+
+            for bad in (n, -n - 1):
+                with pytest.raises(IndexError) as expected:
+                    contour[bad]
+                with pytest.raises(IndexError) as actual:
+                    view[bad]
+                assert str(actual.value) == str(expected.value)
+
+            with pytest.raises(TypeError) as expected:
+                contour["not an index"]
+            with pytest.raises(TypeError) as actual:
+                view["not an index"]
+            assert str(actual.value) == str(expected.value)
+            checked += 1
+
+    assert checked > 200, f"expected the fixture's ~221 contours, walked {checked}"
+    assert slices > 400

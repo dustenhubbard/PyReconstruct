@@ -1123,6 +1123,53 @@ class ContourView():
     name would make `contour.traces.append(...)` a silent no-op. `getTraces()`,
     which returns a copy on a `Contour` too and is what the production readers
     actually call, is here instead.
+
+    SLICE 7b WAS ATTEMPTED AND IS BLOCKED. THE ABSENCES ABOVE ARE NOT TEMPORARY
+    ---------------------------------------------------------------------------
+    The paragraph on identity above calls it "the split between this slice and
+    the next". That was written before the next slice was tried. It has now been
+    tried, and `remove`, `index`, `__contains__` and `importTraces` are still
+    absent -- for reasons no implementer may resolve alone. Four of them, each
+    measured and each pinned by a test in
+    `tests/test_columnar_store_parity.py` that fails the day its blocker lifts:
+
+      1. *Identity through a view can never match.* Not "does not yet": cannot.
+         Every route to an element -- `__getitem__`, `getTraces`, iteration, a
+         slice, a negative index -- builds a fresh `TraceView`, so a faithful
+         `remove` (`Trace` defines no `__eq__`, so `list.remove` is CPython
+         identity) would be a method that always raises `ValueError`. Measured
+         over every contour of the real fixture series. The two ways out are
+         design §5(A)'s *cached identity-stable* views, whose D1 is open, and
+         §5(B)'s equality-over-id, which `DECISIONS.md` records as **rejected**.
+         Neither is a slice's to pick, so nothing is written here rather than a
+         third answer that is subtly neither.
+
+      2. *`Contour.importTraces` calls `overlaps` and `mergeTags` on its
+         elements.* `TraceView` carries neither, each for a reason older than
+         this slice: `overlaps` is the geometry family, deferred to the batched
+         coordinate pass, and `mergeTags` is outside the eight fields
+         `Trace.__init__` assigns.
+
+      3. *The store cannot express the list `importTraces` rebinds.* That method
+         ends `self.traces = traces`, where `traces` is in a **different order**
+         from the contour it replaces. `appendRow` is "an append, never an
+         insert", `removeRow` retires the row number for good, and there is no
+         reorder, insert, move or swap. The only reorder available is
+         destroy-and-rebuild, which renumbers every row and kills every
+         `TraceView` a caller holds -- a store-API decision, of the same family
+         as the one blocking Track C.
+
+      4. *The rebound list may hold the other contour's own `Trace` objects*,
+         and in production `other` is a contour of a different section of a
+         different series with a different store. `Section.importTraces` then
+         calls `Contour.remove` on exactly those objects, by identity. Adopting
+         a foreign trace into this store is design §10's id-carry question, not
+         an append.
+
+    What *does* port is the container mechanics, and they are now pinned rather
+    than inherited from slice 7a's word: the bare `list` a slice returns, its
+    iterator type, and its `IndexError`/`TypeError` message strings, all
+    re-verified against real `Contour`s on the real series.
     """
 
     ## Same two-slot discipline as `TraceView`, and for the same reason: a
