@@ -802,6 +802,18 @@ class Section():
     # slice is not allowed to change a call site outside `Section`. Something
     # that does that with the gate on has to call `resyncColumnarStore()`
     # afterwards. Nothing in the shipped application does either thing.
+    #
+    # Forgetting that resync used to fail SILENTLY. It no longer does. An
+    # undo restore rebinds `self.contours` to `Contour.copy()` products, which
+    # are equal field for field to the traces the store was built from -- so the
+    # value comparison in `_assertColumnsMatchObjectModel` saw nothing wrong,
+    # while `_column_rows` stayed keyed on the traces that had just been thrown
+    # away. The run then died several mutations later on a "holds no row for"
+    # naming a trace that was plainly still in its contour. The check now
+    # compares the row map's identity domain against the section's live traces
+    # as well as the columns' values, so the first hooked mutation after such a
+    # rebind names the rebind. That closes the detection gap; it does not make
+    # the out-of-class paths safe, and they still owe the resync.
 
     def resyncColumnarStore(self):
         """Build (or rebuild) the parallel store from the object model.
@@ -972,6 +984,34 @@ class Section():
             for i, (stored, obj) in enumerate(zip(stored_traces, object_traces)):
                 for difference in _traceDifferences(stored, obj):
                     complaints.append(f"contour {name!r} trace {i}: {difference}")
+
+        ## The comparison above reads *values* out of the store, so it is
+        ## structurally incapable of seeing a stale row map. A whole-dict rebind
+        ## of `self.contours` to equal-valued copies -- which is exactly the
+        ## shape of an undo restore -- leaves every field matching and every key
+        ## in `_column_rows` pointing at a `Trace` no contour holds any more.
+        ## The check passed, and the next `removeTrace` then failed with "holds
+        ## no row for" naming a trace that is plainly in the contour. So compare
+        ## the map's identity domain too, and the failure lands here, on the
+        ## first hooked mutation after the rebind, saying what actually went
+        ## wrong instead of surfacing later as a puzzle.
+        ##
+        ## Identity and not equality, for the same reason the map itself is an
+        ## identity map: `Trace` defines no `__eq__`. Sets and not multisets, so
+        ## the same `Trace` object appended twice -- which no application path
+        ## does -- is left to the arity comparison above rather than newly
+        ## rejected here. Both hooks that write the map do so *after* the object
+        ## model has already been updated, so this holds at every call site.
+        live = {id(trace) for trace in self.tracesAsList()}
+        mapped = {id(trace) for trace in self._column_rows}
+        if live != mapped:
+            complaints.append(
+                f"the row map is stale: it holds {len(mapped - live)} trace(s) "
+                f"no contour on this section holds any more and is missing "
+                f"{len(live - mapped)} that it does. Something replaced this "
+                f"section's contours or traces from outside Section without "
+                f"calling resyncColumnarStore() afterwards"
+            )
 
         if complaints:
             raise ColumnarDualWriteMismatch(

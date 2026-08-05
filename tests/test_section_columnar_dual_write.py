@@ -263,42 +263,98 @@ def _mentionsAllowed(path : Path) -> bool:
 def test_no_shipped_file_anywhere_in_the_repository_mentions_the_gate():
     """The safety condition, checked structurally rather than asserted.
 
-    Walks every source, script, workflow, packaging spec and config file in the
-    repository. If the gate's name ever appears in a launcher, a `.spec`, a CI
-    workflow, an installer script or any module other than the one that defines
-    it, this fails -- which is the failure a reviewer wants when somebody later
-    tries to wire the harness to a settings toggle or export it from a launch
-    script.
+    Reads every file in the repository that could carry text. If the gate's name
+    ever appears in a launcher, a `.spec`, a CI workflow, an installer script or
+    any module other than the one that defines it, this fails -- which is the
+    failure a reviewer wants when somebody later tries to wire the harness to a
+    settings toggle or export it from a launch script.
+
+    THE SELECTION IS A DENY-LIST, AND THAT IS THE POINT
+    ---------------------------------------------------
+    This test used to select files by an allow-list of fifteen "text file types
+    we thought of". That list silently omitted `.command` -- the three macOS
+    launchers under `launch/mac/`, including the one a user double-clicks to run
+    PyReconstruct -- along with `.iss` (the Inno Setup installer script), `.in`
+    (`packaging/linux/pyreconstruct.desktop.in`, the desktop-entry template the
+    Linux installer expands), `.org` and every extensionless file (`Makefile`,
+    `dev/Makefile`, thirteen `dev/scripts/*`). It also listed `.desktop`, which
+    matches no file in this repository at all. So the detector was blind on
+    precisely the shipped launch surface it exists to protect, and an allow-list
+    goes blind again the moment somebody adds a file type nobody enumerated.
+
+    Inverted, the failure mode reverses: a new file type is covered by default,
+    and the only way to lose coverage is to add a suffix to `binary_suffixes`
+    below -- a visible, reviewable act. Nothing here is skipped for being
+    "probably fine"; the deny-list names formats that cannot hold a readable
+    environment-variable export, and anything that fails to decode as UTF-8 is
+    skipped by the decoder, not by a guess about its name.
     """
-    suffixes = {
-        ".py", ".sh", ".bat", ".ps1", ".cmd", ".yml", ".yaml", ".toml", ".cfg",
-        ".ini", ".spec", ".desktop", ".txt", ".json", ".md",
+    ## Formats that cannot carry a shell-readable export. Everything else --
+    ## `.command`, `.iss`, `.in`, `.org`, `.jser`, `.lock`, `.svg`, `.csv`, and
+    ## every extensionless script -- is read.
+    binary_suffixes = {
+        ".png", ".ico", ".cur", ".icns", ".tif", ".tiff", ".jpg", ".jpeg",
+        ".gif", ".bmp", ".webp", ".pdf",
+        ".zip", ".gz", ".bz2", ".xz", ".zst", ".7z", ".tar", ".whl",
+        ".pyc", ".pyo", ".pyd", ".so", ".dylib", ".dll", ".exe", ".o", ".a",
+        ".ttf", ".otf", ".woff", ".woff2",
+        ".npy", ".npz", ".h5", ".hdf5", ".mp4", ".mov",
     }
     ## Any hidden directory except `.github`, plus the two build/vendor trees.
     ## `.github` is deliberately NOT skipped: a CI workflow exporting the gate
     ## into a job is one of the ways this could become reachable.
     skip_dirs = {"__pycache__", "node_modules", "build", "dist"}
 
-    def skipped(parts) -> bool:
+    def skipped(relative) -> bool:
+        ## Directory components only. Checking the filename too would skip every
+        ## dotfile -- `.gitignore`, and any `.envrc`/`.profile` somebody drops
+        ## next to a launcher, which is exactly the shape of the leak this test
+        ## is looking for.
         return any(
             part in skip_dirs or (part.startswith(".") and part != ".github")
-            for part in parts
+            for part in relative.parts[:-1]
         )
 
     offenders = []
+    scanned = 0
     for path in REPO_ROOT.rglob("*"):
-        if not path.is_file() or path.suffix not in suffixes:
+        relative = path.relative_to(REPO_ROOT)
+        if skipped(relative):
             continue
-        if skipped(path.relative_to(REPO_ROOT).parts):
+        if not path.is_file() or path.is_symlink():
+            continue
+        if path.suffix.lower() in binary_suffixes:
             continue
         if _mentionsAllowed(path):
             continue
         try:
             text = path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
+        except (UnicodeDecodeError, OSError, ValueError):
             continue
+        scanned += 1
         if GATE in text:
-            offenders.append(str(path.relative_to(REPO_ROOT)))
+            offenders.append(str(relative))
+
+    ## A selection bug that silently emptied the walk would otherwise leave this
+    ## test passing vacuously, which is the failure mode that produced the
+    ## allow-list hole in the first place. The repository ships far more than
+    ## 200 readable files; this only has to be large enough to notice a walk
+    ## that collapsed.
+    assert scanned > 200, (
+        f"the repository walk read only {scanned} files, so this test is not "
+        "checking what it claims to check"
+    )
+    for launcher in (
+        "launch/mac/run.command",
+        "launch/windows/run.bat",
+        "launch/linux/run.sh",
+        "packaging/windows/PyReconstruct.iss",
+        "packaging/linux/pyreconstruct.desktop.in",
+    ):
+        assert (REPO_ROOT / launcher).is_file(), (
+            f"{launcher} moved; confirm the walk above still reaches the real "
+            "launch surface before editing this list"
+        )
 
     assert offenders == [], (
         "the test-only dual-write gate is named outside the module that "
@@ -918,3 +974,90 @@ def test_resyncing_repairs_a_corrupted_store(real_section):
 
     real_section.resyncColumnarStore()
     real_section._assertColumnsMatchObjectModel("after a resync")
+
+
+def _undoStyleRestore(section):
+    """An out-of-class whole-dict rebind to equal-valued copies.
+
+    The shape `backend/func/state_manager.py` restores a section with. Every
+    trace is a `Contour.copy()` product: equal field for field to the trace it
+    replaces, and a different object.
+    """
+    section.contours = {
+        name: contour.copy() for name, contour in section.contours.items()
+    }
+
+
+def test_an_out_of_class_rebind_is_caught_even_though_every_value_matches(
+    real_section
+):
+    """The staleness the value comparison alone could not see.
+
+    An undo restore replaces `Section.contours` wholesale with copies. Reading
+    values back out of the store finds nothing wrong -- the copies are equal
+    field for field -- while `_column_rows` is left keyed on traces no contour
+    holds any more. Before the row map was compared as well, this passed, and
+    the run then died several mutations later on a "holds no row for" naming a
+    trace that was plainly still in its contour. The failure belongs here, at
+    the first hooked mutation after the rebind, naming the rebind.
+    """
+    _undoStyleRestore(real_section)
+
+    with pytest.raises(ColumnarDualWriteMismatch) as caught:
+        real_section._assertColumnsMatchObjectModel("after an undo-style restore")
+
+    message = str(caught.value)
+    assert "the row map is stale" in message
+    assert "resyncColumnarStore" in message
+
+
+def test_the_stale_row_map_is_caught_by_a_real_mutation_not_only_a_bare_check(
+    real_section
+):
+    """Driven through a `Section` method, because that is how it would happen.
+
+    `_assertColumnsMatchObjectModel` called by hand proves the comparison works.
+    This proves the comparison is reached: the very next real mutation after the
+    rebind stops the run, whatever kind of mutation it is.
+    """
+    _undoStyleRestore(real_section)
+
+    with pytest.raises(ColumnarDualWriteMismatch) as caught:
+        real_section.addTrace(_aTrace(real_section))
+
+    assert "the row map is stale" in str(caught.value)
+
+
+def test_resyncing_after_an_out_of_class_rebind_is_the_documented_remedy(
+    real_section
+):
+    """The harness comment says to call `resyncColumnarStore()`. It works.
+
+    A detector that fires with no way to clear it is a detector nobody keeps, so
+    pin the remedy next to the detection.
+    """
+    _undoStyleRestore(real_section)
+    with pytest.raises(ColumnarDualWriteMismatch):
+        real_section._assertColumnsMatchObjectModel("after an undo-style restore")
+
+    real_section.resyncColumnarStore()
+    real_section._assertColumnsMatchObjectModel("after the remedy")
+    real_section.addTrace(_aTrace(real_section))
+    real_section.removeTrace(_anyTrace(real_section))
+
+
+def test_a_trace_removed_from_its_contour_from_outside_is_caught(real_section):
+    """The other direction: the map holds a row the object model dropped.
+
+    `Contour.remove` reached directly, bypassing `Section.removeTrace` and so
+    bypassing the hook. The columns still carry the row, so the arity comparison
+    would catch this one too -- both complaints are wanted, because together
+    they say which side moved.
+    """
+    trace = _anyTrace(real_section)
+    real_section.contours[trace.name].remove(trace)
+
+    with pytest.raises(ColumnarDualWriteMismatch) as caught:
+        real_section._assertColumnsMatchObjectModel("an out-of-class removal")
+
+    assert "the row map is stale" in str(caught.value)
