@@ -360,6 +360,104 @@ def test_the_dialog_returns_the_binding_for_storage(
     assert response["focus_act"] == series.getOption("focus_act")
 
 
+def test_opening_the_dialog_and_pressing_ok_does_not_destroy_the_fallback(
+    main_window, local_series_settings, monkeypatch
+):
+    """The fallback and the dialog, *composed*. Each works alone; the round trip
+    through both is where the feature was lost.
+
+    `resolve` protects the predicate from a binding that cannot fire here, but
+    that protection was one-way and lived only in `focus_edit_p`. The dialog
+    seeded its row from the raw stored value, and `canonical` *drops* an
+    unreachable flag instead of falling back — so the row displayed empty while
+    Ctrl-click still worked, and `exec` harvests every row whether or not the
+    user touched it. One OK on an untouched row therefore wrote `""`, which
+    `resolve` correctly reads as a deliberate unbinding, and the edit click was
+    off permanently with no message.
+
+    Not hypothetical: the machine this was written on holds
+    ``focus_edit_modifier = "META"`` in its real `QSettings`, so this exact
+    sequence — open the shortcuts dialog, press OK, touch nothing — would have
+    killed its own edit click. `META_IS_UNREACHABLE` is forced on rather than
+    skipped off-Darwin, so the composition is covered on every platform's CI.
+    """
+    from PySide6.QtWidgets import QDialog
+    from PyReconstruct.modules.gui.dialog import ShortcutsDialog
+
+    monkeypatch.setattr(mod, "META_IS_UNREACHABLE", True)
+    series = local_series_settings(main_window)
+    series.setOption(FOCUS_EDIT_OPTION, "META")   # stored uppercase, as found
+
+    # the binding is unreachable here, so the predicate falls back to the default
+    assert focus_edit_p(_event(CTRL), series) is True
+
+    monkeypatch.setattr(QDialog, "exec", lambda self: 1)
+    dialog = ShortcutsDialog(main_window, series)
+    try:
+        row = dialog.modifier_widgets[FOCUS_EDIT_OPTION]
+
+        # the row shows the binding the user is really getting, not an empty box
+        assert row.modifierString() == "ctrl"
+        assert row.text() == mod.display_label("ctrl")
+
+        response, confirmed = dialog.exec()   # OK pressed, this row never touched
+    finally:
+        dialog.deleteLater()
+
+    assert confirmed
+    assert response[FOCUS_EDIT_OPTION] == "ctrl"
+
+    main_window.resetShortcuts(response)
+
+    # and the edit click still fires afterwards, which is the whole point
+    assert series.getOption(FOCUS_EDIT_OPTION) == "ctrl"
+    assert focus_edit_p(_event(CTRL), series) is True
+
+
+def test_reset_defaults_does_not_destroy_the_fallback_either(
+    main_window, local_series_settings, monkeypatch
+):
+    """The dialog's other route into the row, and it re-seeds from the same
+    stored value. Reverting only the constructor leaves this one corrupting."""
+    from PyReconstruct.modules.gui.dialog import ShortcutsDialog
+
+    monkeypatch.setattr(mod, "META_IS_UNREACHABLE", True)
+    series = local_series_settings(main_window)
+    series.setOption(FOCUS_EDIT_OPTION, "META")
+
+    dialog = ShortcutsDialog(main_window, series)
+    try:
+        dialog.resetDefaults()
+
+        assert dialog.modifier_widgets[FOCUS_EDIT_OPTION].modifierString() == "ctrl"
+    finally:
+        dialog.deleteLater()
+
+
+def test_a_deliberate_unbinding_survives_the_same_round_trip(
+    main_window, local_series_settings, monkeypatch
+):
+    """The control for the two tests above: seeding through `resolve` must not
+    quietly re-bind a user who chose "off". Only *unreachable* falls back."""
+    from PySide6.QtWidgets import QDialog
+    from PyReconstruct.modules.gui.dialog import ShortcutsDialog
+
+    monkeypatch.setattr(mod, "META_IS_UNREACHABLE", True)
+    series = local_series_settings(main_window)
+    series.setOption(FOCUS_EDIT_OPTION, "")
+
+    monkeypatch.setattr(QDialog, "exec", lambda self: 1)
+    dialog = ShortcutsDialog(main_window, series)
+    try:
+        assert dialog.modifier_widgets[FOCUS_EDIT_OPTION].modifierString() == ""
+        response, _ = dialog.exec()
+    finally:
+        dialog.deleteLater()
+
+    assert response[FOCUS_EDIT_OPTION] == ""
+    assert focus_edit_p(_event(CTRL), series) is False
+
+
 def test_the_window_stores_the_binding_without_treating_it_as_an_action(
     main_window, local_series_settings
 ):

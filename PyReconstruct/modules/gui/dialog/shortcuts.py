@@ -19,6 +19,7 @@ from PyReconstruct.modules.gui.modifiers import (
     canonical,
     display_label,
     modifiers_to_string,
+    resolve,
     usable_modifiers,
 )
 from PyReconstruct.modules.gui.utils import notify
@@ -117,7 +118,7 @@ class ShortcutsDialog(QDialog):
                 sc, desc = tuple(item)
                 if sc in MODIFIER_ROWS:
                     w = ModifierEdit(
-                        self.series.getOption(sc), self, MODIFIER_ROWS[sc]
+                        self.effectiveBinding(sc), self, MODIFIER_ROWS[sc]
                     )
                     self.modifier_widgets[sc] = w
                 elif sc.endswith("_act") and getattr(self.mainwindow, sc):
@@ -149,13 +150,44 @@ class ShortcutsDialog(QDialog):
         vlayout.addWidget(buttonbox)
 
         self.setLayout(vlayout)
-    
+
+    def effectiveBinding(self, name) -> str:
+        """The modifier binding the user is actually getting, canonical form.
+
+        Deliberately not the raw stored value. `resolve` is what `focus_edit_p`
+        tests the click against, and it treats a binding that cannot fire on
+        *this* platform as unreachable-so-fall-back rather than as off; only a
+        deliberately empty binding means off. Seeding the row from the raw value
+        instead breaks that distinction twice over, because `canonical` drops an
+        unreachable flag rather than falling back:
+
+        1. the row displays empty while the edit click is still working, so the
+           dialog misreports the live state; and
+        2. `exec` harvests every row whether or not the user touched it, so
+           pressing OK on that untouched empty row persists `""` — which
+           `resolve` then correctly reads as a deliberate, permanent unbinding.
+           A stored `"meta"`, which on macOS is merely unreachable, becomes a
+           silently dead edit click.
+
+        Seeding from `resolve` fixes both: the row shows the fallback the user
+        is really getting, and an untouched OK writes that same binding back.
+        """
+        return modifiers_to_string(
+            resolve(
+                self.series.getOption(name),
+                self.series.getOption(name, get_default=True),
+            )
+        )
+
     def resetDefaults(self):
         """Reset the defaults for all fields."""
         for act, w in self.act_widgets.items():
             w.setKeySequence(self.series.getOption(act))
         for name, w in self.modifier_widgets.items():
-            w.setModifierString(self.series.getOption(name))
+            # `effectiveBinding`, not the raw option, for the same reason the
+            # constructor uses it: this button is a second way to land an
+            # unreachable stored value in the row, and the row is harvested on OK.
+            w.setModifierString(self.effectiveBinding(name))
     
     def accept(self):
         """Called when user accepts the dialog."""
