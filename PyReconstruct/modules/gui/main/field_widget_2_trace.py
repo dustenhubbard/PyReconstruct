@@ -669,9 +669,29 @@ class FieldWidgetTrace(FieldWidgetBase):
         ## Assume same, otherwise suffer consequences
         example_trace = traces[0]
         ## Combine tags
+        #
+        # `example_trace` is `traces[0]`, and `traces` is
+        # `self.section.selected_traces.copy()` -- a copy of the LIST, not of the
+        # traces. So this writes `tags` in place on one of the section's own
+        # traces, from outside `Section`, and nothing mirrors it into the store.
+        #
+        # `deleteTraces` further down would have covered the drift by dropping
+        # these traces' rows, but three refusal paths return between here and
+        # there (uncuttable self-crossing trace, and two failures of the cut
+        # itself). On any of them the section keeps a trace whose tags no longer
+        # match its row, and the next `Section.save()` -- an autosave, a section
+        # change, anything -- raises `ColumnarDualWriteMismatch` at the user for
+        # an action they already saw refused. Repair as soon as the drift exists
+        # rather than relying on every exit path below staying the way it is.
+        merged_any = False
         for trace in traces[1:]:
             for tag in trace.tags:
-                example_trace.tags.add(tag)
+                if tag not in example_trace.tags:
+                    merged_any = True
+                    example_trace.tags.add(tag)
+
+        if merged_any:
+            self.section.resyncColumnarStore()
 
         ## Pixelize the selected traces
         traces_to_cut = [self.section_layer.traceToPix(t) for t in traces]
@@ -1277,12 +1297,23 @@ class FieldWidgetTrace(FieldWidgetBase):
         """Smooth traces."""
 
         window = self.series.getOption("roll_window")
-        
+
         for trace in traces:
 
             self.section.modified_contours.add(trace.name)
             trace.smooth(window, spacing=0.004)
             self.series.addLog(trace.name, self.section.n, "Smoothed trace(s)")
+
+        if traces:
+
+            # `traces` is the section's own selection, not copies, so
+            # `Trace.smooth` has just rewritten `points` in place on traces the
+            # section holds -- from outside `Section`, where no dual-write hook
+            # sees it. `field_interaction` calls `saveState()` and
+            # `generateView()` and neither repairs the store, so without this the
+            # drift survives to whichever later `Section.save()` happens first
+            # and raises `ColumnarDualWriteMismatch` on an unrelated action.
+            self.section.resyncColumnarStore()
 
         return True
         

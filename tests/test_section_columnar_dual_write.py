@@ -101,6 +101,11 @@ from PyReconstruct.modules.datatypes.section import ColumnarDualWriteMismatch
 RETIRED_GATE = "PYRECON_TEST_ONLY_COLUMNAR_DUAL_WRITE"
 
 SECTION_SOURCE = Path(section_module.__file__).resolve()
+## `Trace`'s source, parsed rather than introspected: the set of methods that
+## mutate a store-backed column is derived from it (see `_traceColumnSetters`),
+## and a source walk sees `self.points[i] = ...` where `inspect` would only see
+## a function object.
+TRACE_SOURCE = SECTION_SOURCE.parent / "trace.py"
 PACKAGE_ROOT = SECTION_SOURCE.parents[2]
 REPO_ROOT = PACKAGE_ROOT.parent
 
@@ -436,31 +441,43 @@ def test_section_py_neither_reads_nor_writes_the_environment():
 ## edits a section's traces or contours WITHOUT going through a `Section`
 ## mutator, so no dual-write hook sees it -- and every one of them was a
 ## `ColumnarDualWriteMismatch` raised in a real session before it called the
-## repair. There are eight sites across the four modules:
+## repair. There are ELEVEN sites across the four modules:
 ##
 ##   state_manager.py         undoState, redoState        whole-dict / per-key rebind
 ##   series.py                deleteObjects               contour key deleted
 ##   series.py                hideObjects                 trace.setHidden in place
 ##   series.py                hideAllTraces               trace.setHidden in place
 ##   series.py                restoreObjectVisibility     trace.setHidden in place
+##   series.py                smoothObject                trace.smooth in place
+##   series.py                deleteDuplicateTraces       trace.mergeTags in place
 ##   conversions.py           seriesToLabels group delete contour keys deleted
 ##   field_widget_2_trace.py  findFlag import-conflict    trace.hidden in place
+##   field_widget_2_trace.py  smoothTraces                trace.smooth in place
+##   field_widget_2_trace.py  cutTrace tag merge          trace.tags.add in place
 ##
-## `findFlag` is the eighth, and it is the reason
-## `test_no_module_outside_section_py_edits_a_store_backed_trace_column` below
-## exists. It was NOT found by this list or by any structural check: it was
-## found by a reviewer reading the source, after the PR had already claimed the
-## set was complete at seven. This allow-list pins which modules may call the
-## REPAIR; it cannot enumerate which modules perform an out-of-class EDIT, and
-## the edit is the thing that goes wrong.
+## READ THE COUNT ABOVE AS A WARNING, NOT AS A RESULT. It has been "five, six,
+## seven" (the original PR), then "eight" (a reviewer read `findFlag`), then
+## "nine and ten" (a reviewer read `smoothObject` and `deleteDuplicateTraces` --
+## AFTER the static scan below had been built specifically to make that
+## impossible), and now eleven (`cutTrace`, found by widening the scan three
+## ways at once). Four consecutive "complete" sets have been wrong. Nothing
+## about the number eleven is more trustworthy than the number eight was; what
+## has changed is that the scan below now derives its inputs instead of
+## enumerating them, so the next one has fewer places to hide. See the F6
+## discussion in the PR body for the argument that this is the wrong strategy.
+##
+## This allow-list pins which modules may call the REPAIR; it cannot enumerate
+## which modules perform an out-of-class EDIT, and the edit is the thing that
+## goes wrong.
 REPAIR_SITES = {
     "modules/backend/func/state_manager.py": "undoState / redoState",
     "modules/datatypes/series.py": (
-        "deleteObjects / hideObjects / hideAllTraces / restoreObjectVisibility"
+        "deleteObjects / hideObjects / hideAllTraces / "
+        "restoreObjectVisibility / smoothObject / deleteDuplicateTraces"
     ),
     "modules/backend/autoseg/conversions.py": "seriesToLabels group deletion",
     "modules/gui/main/field_widget_2_trace.py": (
-        "findFlag, the import-conflict hide"
+        "findFlag's import-conflict hide / smoothTraces / cutTrace's tag merge"
     ),
 }
 
@@ -556,10 +573,213 @@ STORE_BACKED_COLUMNS = (
     "tags",
 )
 
-## `Trace`'s own mutating methods. They are the same eight columns reached
-## through a call instead of an assignment, and `hideObjects` and its two
-## siblings are exactly this shape.
-TRACE_COLUMN_SETTERS = ("addTag", "setHidden")
+## `Trace`'s own mutating methods: the same eight columns reached through a call
+## instead of an assignment, and `hideObjects` and its two siblings are exactly
+## this shape.
+##
+## DERIVED FROM `trace.py` BY AST, NOT HAND-LISTED. The hand-written version of
+## this tuple named two of the nine, and that single fact is what let
+## `Series.smoothObject` (`Trace.smooth`) and `Series.deleteDuplicateTraces`
+## (`Trace.mergeTags`) walk straight through the scan built to make exactly that
+## impossible. A hand-maintained list of mutators is the same "we enumerated it
+## and believe we are done" claim that has now been wrong three review rounds
+## running; deriving it means a new `Trace` mutator widens the scan on the commit
+## that adds it, instead of silently widening the hole.
+##
+## `_traceColumnSetters` is the derivation; `TRACE_COLUMN_SETTERS_EXPECTED`
+## below pins its result so that a change to `Trace` is a visible, reviewed edit
+## rather than a silent one. Note the difference in failure direction: if the
+## derivation and the pin disagree, the *scan* has already widened (fail-safe)
+## and only the pin complains.
+
+
+def _mutatingSubcalls():
+    """Container methods that mutate the receiver in place.
+
+    `self.points.append(...)` and `self.tags.add(...)` write a store-backed
+    column just as surely as `self.points = ...` does, and `Trace.add` and
+    `Trace.addTag` are respectively those two calls and nothing else.
+    """
+    return (
+        "append", "extend", "insert", "pop", "remove", "clear", "sort",
+        "reverse", "add", "update", "discard", "difference_update",
+        "intersection_update", "symmetric_difference_update",
+    )
+
+
+def _traceColumnSetters():
+    """Every `Trace` method that mutates one of the eight store-backed columns.
+
+    Walks `Trace`'s body and reports a method when it, or anything it calls on
+    `self`, writes a store-backed column by any of the four routes a Python
+    method has:
+
+      1. `self.<column> = ...`          -- setHidden, mergeTags, centerAtOrigin,
+                                          resize, reshape, smooth
+      2. `self.<column>[i] = ...`       -- magScale, and ONLY magScale. This is
+                                          the route a plain `ast.Attribute`
+                                          target test misses, because the
+                                          assignment target is an `ast.Subscript`
+                                          whose `.value` is the attribute. A
+                                          reviewer enumerating `Trace` by hand
+                                          missed `magScale` for precisely this
+                                          reason and recorded it as "not a
+                                          mutator"; it is one.
+      3. `self.<column>.<mutator>()`    -- add (points.append), addTag (tags.add)
+      4. calling another such method on `self` -- transitive, so a future thin
+                                          wrapper cannot launder a mutation
+
+    Excluded, each for a stated reason rather than by omission:
+
+      * `__init__` and other dunders. A `Trace` under construction is not in any
+        section, so there is no store to drift; and `Section` builds its rows
+        from the finished object. Naming `__init__` here would add no coverage
+        and would flag every explicit `.__init__(...)` chain-up in the codebase.
+      * `name`, the property setter. `trace.name = value` routes through it, but
+        that is an *assignment* at the call site, and the assignment arm of
+        `_storeBackedColumnWrites` already catches it by attribute name. Listing
+        the setter as a method name would instead make every `.name(...)` call
+        anywhere -- on any object at all -- look like a trace mutation.
+    """
+    tree = ast.parse(TRACE_SOURCE.read_text(encoding="utf-8"))
+    trace_class = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and node.name == "Trace"
+    )
+
+    subcalls = _mutatingSubcalls()
+    direct = set()
+    self_calls = {}
+
+    def selfColumn(node):
+        """`self.<store-backed column>` as the column name, else None."""
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+            and node.attr in STORE_BACKED_COLUMNS
+        ):
+            return node.attr
+        return None
+
+    def targets(node):
+        """Assignment targets, flattened through tuple/list unpacking."""
+        if isinstance(node, ast.Assign):
+            pending = list(node.targets)
+        elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+            pending = [node.target]
+        else:
+            return
+        while pending:
+            target = pending.pop()
+            if isinstance(target, (ast.Tuple, ast.List)):
+                pending.extend(target.elts)
+            else:
+                yield target
+
+    for method in trace_class.body:
+        if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if method.name.startswith("__"):
+            continue
+        ## Properties and their setters: see the docstring.
+        decorators = {ast.unparse(d) for d in method.decorator_list}
+        if "property" in decorators or any(
+            d.endswith(".setter") for d in decorators
+        ):
+            continue
+
+        called = set()
+        for node in ast.walk(method):
+            for target in targets(node):
+                ## Route 1: self.<column> = ...
+                if selfColumn(target):
+                    direct.add(method.name)
+                ## Route 2: self.<column>[...] = ...
+                if isinstance(target, ast.Subscript) and selfColumn(
+                    target.value
+                ):
+                    direct.add(method.name)
+
+            if isinstance(node, ast.Call) and isinstance(
+                node.func, ast.Attribute
+            ):
+                ## Route 3: self.<column>.append(...) and friends
+                if node.func.attr in subcalls and selfColumn(node.func.value):
+                    direct.add(method.name)
+                ## Route 4 edge: self.<other method>(...)
+                if (
+                    isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "self"
+                ):
+                    called.add(node.func.attr)
+
+        self_calls[method.name] = called
+
+    ## Route 4: transitive closure over calls on `self`.
+    mutators = set(direct)
+    changed = True
+    while changed:
+        changed = False
+        for method, called in self_calls.items():
+            if method not in mutators and called & mutators:
+                mutators.add(method)
+                changed = True
+
+    return tuple(sorted(mutators))
+
+
+TRACE_COLUMN_SETTERS = _traceColumnSetters()
+
+## The derivation's result, pinned. Nine methods, and every one of them is a
+## live way to change what `Section.save()` will write:
+##
+##   add             points.append(point)          -- appends a point in place
+##   addTag          tags.add(tag)                 -- was in the old two
+##   centerAtOrigin  points = <recentred>          -- whole-list replacement
+##   magScale        points[i] = (x, y)            -- per-point, subscript form
+##   mergeTags       tags = tags.union(other.tags) -- deleteDuplicateTraces' call
+##   reshape         points = <reshaped>           -- also calls resize
+##   resize          points = <resized>            -- whole-list replacement
+##   setHidden       hidden = hidden               -- was in the old two
+##   smooth          points = <smoothed>           -- smoothObject's call
+##
+## If `Trace` grows a tenth, the scan picks it up immediately and THIS assertion
+## is what tells a reviewer it happened.
+TRACE_COLUMN_SETTERS_EXPECTED = (
+    "add", "addTag", "centerAtOrigin", "magScale", "mergeTags", "reshape",
+    "resize", "setHidden", "smooth",
+)
+
+
+def test_the_trace_setter_list_is_derived_from_trace_and_still_matches():
+    """`Trace`'s mutators, derived, and pinned against a reviewed list.
+
+    The hand-written list this replaces named `addTag` and `setHidden` and
+    stopped there -- two of nine. `smooth` and `mergeTags` were missing, and
+    `Series.smoothObject` and `Series.deleteDuplicateTraces` were live crashes
+    behind that gap for as long as the list was believed complete.
+
+    So the list is now derived, and this test is the pin. A new `Trace` mutator
+    fails here by name, having *already* widened the scan -- which is the safe
+    order: the property tightens first and the reviewer is told second.
+    """
+    assert TRACE_COLUMN_SETTERS == TRACE_COLUMN_SETTERS_EXPECTED, (
+        "the set of Trace methods that mutate a store-backed column changed. "
+        "The scan has already widened to match (it derives this list), so "
+        "nothing is unguarded -- but a new mutator means new out-of-class edit "
+        "sites may now be reported, and a lost one means an entry in "
+        f"OUT_OF_CLASS_TRACE_EDITS may be stale: {TRACE_COLUMN_SETTERS} "
+        f"against {TRACE_COLUMN_SETTERS_EXPECTED}"
+    )
+
+    ## And the derivation is not vacuously agreeing with a stale pin: the four
+    ## routes it exists to cover are each represented by a method that is only
+    ## reachable through that route.
+    assert "setHidden" in TRACE_COLUMN_SETTERS   # self.hidden = ...
+    assert "magScale" in TRACE_COLUMN_SETTERS    # self.points[i] = ...
+    assert "add" in TRACE_COLUMN_SETTERS         # self.points.append(...)
+    assert "reshape" in TRACE_COLUMN_SETTERS     # self.resize(...) transitively
 
 ## Every function outside `section.py` that both reaches traces through a
 ## section AND writes a store-backed column, with the reason each one is safe.
@@ -579,6 +799,11 @@ TRACE_COLUMN_SETTERS = ("addTag", "setHidden")
 ##
 ## Adding an entry is a design decision and belongs in review. Adding a
 ## REPAIRED one without the repair call is the bug this test exists to stop.
+## A fourth kind of entry appears below, and it is the one this round added:
+##
+##   NOT A TRACE -- the object written is a `Ztrace`, `Transform` or `Flag`.
+##                  These share method names with `Trace` (`magScale`) but the
+##                  store shadows none of them.
 OUT_OF_CLASS_TRACE_EDITS = {
     "modules/backend/autoseg/conversions.py::exportTraces":
         "DETACHED: setHidden on traces held aside, before addTrace puts them "
@@ -589,23 +814,85 @@ OUT_OF_CLASS_TRACE_EDITS = {
     "modules/backend/func/xml_json_conversions.py::sectionXMLtoJSON":
         "NOT A SECTION: `contours` is a plain dict in the section JSON being "
         "built from XML; the trace is never in a Section",
+    "modules/backend/view/trace_layer.py::TraceLayer.getCopiedTraces":
+        "DETACHED: `trace = trace.copy()` rebinds the loop name to a copy "
+        "before .points is rewritten; the section's own trace is only read",
+    "modules/datatypes/contour.py::Contour.importTraces.addDuplicate":
+        "REPAIRED by its only caller: `Section.importTraces` is the sole "
+        "caller of `Contour.importTraces`, and it ends in `_dualWriteResync()` "
+        "on both sections precisely because the merge rebinds trace lists and "
+        "mergeTags edits tags in place",
     "modules/datatypes/series.py::Series.copyObjects":
         "DETACHED: renames `trace.copy()`, then addTrace",
+    "modules/datatypes/series.py::Series.copyTracesToSections":
+        "DETACHED: `new_trace = trace.copy()`, re-projected, then addTrace",
+    "modules/datatypes/series.py::Series.deleteDuplicateTraces":
+        "REPAIRED: `trace1.mergeTags(trace2)` rewrites tags in place on a "
+        "trace the section keeps, then resyncColumnarStore(). The TENTH site, "
+        "found by a reviewer, and invisible to this scan while mergeTags was "
+        "missing from TRACE_COLUMN_SETTERS",
     "modules/datatypes/series.py::Series.hideAllTraces":
         "REPAIRED: setHidden in place, then resyncColumnarStore()",
     "modules/datatypes/series.py::Series.hideObjects.edit":
         "REPAIRED: setHidden in place, then resyncColumnarStore()",
+    "modules/datatypes/series.py::Series.importFlags":
+        "NOT A TRACE: `o_flag.magScale(...)` is a Flag; the store does not "
+        "shadow flags",
+    "modules/datatypes/series.py::Series.importTransforms":
+        "NOT A TRACE: `o_section.tforms[alignment].magScale(...)` is a "
+        "Transform; the store does not shadow transforms",
+    "modules/datatypes/series.py::Series.importZtraces":
+        "NOT A TRACE: `o_ztrace.magScale(...)` is a Ztrace; the store does not "
+        "shadow ztraces",
     "modules/datatypes/series.py::Series.restoreObjectVisibility":
         "REPAIRED: setHidden in place, then resyncColumnarStore()",
+    "modules/datatypes/series.py::Series.smoothObject":
+        "REPAIRED: `Trace.smooth` rewrites points in place on traces the "
+        "section holds, then resyncColumnarStore() before its own save(). The "
+        "NINTH site, and a crash on a shipped menu action -- it passed the "
+        "scan because `smooth` was not in TRACE_COLUMN_SETTERS",
     "modules/datatypes/series.py::Series.splitObject":
         "DETACHED: removeTrace, then renames `trace.copy()`, then addTrace",
+    "modules/gui/dialog/trace.py::TraceDialog.__init__":
+        "DETACHED: `ct = trace.copy()` then ct.resize(1), to render the shape "
+        "preview; the caller's trace is only read",
+    "modules/gui/dialog/trace_palette.py::TracePaletteDialog.getStructure":
+        "DETACHED: `t_copy = t.copy()` then t_copy.resize(1), same shape "
+        "preview as TraceDialog",
+    "modules/gui/main/field_widget_2_trace.py::FieldWidgetTrace.copyTracesToSections":
+        "DETACHED: `field_trace = trace.copy()` before .points is re-projected",
+    "modules/gui/main/field_widget_2_trace.py::FieldWidgetTrace.cutTrace":
+        "REPAIRED: `example_trace.tags.add(tag)` merges tags in place on "
+        "`section.selected_traces[0]` -- the list is copied, the traces are "
+        "not -- then resyncColumnarStore(). The ELEVENTH site. It survived "
+        "even the widened scan until two further gaps were closed: the write "
+        "is an in-place mutation of the column's own container (not an "
+        "assignment and not a Trace method), and the reach is "
+        "`selected_traces`, not `.contours`",
     "modules/gui/main/field_widget_2_trace.py::FieldWidgetTrace.findFlag":
         "REPAIRED: writes .hidden in place on the import-conflict path, then "
         "resyncColumnarStore(). This is the eighth site, and the one this scan "
         "exists because nothing structural caught",
+    "modules/gui/main/field_widget_2_trace.py::FieldWidgetTrace.newTrace":
+        "DETACHED: `new_trace = base_trace.copy()`; .points, .closed, add() "
+        "and smooth() all run before addTrace puts it in the section",
+    "modules/gui/main/field_widget_2_trace.py::FieldWidgetTrace.placeGrid":
+        "DETACHED: `exc_trace`/`inc_trace` are `ref_trace.copy()` products "
+        "used as grid stamps; nothing written is in a section yet",
+    "modules/gui/main/field_widget_2_trace.py::FieldWidgetTrace.smoothTraces":
+        "REPAIRED: `trace.smooth()` in place on the section's own selection, "
+        "then resyncColumnarStore(). Found by a reviewer as a SCAN GAP rather "
+        "than as a crash: it takes its traces as a parameter and named no "
+        "section at all, so the reach predicate could not see it",
+    "modules/gui/main/field_widget_7_view.py::FieldWidgetView.setTracingTrace":
+        "DETACHED: `t = trace.copy()` before .name is stripped of increment "
+        "characters; the copy becomes the tracing template",
     "modules/gui/main/main_window.py::MainWindow.setPaletteButtonFromObj":
         "DETACHED: the trace written is a palette trace out of "
         "series.palette_traces; the section's trace is .copy()d and only read",
+    "modules/gui/palette/mouse_palette.py::MousePalette.pasteAttributesToButton":
+        "DETACHED: both branches write a `.copy()` (of the pasted trace or of "
+        "the button's own trace) before it becomes a palette button",
 }
 
 _FUNCTION_NODES = (ast.FunctionDef, ast.AsyncFunctionDef)
@@ -647,25 +934,257 @@ def _nodesOwnedBy(function):
     return owned
 
 
-def _reachesTracesThroughASection(nodes):
-    """How this function gets its hands on traces, or None."""
+def _rootName(node):
+    """The leftmost `Name` of an attribute/subscript/call chain, or None.
+
+    `self.section.contours[n][0].hidden` roots at `self`; `trace.hidden` roots
+    at `trace`. This is what says whose trace is being written.
+    """
+    while True:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            node = node.value
+        elif isinstance(node, ast.Subscript):
+            node = node.value
+        elif isinstance(node, ast.Call):
+            node = node.func
+        else:
+            return None
+
+
+## Every `Section` attribute that holds `Trace` objects the section owns, and
+## therefore every attribute through which an out-of-class function can get a
+## live trace without ever naming `.contours`. Read off `Section.__init__`:
+##
+##   selected_traces     the current selection -- what every field-widget verb
+##                       operates on, and the route `cutTrace` takes
+##   temp_hide           traces hidden for this view
+##   traces_group_hide   traces hidden by group visibility
+##   added_traces        this save cycle's additions, still in the contours
+##   removed_traces      this save cycle's deletions (detached, but scanning
+##                       them costs an allow-list line and missing them costs a
+##                       session -- the same trade the rest of this scan makes)
+##
+## `.contours` is handled separately because it is a dict and reaches traces one
+## level deeper. This tuple is the flat lists.
+SECTION_TRACE_ATTRIBUTES = (
+    "added_traces", "removed_traces", "selected_traces", "temp_hide",
+    "traces_group_hide",
+)
+
+## Setter names `Trace` shares with ordinary containers, where the name alone
+## does not establish that the receiver is a trace. `Trace.add` appends a point;
+## `set.add` adds an element, and this codebase calls the latter 55 times and
+## the former not once. Naming `add` unconditionally would put ten pure-noise
+## entries in `OUT_OF_CLASS_TRACE_EDITS` -- `section.modified_contours.add(...)`,
+## `dwg.add(...)`, `seen.add(...)` -- and an allow-list a reviewer skims is an
+## allow-list that stops working, which is the failure this whole scan is a
+## response to. So an ambiguous setter is only counted when its receiver is a
+## name the function actually obtained from a section or a parameter, which is
+## what a real `trace.add(point)` looks like and what none of the 55 sets do.
+AMBIGUOUS_TRACE_SETTERS = ("add",)
+
+
+def _namesDerivedFromParameters(function, nodes):
+    """Local names that hold something handed in as a parameter.
+
+    Seeds with the function's own parameters (minus `self`/`cls`) and grows to a
+    fixpoint through the two ways a parameter's contents get a local name:
+    `for trace in traces:` and `t = traces[0]`. So in
+
+        def smoothTraces(self, traces: list):
+            for trace in traces:
+                trace.smooth(window, spacing=0.004)
+
+    `trace` is parameter-derived, and the write to `points` it performs is a
+    write to somebody else's trace.
+    """
+    args = function.args
+    derived = {
+        arg.arg
+        for arg in (
+            list(getattr(args, "posonlyargs", []))
+            + list(args.args)
+            + list(args.kwonlyargs)
+        )
+        if arg.arg not in ("self", "cls")
+    }
+    for extra in (args.vararg, args.kwarg):
+        if extra is not None:
+            derived.add(extra.arg)
+
+    return _grownThroughBindings(derived, nodes)
+
+
+def _namesDerivedFromSectionTraces(nodes):
+    """Local names that hold traces taken off a section's trace lists.
+
+    `FieldWidgetTrace.cutTrace` does
+
+        traces = self.section.selected_traces.copy()
+        example_trace = traces[0]
+        example_trace.tags.add(tag)
+
+    and `selected_traces` holds the section's own `Trace` objects -- `.copy()`
+    copies the list, not the traces. The function never names `.contours`,
+    `.tracesAsList()` or `.getTraces()`, and it takes no traces as parameters,
+    so neither of the other two reach arms sees it. It is reached through
+    `SECTION_TRACE_ATTRIBUTES`, and that is a third route.
+    """
+    seeds = set()
+    bindings = _bindingsIn(nodes)
+    for target, source in bindings:
+        ## `x = <anything>.selected_traces...` seeds `x`.
+        walker = source
+        found = False
+        while isinstance(walker, (ast.Attribute, ast.Subscript, ast.Call)):
+            if (
+                isinstance(walker, ast.Attribute)
+                and walker.attr in SECTION_TRACE_ATTRIBUTES
+            ):
+                found = True
+                break
+            walker = (
+                walker.func if isinstance(walker, ast.Call) else walker.value
+            )
+        if not found:
+            continue
+        pending = [target]
+        while pending:
+            bound = pending.pop()
+            if isinstance(bound, (ast.Tuple, ast.List)):
+                pending.extend(bound.elts)
+            elif isinstance(bound, ast.Name):
+                seeds.add(bound.id)
+
+    return _grownThroughBindings(seeds, nodes)
+
+
+def _bindingsIn(nodes):
+    """`(bound target, source expression)` for every binding in `nodes`."""
+    bindings = []
+    for node in nodes:
+        if isinstance(node, (ast.For, ast.AsyncFor)):
+            bindings.append((node.target, node.iter))
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                bindings.append((target, node.value))
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            bindings.append((node.target, node.value))
+        elif isinstance(node, ast.comprehension):
+            bindings.append((node.target, node.iter))
+    return bindings
+
+
+def _grownThroughBindings(seeds, nodes):
+    """`seeds`, grown to a fixpoint through local rebinding.
+
+    `for trace in traces:` and `t = traces[0]` both put a seeded object under a
+    new name. Without this, aliasing through one intermediate variable is enough
+    to leave the scan behind -- and `cutTrace` aliases twice.
+    """
+    derived = set(seeds)
+    bindings = _bindingsIn(nodes)
+
+    changed = True
+    while changed:
+        changed = False
+        for target, source in bindings:
+            if _rootName(source) not in derived:
+                continue
+            pending = [target]
+            while pending:
+                bound = pending.pop()
+                if isinstance(bound, (ast.Tuple, ast.List)):
+                    pending.extend(bound.elts)
+                elif isinstance(bound, ast.Name) and bound.id not in derived:
+                    derived.add(bound.id)
+                    changed = True
+
+    return derived
+
+
+def _traceDerivedNames(function, nodes):
+    """Every local name that may hold a trace the function did not build."""
+    return _namesDerivedFromParameters(
+        function, nodes
+    ) | _namesDerivedFromSectionTraces(nodes)
+
+
+def _reachesTracesThroughASection(nodes, function=None, writes=None):
+    """How this function gets its hands on traces, or None.
+
+    Three routes. The original predicate had only the first, and each of the
+    other two was a live crash hiding behind its absence.
+
+    **Through a section's contours**, the original test: the function itself
+    names `.contours`, `.tracesAsList()` or `.getTraces()`.
+
+    **Through its own parameters**: the function is *handed* traces already
+    resolved, and writes a store-backed column on one of them. A function of
+    that shape names none of the first route's markers, so under the original
+    predicate it was invisible no matter what it wrote --
+    `FieldWidgetTrace.smoothTraces(self, traces)` is exactly it, mutating
+    `points` in place on the section's own selected traces and matching nothing.
+    Callers pass section-held traces routinely (that is what a selection is), so
+    "received as a parameter" has to count as reach.
+
+    **Through a section's trace lists** (`SECTION_TRACE_ATTRIBUTES`): the
+    selection, the temp-hide list, the group-hide list. `cutTrace` merges tags
+    in place on `self.section.selected_traces` and satisfies neither of the
+    other two arms. Same class, third hiding place.
+
+    The last two arms are deliberately conditioned on the function actually
+    writing a store-backed column through such a name -- otherwise every
+    function in the codebase with a parameter would "reach traces". They
+    over-report in the other direction instead (a caller that only ever passes
+    detached traces looks the same as one that passes held ones), and the
+    allow-list carries that distinction in prose, as it already does for the
+    `.contours` arm.
+    """
     for node in nodes:
         if isinstance(node, ast.Attribute) and node.attr == "contours":
             return ".contours"
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
             if node.func.attr in ("tracesAsList", "getTraces"):
                 return f".{node.func.attr}()"
+
+    if function is None or not writes:
+        return None
+    roots = {root for _, root in writes}
+    if roots & _namesDerivedFromParameters(function, nodes):
+        return "parameter"
+    if roots & _namesDerivedFromSectionTraces(nodes):
+        return ".selected_traces / .temp_hide / ..."
     return None
 
 
-def _storeBackedColumnWrites(nodes):
+def _storeBackedColumnWrites(nodes, function=None):
     """Writes to a store-backed column on something other than `self`.
+
+    Returns `(description, root name)` pairs -- the root name being who is
+    written, which is what the parameter arm of the reach predicate needs.
+
+    Four routes, because there are four ways to change what `save()` will
+    serialise, and the first version of this scan knew two:
+
+        trace.hidden = True            assignment to the column
+        trace.setHidden(True)          a `Trace` method (TRACE_COLUMN_SETTERS)
+        trace.tags.add(tag)            in-place mutation of the column itself
+        trace.points[i] = (x, y)       assignment through a subscript
 
     `self.<column> = ...` is excluded because that is a class writing its own
     field -- `Trace.setHidden` doing `self.hidden = hidden` is the definition of
     the setter, not an out-of-class edit of somebody else's trace.
+
+    `function` is optional and only affects `AMBIGUOUS_TRACE_SETTERS`: without
+    it, `add` is skipped entirely rather than guessed at.
     """
     hits = []
+    derived = (
+        _traceDerivedNames(function, nodes) if function is not None else set()
+    )
     for node in nodes:
         targets = []
         if isinstance(node, ast.Assign):
@@ -680,7 +1199,49 @@ def _storeBackedColumnWrites(nodes):
                 continue
             if isinstance(target.value, ast.Name) and target.value.id == "self":
                 continue
-            hits.append(f"line {target.lineno}: .{target.attr} = ...")
+            hits.append((
+                f"line {target.lineno}: .{target.attr} = ...",
+                _rootName(target.value),
+            ))
+
+        ## Route three, and the one that hid an eleventh site: mutating the
+        ## column's own container in place. `trace.tags.add(tag)` writes `tags`
+        ## exactly as `trace.addTag(tag)` does, but it is neither an assignment
+        ## to a column nor a call to a `Trace` method, so both of the arms above
+        ## look straight past it. `FieldWidgetTrace.cutTrace` is this shape.
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            container = node.func.value
+            if (
+                node.func.attr in _mutatingSubcalls()
+                and isinstance(container, ast.Attribute)
+                and container.attr in STORE_BACKED_COLUMNS
+                and not (
+                    isinstance(container.value, ast.Name)
+                    and container.value.id == "self"
+                )
+            ):
+                hits.append((
+                    f"line {node.lineno}: "
+                    f".{container.attr}.{node.func.attr}(...)",
+                    _rootName(container.value),
+                ))
+
+        ## Route four: `trace.points[i] = ...`, the subscript form. `magScale`
+        ## is `Trace`'s own instance of it.
+        for target in targets:
+            if not isinstance(target, ast.Subscript):
+                continue
+            column = target.value
+            if not isinstance(column, ast.Attribute):
+                continue
+            if column.attr not in STORE_BACKED_COLUMNS:
+                continue
+            if isinstance(column.value, ast.Name) and column.value.id == "self":
+                continue
+            hits.append((
+                f"line {target.lineno}: .{column.attr}[...] = ...",
+                _rootName(column.value),
+            ))
 
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
             if node.func.attr not in TRACE_COLUMN_SETTERS:
@@ -688,9 +1249,32 @@ def _storeBackedColumnWrites(nodes):
             receiver = node.func.value
             if isinstance(receiver, ast.Name) and receiver.id == "self":
                 continue
-            hits.append(f"line {node.lineno}: .{node.func.attr}(...)")
+            ## `trace.tags.add(tag)` is the container route above, already
+            ## reported there; without this it is also reported here as
+            ## `Trace.add` on a receiver that happens to be trace-derived.
+            if (
+                isinstance(receiver, ast.Attribute)
+                and receiver.attr in STORE_BACKED_COLUMNS
+            ):
+                continue
+            ## `add` is `Trace.add` only when the receiver is something the
+            ## function got from a section or a caller; otherwise it is one of
+            ## the codebase's 55 `set.add` calls. See AMBIGUOUS_TRACE_SETTERS.
+            if node.func.attr in AMBIGUOUS_TRACE_SETTERS and not (
+                isinstance(receiver, ast.Name) and receiver.id in derived
+            ):
+                continue
+            hits.append((
+                f"line {node.lineno}: .{node.func.attr}(...)",
+                _rootName(receiver),
+            ))
 
     return sorted(hits)
+
+
+def _writeDescriptions(writes):
+    """Just the human-readable half of `_storeBackedColumnWrites`' pairs."""
+    return [description for description, _ in writes]
 
 
 def test_no_module_outside_section_py_edits_a_store_backed_trace_column():
@@ -730,13 +1314,17 @@ def test_no_module_outside_section_py_edits_a_store_backed_trace_column():
 
         for qualified, function in _qualifiedFunctions(tree):
             owned = _nodesOwnedBy(function)
-            reached = _reachesTracesThroughASection(owned)
-            if reached is None:
-                continue
-            writes = _storeBackedColumnWrites(owned)
+            writes = _storeBackedColumnWrites(owned, function)
             if not writes:
                 continue
-            offenders[f"{relative}::{qualified}"] = (reached, writes)
+            ## Writes are computed first now: the parameter arm of the reach
+            ## predicate asks *whose* trace is written, so it needs them.
+            reached = _reachesTracesThroughASection(owned, function, writes)
+            if reached is None:
+                continue
+            offenders[f"{relative}::{qualified}"] = (
+                reached, _writeDescriptions(writes)
+            )
 
     unlisted = {
         site: detail for site, detail in offenders.items()
@@ -783,11 +1371,12 @@ def test_the_edit_scan_catches_a_planted_out_of_class_write(tmp_path):
     reported = []
     for qualified, function in _qualifiedFunctions(tree):
         owned = _nodesOwnedBy(function)
-        if _reachesTracesThroughASection(owned) is None:
+        writes = _storeBackedColumnWrites(owned, function)
+        if not writes:
             continue
-        writes = _storeBackedColumnWrites(owned)
-        if writes:
-            reported.append((qualified, writes))
+        if _reachesTracesThroughASection(owned, function, writes) is None:
+            continue
+        reported.append((qualified, _writeDescriptions(writes)))
 
     assert reported == [("hideEverything", ["line 4: .hidden = ..."])], (
         f"the edit scan did not catch a planted in-place write: {reported}"
@@ -803,8 +1392,112 @@ def test_the_edit_scan_catches_a_planted_out_of_class_write(tmp_path):
     tree = ast.parse(planted.read_text(encoding="utf-8"))
     qualified, function = _qualifiedFunctions(tree)[0]
     owned = _nodesOwnedBy(function)
-    assert _reachesTracesThroughASection(owned) == ".tracesAsList()"
-    assert _storeBackedColumnWrites(owned) == ["line 3: .setHidden(...)"]
+    writes = _storeBackedColumnWrites(owned, function)
+    assert (
+        _reachesTracesThroughASection(owned, function, writes)
+        == ".tracesAsList()"
+    )
+    assert _writeDescriptions(writes) == ["line 3: .setHidden(...)"]
+
+
+def test_the_edit_scan_catches_the_two_shapes_that_slipped_past_it(tmp_path):
+    """The two gaps that let `smoothObject` and `smoothTraces` through.
+
+    Both were live, both were found by a reviewer reading source, and both are
+    reproduced here as the smallest code that has each shape -- so a later
+    "simplification" of the scan that reopens either gap fails here rather than
+    in a user's session.
+
+    Gap one, the setter list (`Trace.smooth` was not in it). Gap two, the reach
+    predicate (a function *handed* traces names no section at all).
+    """
+    planted = tmp_path / "planted_gap.py"
+
+    ## Gap one: `smoothObject`'s exact shape -- reach via `.contours`, write via
+    ## a `Trace` method the old two-name list did not know about.
+    planted.write_text(
+        "def smoothEverything(section, window):\n"
+        "    for name, contour in section.contours.items():\n"
+        "        for trace in contour.traces:\n"
+        "            trace.smooth(window=window, spacing=0.004)\n",
+        encoding="utf-8",
+    )
+    tree = ast.parse(planted.read_text(encoding="utf-8"))
+    qualified, function = _qualifiedFunctions(tree)[0]
+    owned = _nodesOwnedBy(function)
+    writes = _storeBackedColumnWrites(owned, function)
+    assert _writeDescriptions(writes) == ["line 4: .smooth(...)"], (
+        "Trace.smooth is not being recognised as a store-backed column write; "
+        "this is the gap Series.smoothObject crashed through"
+    )
+    assert _reachesTracesThroughASection(owned, function, writes) == ".contours"
+
+    ## And `mergeTags`, the same gap, `deleteDuplicateTraces`' call.
+    planted.write_text(
+        "def mergeEverything(section, other):\n"
+        "    for name, contour in section.contours.items():\n"
+        "        for trace in contour:\n"
+        "            trace.mergeTags(other)\n",
+        encoding="utf-8",
+    )
+    tree = ast.parse(planted.read_text(encoding="utf-8"))
+    qualified, function = _qualifiedFunctions(tree)[0]
+    owned = _nodesOwnedBy(function)
+    writes = _storeBackedColumnWrites(owned, function)
+    assert _writeDescriptions(writes) == ["line 4: .mergeTags(...)"]
+
+    ## Gap two: `FieldWidgetTrace.smoothTraces`' exact shape. No `.contours`, no
+    ## `.tracesAsList()`, no `.getTraces()` -- traces arrive as a parameter, and
+    ## under the old predicate this function was invisible whatever it wrote.
+    planted.write_text(
+        "def smoothTraces(self, traces: list):\n"
+        "    for trace in traces:\n"
+        "        self.section.modified_contours.add(trace.name)\n"
+        "        trace.smooth(10, spacing=0.004)\n",
+        encoding="utf-8",
+    )
+    tree = ast.parse(planted.read_text(encoding="utf-8"))
+    qualified, function = _qualifiedFunctions(tree)[0]
+    owned = _nodesOwnedBy(function)
+    writes = _storeBackedColumnWrites(owned, function)
+    assert _writeDescriptions(writes) == ["line 4: .smooth(...)"]
+    assert _reachesTracesThroughASection(owned, function, writes) == (
+        "parameter"
+    ), (
+        "a function handed traces as a parameter is invisible to the reach "
+        "predicate again; this is the gap FieldWidgetTrace.smoothTraces sits in"
+    )
+
+    ## Aliasing through an intermediate name still counts as parameter-derived.
+    planted.write_text(
+        "def recolour(traces, color):\n"
+        "    chosen = traces[0]\n"
+        "    chosen.color = color\n",
+        encoding="utf-8",
+    )
+    tree = ast.parse(planted.read_text(encoding="utf-8"))
+    qualified, function = _qualifiedFunctions(tree)[0]
+    owned = _nodesOwnedBy(function)
+    writes = _storeBackedColumnWrites(owned, function)
+    assert _reachesTracesThroughASection(owned, function, writes) == "parameter"
+
+    ## And the arm does not fire on a function that merely has parameters: the
+    ## write has to land on something the caller handed in.
+    planted.write_text(
+        "def buildOne(name, color):\n"
+        "    trace = Trace(name)\n"
+        "    trace.color = color\n"
+        "    return trace\n",
+        encoding="utf-8",
+    )
+    tree = ast.parse(planted.read_text(encoding="utf-8"))
+    qualified, function = _qualifiedFunctions(tree)[0]
+    owned = _nodesOwnedBy(function)
+    writes = _storeBackedColumnWrites(owned, function)
+    assert writes, "the local write should still be seen"
+    assert _reachesTracesThroughASection(owned, function, writes) is None, (
+        "the parameter arm fired on a trace the function built itself"
+    )
 
 
 def test_the_retired_gate_is_gone_from_the_module_that_defined_it():
@@ -1658,6 +2351,196 @@ def test_findFlag_without_the_repair_really_would_have_drifted(
     assert "hidden:" in message, (
         f"the drift was caught but not attributed to `hidden`: {message}"
     )
+
+
+def _aSmoothableObject(series):
+    """An object name whose traces all have enough points to smooth.
+
+    `Trace.smooth` returns False without touching `points` below three points,
+    so a contour of "pixel dust" would make this test pass while proving
+    nothing -- the same false-negative-from-a-bad-fixture trap that let
+    `mergeTags` look clean to a reviewer on a single-trace contour.
+    """
+    for number in sorted(series.sections):
+        section = series.loadSection(number)
+        for name, contour in section.contours.items():
+            if contour.traces and all(
+                len(trace.points) >= 3 for trace in contour.traces
+            ):
+                return name
+    raise AssertionError("no smoothable object in the fixture series")
+
+
+def test_smoothing_an_object_leaves_every_touched_section_saveable(real_series):
+    """`Series.smoothObject` -- the NINTH out-of-class edit site.
+
+    "Smooth object traces" is a shipped menu action on the object list.
+    `smoothObject` reaches traces through `section.contours`, rewrites `points`
+    in place with `Trace.smooth`, and then calls `section.save()` itself -- so
+    the mismatch used to raise inside the operation's own save, aborting a
+    multi-section pass partway through and leaving every later section
+    un-smoothed.
+
+    It survived the static scan that was built to end this whole class, because
+    the scan's setter list named two of the nine `Trace` methods that write a
+    store-backed column and `smooth` was not one of them. This drives the real
+    function.
+    """
+    name = _aSmoothableObject(real_series)
+
+    ## The real, shipped entry point -- not a re-implementation of its loop.
+    real_series.smoothObject([name], log_event=False)
+
+    ## Every section it touched must still be saveable, which is the property
+    ## the crash violated. Reload from disk so this is the bytes, not the
+    ## in-memory objects the operation just held.
+    touched = real_series.getObjectSections([name])
+    assert touched, "the fixture object appears on no section"
+    for number in sorted(touched):
+        real_series.loadSection(number).save()
+
+
+def test_smoothObject_without_the_repair_really_would_have_drifted(
+    real_series, monkeypatch
+):
+    """The `smoothObject` repair is load-bearing.
+
+    `smoothObject` loads its own sections through `enumerateSections`, so the
+    sections it edits are not ones this test can get hold of and prepare first.
+    Neutering the method wholesale would therefore also disable `__init__`'s
+    build, leave every section storeless, and make every check return on its
+    first line -- a false pass shaped exactly like a fix. Written that way, this
+    test reported no drift at all.
+
+    So the patch reverts the REPAIR and not the BUILD: a section's first call --
+    `__init__`'s -- is passed through, and every later one, which is what this
+    fixup added, is dropped.
+    """
+    from PyReconstruct.modules.datatypes.section import Section
+
+    name = _aSmoothableObject(real_series)
+    original = Section.resyncColumnarStore
+    built = []
+
+    def onlyTheBuild(self):
+        if self._columns is None:   # __init__'s call: the store must exist
+            original(self)
+            built.append(self.n)
+            return
+        return                      # the repair this fixup added: reverted
+
+    monkeypatch.setattr(Section, "resyncColumnarStore", onlyTheBuild)
+
+    with pytest.raises(ColumnarDualWriteMismatch) as caught:
+        real_series.smoothObject([name], log_event=False)
+
+    assert built, (
+        "no section ever built a store, so the check never ran and this would "
+        "have passed for the wrong reason"
+    )
+    assert "points:" in str(caught.value), (
+        "the drift was caught but not attributed to `points`: "
+        f"{caught.value}"
+    )
+
+
+def test_deleting_duplicate_traces_leaves_the_section_saveable(real_section):
+    """`Series.deleteDuplicateTraces` -- the TENTH site, via `mergeTags`.
+
+    `trace1.mergeTags(trace2)` rewrites `tags` in place on a trace the section
+    keeps; `section.removeTrace(trace2)` is hooked and repairs `trace2`'s row,
+    but nothing repaired `trace1`'s. It only drifts when the two duplicates
+    carry different tags -- rare, and exactly the messy series this clean-up
+    operation is run on.
+
+    Driven at the mechanism rather than through `deleteDuplicateTraces` itself,
+    because the operation only reaches `mergeTags` when it finds two traces that
+    overlap above threshold, and the fixture series has no such pair to offer.
+    The call, the receiver and the ordering are the operation's own.
+    """
+    name = next(
+        c for c in sorted(real_section.contours, key=str)
+        if len(real_section.contours[c]) >= 2
+    )
+    first, second = (
+        real_section.contours[name][0], real_section.contours[name][1]
+    )
+    second.tags = {"a_regression_tag"}
+    real_section.resyncColumnarStore()   # start from a store that agrees
+
+    first.mergeTags(second)              # deleteDuplicateTraces' exact call
+    real_section.resyncColumnarStore()   # ...and its repair
+    real_section.save()
+
+    assert "a_regression_tag" in real_section.contours[name][0].tags
+
+
+def test_mergeTags_on_a_held_trace_without_the_repair_really_drifts(
+    real_section
+):
+    """Without the repair, the same two calls raise -- naming `tags`."""
+    name = next(
+        c for c in sorted(real_section.contours, key=str)
+        if len(real_section.contours[c]) >= 2
+    )
+    first, second = (
+        real_section.contours[name][0], real_section.contours[name][1]
+    )
+    second.tags = {"a_regression_tag"}
+    real_section.resyncColumnarStore()
+
+    first.mergeTags(second)
+
+    with pytest.raises(ColumnarDualWriteMismatch) as caught:
+        real_section.save()
+
+    assert "tags:" in str(caught.value), (
+        f"the drift was caught but not attributed to `tags`: {caught.value}"
+    )
+
+
+def test_merging_tags_across_a_selection_leaves_the_section_saveable(
+    real_section
+):
+    """`FieldWidgetTrace.cutTrace`'s tag merge -- the ELEVENTH site.
+
+    `traces = self.section.selected_traces.copy()` copies the LIST; the traces
+    in it are the section's own. `example_trace.tags.add(tag)` then writes a
+    store-backed column in place, and three refusal paths return before
+    `deleteTraces` would have dropped the drifted rows.
+
+    Doubly invisible before this round: the write is an in-place mutation of the
+    column's own container -- neither an assignment to a column nor a call to a
+    `Trace` method -- and the reach is `selected_traces`, which the predicate
+    did not know was a route to a section's traces.
+
+    Driven at the mechanism: `cutTrace` needs a scalpel path and a live
+    `FieldWidget`, but the selection, the receiver and the in-place `tags.add`
+    are the widget's own.
+    """
+    name = next(
+        c for c in sorted(real_section.contours, key=str)
+        if len(real_section.contours[c]) >= 2
+    )
+    real_section.selected_traces = list(real_section.contours[name][:2])
+    real_section.selected_traces[1].tags = {"a_cut_tag"}
+    real_section.resyncColumnarStore()
+
+    traces = real_section.selected_traces.copy()
+    example_trace = traces[0]
+    for trace in traces[1:]:
+        for tag in trace.tags:
+            example_trace.tags.add(tag)
+
+    ## Without the repair this raises, naming `tags`.
+    with pytest.raises(ColumnarDualWriteMismatch) as caught:
+        real_section.save()
+    assert "tags:" in str(caught.value)
+
+    ## With it, the same state saves.
+    real_section.resyncColumnarStore()
+    real_section.save()
+    assert "a_cut_tag" in real_section.contours[name][0].tags
 
 
 def test_deleting_an_object_leaves_every_touched_section_consistent(real_series):

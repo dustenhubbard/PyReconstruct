@@ -38,13 +38,17 @@
   The check that compares the two representations moved from "the whole section,
   after every mutation" — which measured 81 to 127 ms per edit and would have
   made dragging a selection unusable — to a targeted per-row comparison at each
-  mutation plus one full comparison at each save. Eight places in the
+  mutation plus one full comparison at each save. Eleven places in the
   application edited traces or contours without going through `Section` and now
   rebuild the store afterwards: undo, redo, deleting an object, importing a
   segmentation, hiding objects, hiding all traces, restoring previous
-  visibility, and clicking an import-conflict flag. That last one hid every
-  other contour on the section in place, and before it was fixed it left the
-  section unable to save for the rest of the session.
+  visibility, smoothing an object, deleting duplicate traces, smoothing the
+  selected traces, and clicking an import-conflict flag — plus the tag merge
+  the scalpel performs when cutting several traces at once. Clicking an
+  import-conflict flag hid every other contour on the section in place, and
+  before it was fixed it left the section unable to save for the rest of the
+  session; smoothing an object failed partway through a multi-section pass and
+  left the remaining sections un-smoothed.
 
   The full comparison runs *after* a section is written rather than before, so a
   disagreement between the store and its object model is still reported loudly

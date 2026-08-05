@@ -87,7 +87,7 @@ from PyReconstruct.modules.backend.exports import export_svg, export_png
 ##
 ## `resyncColumnarStore()` is the public repair for that last case, and it is not
 ## hypothetical. Always-on turned every out-of-class mutation in the tree into a
-## `ColumnarDualWriteMismatch` raised at the user, and there are **EIGHT**, on
+## `ColumnarDualWriteMismatch` raised at the user, and there are **ELEVEN**, on
 ## paths a user reaches constantly:
 ##
 ##     backend/func/state_manager.py    undoState, redoState  (contour rebind)
@@ -96,34 +96,63 @@ from PyReconstruct.modules.backend.exports import export_svg, export_png
 ##     datatypes/series.py              hideObjects           (in-place write)
 ##     datatypes/series.py              hideAllTraces         (in-place write)
 ##     datatypes/series.py              restoreObjectVisibility(in-place write)
+##     datatypes/series.py              smoothObject          (in-place write)
+##     datatypes/series.py              deleteDuplicateTraces (in-place write)
 ##     gui/main/field_widget_2_trace.py findFlag              (in-place write)
+##     gui/main/field_widget_2_trace.py smoothTraces          (in-place write)
+##     gui/main/field_widget_2_trace.py cutTrace's tag merge  (in-place write)
 ##
-## (That is eight sites across seven rows: `state_manager.py` carries two.)
+## (That is eleven sites across ten rows: `state_manager.py` carries two.)
 ##
 ## Every one of them now calls the repair. The invariant this establishes is
 ## worth stating plainly because it is new and it is enforced by a raise: **a
 ## trace or contour mutated outside `Section` owes a `resyncColumnarStore()`
 ## before the section is saved.** That was free advice under the gate. It is a
-## rule now, and the eight sites above are what it caught.
+## rule now, and the eleven sites above are what it caught.
 ##
-## SEVEN OF THE EIGHT WERE FOUND BY RUNNING THE SUITE. THE EIGHTH WAS NOT.
-## -----------------------------------------------------------------------
-## `findFlag` hides every contour but one, in place, when the user clicks an
-## `import-conflict_*` flag. Nothing in the suite clicked one, so it survived
-## the change that found the other seven and shipped as a crash on an ordinary
-## user path -- and, because `save()` raised before writing at the time, as a
-## section that stayed unsaveable for the rest of the session.
+## THE COUNT ABOVE HAS BEEN WRONG FOUR TIMES. READ IT AS A WARNING.
+## ----------------------------------------------------------------
+## It was "seven" when always-on landed, found by running the suite and watching
+## it raise. A reviewer then read the source and found `findFlag` -- which hides
+## every contour but one, in place, when the user clicks an `import-conflict_*`
+## flag, on a path nothing in the suite clicked -- and it became "eight".
 ##
-## Two things changed as a result, and both are the point rather than the
-## footnote. `save()`'s comparison now runs AFTER the write, so a stale shadow
-## copy can never cost a user their valid data again (see `save`). And the
-## *edit* class is now scanned statically rather than enumerated by whatever
-## the suite happened to execute:
-## `tests/test_section_columnar_dual_write.py::test_no_module_outside_section_
-## py_edits_a_store_backed_trace_column` fails on any function outside this
-## module that reaches traces through a section and writes one of the eight
-## store-backed columns without being on an explicit, reasoned allow-list.
-## A ninth site is now a red test at review time instead of a bug report.
+## The response to that was the right instinct: stop enumerating and scan for
+## the shape instead. `tests/test_section_columnar_dual_write.py::
+## test_no_module_outside_section_py_edits_a_store_backed_trace_column` fails on
+## any function outside this module that reaches traces through a section and
+## writes one of the eight store-backed columns without being on an explicit,
+## reasoned allow-list.
+##
+## **The scan then missed two live sites of exactly the class it was built to
+## close.** `Series.smoothObject` -- a shipped menu action -- and
+## `Series.deleteDuplicateTraces` were both found by the next reviewer, reading
+## the source, exactly as `findFlag` had been. The scan checked two of the nine
+## `Trace` methods that write a store-backed column, so `Trace.smooth` and
+## `Trace.mergeTags` walked straight through it. Widening it then exposed an
+## eleventh, `cutTrace`, hidden behind two further blind spots: the write was an
+## in-place mutation of a column's own container, and the reach was
+## `selected_traces` rather than `.contours`.
+##
+## The scan is now considerably harder to slip past -- its setter list is
+## DERIVED from `Trace` by AST rather than hand-written, it knows four write
+## routes instead of two, and three reach routes instead of one. But the honest
+## summary is that four consecutive "complete" sets have been wrong, the third
+## of them after the enumeration had been mechanised specifically to prevent
+## that. Nothing about "eleven" is more trustworthy than "eight" was.
+##
+## The alternative that removes the category rather than policing it is to
+## REBUILD the store at `save()` instead of comparing it, which was measured
+## 2-3.3x cheaper than the comparison and deletes the allow-list, the scan, the
+## `REPAIR_SITES` pin and every one of the eleven repair calls above. That is a
+## design decision for the maintainer, tracked as D11 in
+## `specs/phase1-rewiring-slices-2026-08-04.md`; the PR body sets out the
+## evidence. It is not implemented here.
+##
+## One other thing changed as a result of `findFlag`, and it is the reason the
+## crashes above are now loud rather than destructive: `save()`'s comparison
+## runs AFTER the write, so a stale shadow copy can never cost a user their
+## valid data again (see `save`).
 
 
 class ColumnarDualWriteMismatch(AssertionError):
@@ -905,11 +934,13 @@ class Section():
     # Paths that edit a section's traces or contours from OUTSIDE this class are
     # the reason always-on was more than deleting an `if`. Under the gate they
     # were unreachable with a store present, and the comment here said only that
-    # they "owe the resync". **There are EIGHT**, they are all on hot user paths,
-    # and with a store always present every one of them was a
+    # they "owe the resync". **There are ELEVEN**, they are all on hot user
+    # paths, and with a store always present every one of them was a
     # `ColumnarDualWriteMismatch` raised in a real session -- undo, redo,
-    # deleting an object, autoseg's group deletion, the three hide paths, and
-    # clicking an import-conflict flag. They now call `resyncColumnarStore()`:
+    # deleting an object, autoseg's group deletion, the three hide paths,
+    # smoothing an object, de-duplicating traces, clicking an import-conflict
+    # flag, smoothing a selection, and cutting one. They now call
+    # `resyncColumnarStore()`:
     #
     #   backend/func/state_manager.py    SectionStates.undoState / .redoState
     #   datatypes/series.py              Series.deleteObjects
@@ -917,19 +948,28 @@ class Section():
     #   datatypes/series.py              Series.hideObjects
     #   datatypes/series.py              Series.hideAllTraces
     #   datatypes/series.py              Series.restoreObjectVisibility
+    #   datatypes/series.py              Series.smoothObject
+    #   datatypes/series.py              Series.deleteDuplicateTraces
     #   gui/main/field_widget_2_trace.py FieldWidgetTrace.findFlag
+    #   gui/main/field_widget_2_trace.py FieldWidgetTrace.smoothTraces
+    #   gui/main/field_widget_2_trace.py FieldWidgetTrace.cutTrace
     #
-    # Two shapes, and the second is the one that kept being missed: a *rebind*
+    # Two shapes, and the second is the one that keeps being missed: a *rebind*
     # (the contour dict or a key is replaced) and an *in-place write* (a trace
     # the section still holds has one of the eight columns written on it). The
-    # first four rows are rebinds, the last four are in-place writes.
+    # first four rows are rebinds, the last seven are in-place writes.
     #
-    # That is a real limit on this design, not a fixed bug: a ninth such site
+    # That is a real limit on this design, not a fixed bug: a twelfth such site
     # added later fails the same way. It fails loudly and at the first save
-    # after the edit rather than silently, and the message names the remedy --
-    # and, since `findFlag` proved that "we found them all" was not a property,
-    # `tests/test_section_columnar_dual_write.py` now scans the source for the
-    # edit shape so a ninth site is a red test rather than a user's crash.
+    # after the edit rather than silently, and the message names the remedy.
+    # `tests/test_section_columnar_dual_write.py` scans the source for the edit
+    # shape so that such a site is a red test rather than a user's crash -- but
+    # see the header of this module before trusting that: the scan was added
+    # after `findFlag` was missed, and then missed two live sites itself. It is
+    # much stronger now (its `Trace` setter list is derived by AST, and it knows
+    # four write routes and three reach routes), and it is still a scan for
+    # shapes somebody thought of. Rebuilding at `save()` instead of comparing
+    # removes the category; that is the maintainer's call, D11.
     #
     # Forgetting the resync used to fail SILENTLY. It no longer does. An
     # undo restore rebinds `self.contours` to `Contour.copy()` products, which
@@ -947,7 +987,7 @@ class Section():
 
         The public repair for a section whose traces or contours were edited
         from outside this class, and the only way a store is ever created.
-        `__init__` calls it once per section; the import path and the eight
+        `__init__` calls it once per section; the import path and the eleven
         out-of-class edit sites call it after they are done.
 
         THE GENERATION COUNTER IS CARRIED FORWARD, NOT RESET
