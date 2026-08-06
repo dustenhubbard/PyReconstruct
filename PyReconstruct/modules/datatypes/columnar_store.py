@@ -854,9 +854,10 @@ class SectionColumns():
         ## row the backing actually produced.
         ##
         ## The tradeoff, stated rather than left implicit, and it has two
-        ## halves. On the clash-and-reissue path `_resolveID` appends to
+        ## halves. On the clash-and-reissue path `adopt()` appends to the
+        ## issuer's `collisions` and `_resolveID` then appends to
         ## `_foreign_id_reissues` and prints, so should a LATER line here raise,
-        ## that record would describe a row that was never appended. On the
+        ## those records would describe a row that was never appended. On the
         ## SUCCESS path, which reports nothing at all, `adopt()` has already
         ## added the id to the issuer's `taken` -- so a later raise here strands
         ## a registration no row holds, and an identical retry of the same
