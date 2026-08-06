@@ -809,15 +809,17 @@ def test_dialog_omits_the_byline_widget_when_the_content_has_none(qapp):
         dlg.deleteLater()
 
 
-def test_dialog_byline_is_bold_and_not_muted(qapp):
-    """The byline is bold, upright and at the ordinary (enabled) text colour.
+def test_dialog_byline_is_italic_and_not_muted(qapp):
+    """The byline is italic, unbolded and at the ordinary (enabled) text colour.
 
-    It landed italic and muted via ``setEnabled(False)``, which borrowed the
-    disabled palette role and rendered it at roughly 1.6:1 against the dialog
-    background -- switched-off rather than secondary. Who maintains this build
-    is what a lab needs in order to report an issue to the right person, so it
-    is deliberately prominent now. Asserted on the constructed widget: a
-    regression restoring either the italic or the disabled state fails here.
+    The italic carries the aside register the markdown ``_..._`` gave it. The
+    muting does not: it landed dimmed via ``setEnabled(False)``, which borrowed
+    the disabled palette role and rendered it at roughly 1.6:1 against the
+    dialog background -- switched-off rather than secondary. Who maintains this
+    build is what a lab needs in order to report an issue to the right person,
+    so the contrast is deliberately full. Asserted on the constructed widget: a
+    regression restoring the disabled state, or setting the weight instead of
+    the slant, fails here.
     """
     from PyReconstruct.modules.gui.dialog.whats_new import WhatsNewDialog
 
@@ -826,8 +828,8 @@ def test_dialog_byline_is_bold_and_not_muted(qapp):
                          url="https://example.test/releases")
     try:
         font = dlg._byline.font()
-        assert font.bold() is True
-        assert font.italic() is False
+        assert font.italic() is True
+        assert font.bold() is False
         assert font.underline() is False       # no underline decoration, ever
         assert font.strikeOut() is False
         # not the disabled colour role: enabled in its own right and with an

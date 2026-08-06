@@ -8,7 +8,8 @@
 
   It is now its own label between the notes and the "Full release notes on
   GitHub" link, so it is on screen from the moment the dialog opens. The wording
-  is unchanged. The label is bold and at the dialog's ordinary text colour --
-  not the muted, italic register the markdown had given it: who maintains this
-  build is what a lab needs in order to report an issue to the right person, so
-  it is set to be read rather than skimmed past.
+  is unchanged, and so is the italic the markdown had given it. What has changed
+  is that it is no longer dimmed: it sits at the dialog's ordinary text colour
+  rather than the muted one. Who maintains this build is what a lab needs in
+  order to report an issue to the right person, so it is set to be read rather
+  than skimmed past.

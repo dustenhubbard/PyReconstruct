@@ -115,17 +115,17 @@ class WhatsNewDialog(QDialog):
         self._notes = make_notes_browser(content["body"], min_height=260)
         lay.addWidget(self._notes)
 
-        # The provenance line itself: bold, upright, at the ordinary text
-        # colour. It first landed here quiet -- italic, and muted by
-        # `setEnabled(False)` the way the release date above is -- carrying over
-        # the register the markdown `_..._` had given it inside the notes. That
-        # was the wrong call for this line. Who maintains this build is what a
-        # lab needs in order to report an issue to the right person, and the
-        # disabled palette paints it at about 1.6:1 against the dialog
-        # background (measured, offscreen/Fusion: #bebebe on #efefef), which
-        # reads as switched-off rather than as an aside. So it is an ordinary
-        # enabled label now, bold, and deliberately *not* the disabled colour
-        # role.
+        # The provenance line itself: italic, at the ordinary text colour. The
+        # italic is the aside register the markdown `_..._` gave it inside the
+        # notes, and it is kept. What is deliberately *not* kept is the muting:
+        # this label first landed dimmed by `setEnabled(False)`, the way the
+        # release date above it is, and the disabled palette paints it at about
+        # 1.6:1 against the dialog background (measured on the rendered widget,
+        # offscreen/Fusion: #bebebe on #efefef). At that contrast it reads as
+        # switched-off rather than as a quiet aside, and this is the one line a
+        # lab needs in order to report an issue to the right person. So it is an
+        # ordinary *enabled* label in the normal text colour -- italic for the
+        # register, full contrast for the legibility.
         #
         # It comes from the builder as its own field and is the same on every
         # framing (update, welcome, on-demand, generic fallback); rendering it
@@ -136,7 +136,7 @@ class WhatsNewDialog(QDialog):
         if byline:
             self._byline = QLabel(byline)
             bf = self._byline.font()
-            bf.setBold(True)
+            bf.setItalic(True)
             self._byline.setFont(bf)
             self._byline.setWordWrap(True)
             lay.addWidget(self._byline)
