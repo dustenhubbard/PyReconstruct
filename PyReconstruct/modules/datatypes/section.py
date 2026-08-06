@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+from collections import namedtuple
 from typing import Dict, List, Union
 
 import numpy as np
@@ -22,10 +23,25 @@ from PyReconstruct.modules.constants import (
     fast_loads,
     fast_dumps,
     canon_keys_inplace,
+    fill_mode_row_key,
+    keyed_trace_row_to_positional,
+    keyed_trace_row_from_positional,
+    TRACE_ID_ROW_KEY,
     SECTION_KEYS
 )
 
 from PyReconstruct.modules.backend.exports import export_svg, export_png
+
+
+#: What ``Section.updateJSON`` lifts off a keyed trace row.
+#:
+#: The spelling rides along with the id because the id's only two consumers want
+#: different things from it: ``Section.__init__`` wants the id alone, to adopt
+#: into the series' issuer, while ``Series.openJser`` has to write the row back
+#: into the hidden working copy and must not silently re-spell a field while
+#: doing it. Carrying the spelling is what keeps a reader slice from making a
+#: writer's decision -- see ``keyed_trace_row_from_positional``.
+StoredTraceID = namedtuple("StoredTraceID", ("trace_id", "fill_mode_key"))
 
 
 ## --- the columnar dual-write ------------------------------------------------
@@ -620,7 +636,13 @@ class Section():
         with open(self.filepath, "rb") as f:
             section_data = fast_loads(f.read())
         
-        Section.updateJSON(section_data, n)  # update any missing attributes
+        ## `stored_ids` collects the ids the section file's own keyed rows
+        ## assert. Empty for every positional file, which is every file written
+        ## by a build before this one.
+        stored_ids = {}
+        Section.updateJSON(  # update any missing attributes
+            section_data, n, stored_ids=stored_ids
+        )
 
         self.src = os.path.basename(section_data["src"])
         self.bc_profiles = section_data["brightness_contrast_profiles"]
@@ -645,9 +667,35 @@ class Section():
         ## defective-row screens to the stored data). Traces created later in
         ## the session are not here and fall through to `issue()` in
         ## `appendRow`, as before. In memory only; nothing here writes a byte.
+        ##
+        ## S3 puts one step in front of that: a row whose file ASSERTED an id
+        ## does not get one invented for it. `adoptForSection` runs first and
+        ## takes the file at its word, subject to the module's collision policy
+        ## -- a second claim on one id is recorded by name in
+        ## `issuer.collisions` and refused, never silently adopted -- and the
+        ## rows it accepted are then withheld from the derivation.
+        ##
+        ## ADOPT BEFORE DERIVE, AND THE ORDER IS NOT A PREFERENCE. An id written
+        ## by this build IS the id this build derives for that row, so deriving
+        ## first would register the row's own id in the issuer's `taken` set and
+        ## the adoption that followed would report every row in the file as
+        ## clashing with itself.
         issuer = getattr(series, "trace_id_issuer", None)
+        ## The issuer is handed plain ids: the fill-mode spelling riding in the
+        ## record is the unpack path's business (`reattachTraceIDs`) and means
+        ## nothing to an id index.
+        adopted_ids = (
+            issuer.adoptForSection(
+                n,
+                section_data["contours"],
+                {key: record.trace_id for key, record in stored_ids.items()},
+            )
+            if issuer is not None else {}
+        )
         derived_ids = (
-            issuer.deriveForSection(n, section_data["contours"])
+            issuer.deriveForSection(
+                n, section_data["contours"], skip=adopted_ids
+            )
             if issuer is not None else None
         )
         self._loaded_trace_ids = {} if derived_ids is not None else None
@@ -670,7 +718,17 @@ class Section():
                 if l > 1:
                     trace_list.append(trace)
                     if derived_ids is not None:
-                        self._loaded_trace_ids[trace] = derived_ids[(name, i)]
+                        ## Adopted beats derived. A row is in exactly one of the
+                        ## two maps: `deriveForSection` was told to skip every
+                        ## key `adoptForSection` returned, so `[(name, i)]` on
+                        ## the fallback is still a hard lookup and a row that
+                        ## reached neither map would raise here rather than
+                        ## silently load without an identity.
+                        self._loaded_trace_ids[trace] = (
+                            adopted_ids[(name, i)]
+                            if (name, i) in adopted_ids
+                            else derived_ids[(name, i)]
+                        )
 
             self.contours[name] = Contour(
                 name,
@@ -775,7 +833,7 @@ class Section():
             ]
 
     @staticmethod
-    def updateJSON(section_data, n):
+    def updateJSON(section_data, n, stored_ids=None):
         """Add missing attributes to section JSON.
 
         (Updates the dictionary in place)
@@ -783,6 +841,18 @@ class Section():
             Params:
                 section_data (dict): the JSON data to update
                 n (int): the section number
+                stored_ids (dict): optional out-parameter. When given, it is
+                    filled with ``{(contour name, index): StoredTraceID}`` for
+                    every keyed row that carried an ``id``. Rows absent from it
+                    carried none. The keys are the contour names and indices the
+                    data has WHEN THIS FUNCTION RETURNS, not the ones it arrived
+                    with: this function drops defective rows, merges contours
+                    whose names normalize onto one another, and reorders the
+                    contour dict, so a map built as the rows were read would be
+                    stale by the time the caller saw it. It is resolved against
+                    the final structure at the bottom of this function instead,
+                    through the row objects' own identity, which survives every
+                    one of those moves.
             Returns:
                 (dict): the contour renames this call performed, old name -> new
                     name. Empty for a section whose names already satisfy
@@ -794,6 +864,16 @@ class Section():
                     not see. ``Series.openJser`` repoints them.
         """
         renamed = {}
+        ## `{id(row list): (row list, StoredTraceID)}` for every keyed row that
+        ## carried an id, resolved into `stored_ids` at the bottom against the
+        ## final contour structure. Keyed on object identity because the row
+        ## lists are moved, popped and merged between here and there.
+        ##
+        ## The row list is retained in the value, and that is not redundant: a
+        ## defective row popped below would otherwise be freed, and CPython is
+        ## free to hand its address to a list allocated later in this same loop,
+        ## which would make that later row inherit a dead row's id.
+        lifted_ids = {}
 
         # Recorded BEFORE the back-fill loop below inserts the key, because the
         # legacy brightness/contrast migration needs to know whether the *file*
@@ -853,17 +933,33 @@ class Section():
             for i, trace in enumerate(section_data["contours"][cname]):
                 # convert trace to list format if needed
                 if type(trace) is dict:
-                    trace = [
-                        trace["x"],
-                        trace["y"],
-                        trace["color"],
-                        trace["closed"],
-                        trace["negative"],
-                        trace["hidden"],
-                        trace["mode"],
-                        trace["tags"]
-                    ]
+                    # The decode moved into `keyed_trace_row_to_positional` so
+                    # that this reader and the undo baseline's reader
+                    # (`FieldState.getContours`) share one key set. Two visible
+                    # changes, both read-side only:
+                    #
+                    # 1. The fill mode. This branch read `mode` and only
+                    #    `mode`, the spelling the legacy keyed shape uses, while
+                    #    the model and `docs/JSER_FORMAT.md` call the field
+                    #    `fill_mode`. Both are accepted now, permanently -- the
+                    #    reader keeps reading every past shape forever. Which
+                    #    one a writer emits is Q1 and is not decided here.
+                    # 2. The `id`. A keyed row may carry the trace's persisted
+                    #    identity, and this branch used to drop it on the floor
+                    #    along with `history` and every other unknown key. It is
+                    #    lifted out instead, for `Section.__init__` to adopt
+                    #    into the series' issuer and for `Series.openJser` to
+                    #    put back on the row before it writes the hidden working
+                    #    copy. Dropping it there is what made the id evaporate
+                    #    between the `.jser` and the object model.
+                    fill_mode_key = fill_mode_row_key(trace)
+                    stored_id = trace.get(TRACE_ID_ROW_KEY)
+                    trace = keyed_trace_row_to_positional(trace)
                     section_data["contours"][cname][i] = trace
+                    if stored_id is not None:
+                        lifted_ids[id(trace)] = (
+                            trace, StoredTraceID(stored_id, fill_mode_key)
+                        )
                 # remove history from trace if it exists
                 elif len(trace) == 9:
                     trace.pop()
@@ -930,9 +1026,12 @@ class Section():
             if len(flag) == 5:
                 flag.append(False)
             if len(flag) == 6:
-                id = Flag.deriveID([n] + flag, taken)
-                taken.add(id)
-                flag.insert(0, id)
+                # `flag_id`, not `id`: this local used to shadow the builtin for
+                # the whole of `updateJSON`, which the trace-id lift above needs
+                # in order to key rows on object identity.
+                flag_id = Flag.deriveID([n] + flag, taken)
+                taken.add(flag_id)
+                flag.insert(0, flag_id)
 
         # iterate through contours and remove whitespace
         for cname in tuple(section_data["contours"].keys()):
@@ -967,7 +1066,52 @@ class Section():
             contours.clear()
             contours.update(ordered)
 
+        # Resolve the lifted ids against the FINAL structure. Everything above
+        # this line can move a row: the defective-row screen pops it, the
+        # whitespace rename merges one contour's rows onto the tail of
+        # another's, and the sort reorders the dict. Walking the finished
+        # contours and matching on the row objects' identity is the only join
+        # that survives all three -- an index recorded when the row was read
+        # would name a different trace, or no trace, by now.
+        if stored_ids is not None and lifted_ids:
+            for cname, rows in section_data["contours"].items():
+                for i, row in enumerate(rows):
+                    record = lifted_ids.get(id(row))
+                    if record is not None and record[0] is row:
+                        stored_ids[(cname, i)] = record[1]
+
         return renamed
+
+    @staticmethod
+    def reattachTraceIDs(section_data, stored_ids):
+        """Put lifted ids back onto their rows, as keyed rows, in place.
+
+        The other half of ``updateJSON``'s lift, and it exists because of where
+        the id was measured to die. ``Series.openJser`` runs the migration and
+        writes the result into the hidden working directory; a `.jser`'s rows
+        therefore reach the object model through that copy and never directly.
+        ``updateJSON`` converts a keyed row to the positional shape, so before
+        this function existed the id was gone from the working copy and
+        ``Section.__init__`` had nothing to adopt -- the id survived exactly as
+        far as the unpack loop and no further, whatever the load path did.
+
+        Only rows that arrived carrying an id are re-keyed, and each is written
+        back with the fill-mode spelling it arrived with, so the working copy is
+        readable by precisely the set of builds the source file was readable by.
+        A row that carried no id stays positional. This is not the writer slice
+        and it introduces no row that was not in the file already.
+
+            Params:
+                section_data (dict): section JSON, after ``updateJSON``
+                stored_ids (dict): the map ``updateJSON`` filled
+        """
+        for (cname, i), record in stored_ids.items():
+            rows = section_data["contours"].get(cname)
+            if rows is None or i >= len(rows):  # pragma: no cover - defensive
+                continue
+            rows[i] = keyed_trace_row_from_positional(
+                rows[i], record.trace_id, record.fill_mode_key
+            )
 
     def getDict(self) -> dict:
         """Convert section object into a dictionary.

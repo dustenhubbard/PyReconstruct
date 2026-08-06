@@ -85,6 +85,144 @@ def pretty_default() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# the keyed trace row: the READ side
+# ---------------------------------------------------------------------------
+#
+# A trace row inside ``sections[n].contours[<name>]`` has two legal shapes and
+# always has had: the 8-element positional array ``docs/JSER_FORMAT.md`` section
+# 4.1 documents, and a JSON object keyed by field name. The keyed shape is not
+# new and is not this slice's invention -- ``Section.updateJSON`` has carried a
+# ``if type(trace) is dict:`` branch since before ``v1.19.0``, the repository's
+# own ``dev/assets/checker/files/class_series.jser`` fixture is written entirely
+# in it, and unknown extra keys have always been ignored rather than rejected.
+#
+# What is new is that a keyed row may carry an ``id``: the trace's persisted
+# identity. Everything in this section is the READ side of that -- decoding a
+# keyed row, and preserving the id across the migration that used to eat it.
+# Nothing here writes a new row shape into a file that did not already have one.
+
+#: The key a keyed trace row carries its persisted identity under.
+#:
+#: Absent means "no claim", not "no id": a row without this key is exactly the
+#: legacy keyed shape, and the load path derives an id for it from its own
+#: content (``TraceIDIssuer.deriveForSection``, ``tid-v1``) as it does for a
+#: positional row. Same convention ``schema_version`` uses.
+TRACE_ID_ROW_KEY = "id"
+
+#: Every key a keyed trace row has ever spelled the fill mode with, newest
+#: first. The reader tries them in order.
+#:
+#: Two entries and not one because the legacy keyed branch that has shipped
+#: unchanged since ``v1.19.0`` writes ``mode``, while the model and
+#: ``docs/JSER_FORMAT.md`` section 4.1 both call the field ``fill_mode``. Files
+#: carrying either spelling exist. Tolerance on the read side is free and is
+#: required by the 2026-07-27 non-negotiable -- "the READER must keep reading
+#: every past shape forever" -- so this tuple only ever grows.
+#:
+#: **This slice does not choose between them.** Which spelling a *writer* emits
+#: is Q1 of `specs/phase1-keyed-row-v1-slices-2026-08-06.md` and belongs to the
+#: writer slice. The reader accepts both, and the one place in this slice that
+#: puts a row back into a file (``keyed_trace_row_from_positional`` below, on
+#: the unpack path) re-uses the spelling the row arrived with rather than
+#: picking one.
+FILL_MODE_ROW_KEYS = ("fill_mode", "mode")
+
+
+def fill_mode_row_key(row : dict) -> str:
+    """Which of ``FILL_MODE_ROW_KEYS`` this keyed row actually spells.
+
+        Params:
+            row (dict): a keyed trace row
+        Returns:
+            (str) the key present in the row
+        Raises:
+            KeyError: if the row carries neither spelling. Reported against
+                ``FILL_MODE_ROW_KEYS[0]`` -- the corrected name -- rather than
+                against the legacy one.
+    """
+    for key in FILL_MODE_ROW_KEYS:
+        if key in row:
+            return key
+    raise KeyError(FILL_MODE_ROW_KEYS[0])
+
+
+def keyed_trace_row_to_positional(row : dict) -> list:
+    """Convert a keyed trace row into the 8-element positional row.
+
+    The one place the keyed shape is decoded, so the two readers that need it
+    -- ``Section.updateJSON`` on the unpack path and ``FieldState.getContours``
+    on the undo-baseline path -- cannot drift on the key set. They did not share
+    a decoder before this function existed, and the second one did not have one
+    at all: handed a keyed row it called ``Trace.fromList`` on the dict, which
+    does not raise, because ``len(dict)`` is the key count and iterating a dict
+    yields its keys. The result was a ``Trace`` named ``'x'`` with the key
+    strings unpacked into its fields, and no exception anywhere.
+
+    ``id`` is not returned. It is not part of the positional row, and the caller
+    that wants it reads it off the dict before calling this.
+
+        Params:
+            row (dict): a keyed trace row, either spelling of the fill mode
+        Returns:
+            (list) the 8-element positional row
+        Raises:
+            KeyError: if the row is missing a field that has no default
+    """
+    return [
+        row["x"],
+        row["y"],
+        row["color"],
+        row["closed"],
+        row["negative"],
+        row["hidden"],
+        row[fill_mode_row_key(row)],
+        row["tags"],
+    ]
+
+
+def keyed_trace_row_from_positional(
+        row : list, trace_id : str, fill_mode_key : str
+    ) -> dict:
+    """Re-encode a repaired positional row as a keyed row carrying ``trace_id``.
+
+    The inverse of ``keyed_trace_row_to_positional``, and it exists for exactly
+    one caller: ``Series.openJser``, which has to write the row back into the
+    hidden working directory after ``Section.updateJSON`` has repaired it.
+    Without this the id does not survive the unpack -- measured, and it is the
+    load-bearing hole this slice closes. See ``Section.reattachTraceIDs``.
+
+    **This is not a format decision and must not become one.** ``fill_mode_key``
+    is the spelling the row arrived with, passed back in by the caller, so a
+    file that used ``mode`` is rewritten with ``mode`` and a file that used
+    ``fill_mode`` is rewritten with ``fill_mode``. The row is therefore readable
+    by exactly the same set of builds after the migration as before it, which is
+    the only property a *reader* slice is entitled to guarantee. Choosing a
+    spelling to emit is Q1 and belongs to the writer.
+
+    ``history`` and any other unknown key the source row carried are dropped,
+    which is what the positional conversion has always done to them.
+
+        Params:
+            row (list): the 8-element positional row, post-repair
+            trace_id (str): the id to carry
+            fill_mode_key (str): which of ``FILL_MODE_ROW_KEYS`` to spell
+        Returns:
+            (dict) the keyed row
+    """
+    return {
+        TRACE_ID_ROW_KEY: trace_id,
+        "x": row[0],
+        "y": row[1],
+        "color": row[2],
+        "closed": row[3],
+        "negative": row[4],
+        "hidden": row[5],
+        fill_mode_key: row[6],
+        "tags": row[7],
+    }
+
+
+# ---------------------------------------------------------------------------
 # canonical key order
 # ---------------------------------------------------------------------------
 #
