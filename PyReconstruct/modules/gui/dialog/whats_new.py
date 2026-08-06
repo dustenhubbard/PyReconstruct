@@ -115,24 +115,29 @@ class WhatsNewDialog(QDialog):
         self._notes = make_notes_browser(content["body"], min_height=260)
         lay.addWidget(self._notes)
 
-        # The provenance line itself: quiet and italic, the same register the
-        # markdown `_..._` gave it, so it still reads as an aside about who
-        # maintains this build rather than as one more release bullet. Italic
-        # from the font (as the orienter above does) and muted by
-        # `setEnabled(False)` (as the release date does) -- this dialog has no
-        # shared muted-label helper and those are its two existing idioms for
-        # secondary text. It comes from the builder as its own field and is the
-        # same on every framing (update, welcome, on-demand, generic fallback);
-        # rendering it here, once, is the only place it appears, so it can never
-        # double up with the notes above it. Some framings carry no byline, and
-        # then no widget is added at all.
+        # The provenance line itself: bold, upright, at the ordinary text
+        # colour. It first landed here quiet -- italic, and muted by
+        # `setEnabled(False)` the way the release date above is -- carrying over
+        # the register the markdown `_..._` had given it inside the notes. That
+        # was the wrong call for this line. Who maintains this build is what a
+        # lab needs in order to report an issue to the right person, and the
+        # disabled palette paints it at about 1.6:1 against the dialog
+        # background (measured, offscreen/Fusion: #bebebe on #efefef), which
+        # reads as switched-off rather than as an aside. So it is an ordinary
+        # enabled label now, bold, and deliberately *not* the disabled colour
+        # role.
+        #
+        # It comes from the builder as its own field and is the same on every
+        # framing (update, welcome, on-demand, generic fallback); rendering it
+        # here, once, is the only place it appears, so it can never double up
+        # with the notes above it. Some framings carry no byline, and then no
+        # widget is added at all.
         byline = content.get("byline")
         if byline:
             self._byline = QLabel(byline)
             bf = self._byline.font()
-            bf.setItalic(True)
+            bf.setBold(True)
             self._byline.setFont(bf)
-            self._byline.setEnabled(False)  # muted, secondary to the notes
             self._byline.setWordWrap(True)
             lay.addWidget(self._byline)
         else:

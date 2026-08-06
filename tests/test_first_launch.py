@@ -809,6 +809,124 @@ def test_dialog_omits_the_byline_widget_when_the_content_has_none(qapp):
         dlg.deleteLater()
 
 
+def test_dialog_byline_is_bold_and_not_muted(qapp):
+    """The byline is bold, upright and at the ordinary (enabled) text colour.
+
+    It landed italic and muted via ``setEnabled(False)``, which borrowed the
+    disabled palette role and rendered it at roughly 1.6:1 against the dialog
+    background -- switched-off rather than secondary. Who maintains this build
+    is what a lab needs in order to report an issue to the right person, so it
+    is deliberately prominent now. Asserted on the constructed widget: a
+    regression restoring either the italic or the disabled state fails here.
+    """
+    from PyReconstruct.modules.gui.dialog.whats_new import WhatsNewDialog
+
+    content = F.whats_new_content("1.20.3", last_seen="1.20.1", text=WN)
+    dlg = WhatsNewDialog(None, "1.20.3", content=content,
+                         url="https://example.test/releases")
+    try:
+        font = dlg._byline.font()
+        assert font.bold() is True
+        assert font.italic() is False
+        assert font.underline() is False       # no underline decoration, ever
+        assert font.strikeOut() is False
+        # not the disabled colour role: enabled in its own right and with an
+        # enabled ancestry, so the label paints from the Active group.
+        assert dlg._byline.isEnabled() is True
+        assert dlg._byline.isEnabledTo(dlg) is True
+    finally:
+        dlg.deleteLater()
+
+
+def test_dialog_byline_renders_dark_and_unbroken(qapp):
+    """Pixel-level: the byline's rendered ink is high-contrast and un-underlined.
+
+    The property assertions above can all hold while the widget still paints
+    wrong -- ``setEnabled(False)`` on an ancestor, a palette override, a
+    stylesheet rule -- so this one reads the actual rendered pixels inside the
+    label's rect. Two claims:
+
+    * contrast. The darkest ink against the dialog background must clear 4.5:1.
+      The disabled rendering this replaced measured ~1.6:1, so the threshold
+      separates the two by a wide margin rather than sitting on a knife edge.
+    * no underline. An underline is one *unbroken* horizontal run of ink about
+      as wide as the text; the glyph rows of a sentence are always broken into
+      many short runs by the spaces between words. Counting ink per row is not
+      enough to tell those apart -- the x-height rows of ordinary text fill most
+      of the line too -- so this measures the longest contiguous run.
+    """
+    from PySide6.QtGui import QColor, QImage
+    from PyReconstruct.modules.gui.dialog.whats_new import WhatsNewDialog
+
+    content = F.whats_new_content("1.20.3", last_seen="1.20.1", text=WN)
+    dlg = WhatsNewDialog(None, "1.20.3", content=content,
+                         url="https://example.test/releases")
+    try:
+        dlg.resize(640, 620)
+        dlg.layout().activate()
+        pixmap = dlg.grab()
+        ratio = pixmap.devicePixelRatio()
+        image = pixmap.toImage().convertToFormat(QImage.Format_RGB32)
+
+        rect = dlg._byline.geometry()
+        x0, y0 = int(rect.left() * ratio), int(rect.top() * ratio)
+        x1 = min(int(rect.right() * ratio), image.width() - 1)
+        y1 = min(int(rect.bottom() * ratio), image.height() - 1)
+        assert x1 > x0 and y1 > y0, "byline has no rendered rect to sample"
+
+        def rgb(x, y):
+            return QColor(image.pixel(x, y)).getRgb()[:3]
+
+        def luminance(colour):
+            def channel(v):
+                v /= 255.0
+                return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+            r, g, b = (channel(c) for c in colour)
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+        # the label's own background, sampled past the end of the text
+        background = rgb(x1 - 1, y0)
+
+        def inked(x, y):
+            return sum(abs(a - b) for a, b in zip(rgb(x, y), background)) > 30
+
+        ink, longest_run_by_row, extent = [], [], []
+        for y in range(y0, y1 + 1):
+            runs, current = [], 0
+            for x in range(x0, x1 + 1):
+                if inked(x, y):
+                    current += 1
+                    ink.append(rgb(x, y))
+                    extent.append(x)
+                else:
+                    if current:
+                        runs.append(current)
+                    current = 0
+            if current:
+                runs.append(current)
+            longest_run_by_row.append(max(runs) if runs else 0)
+
+        assert ink, "the byline drew no ink at all"
+        text_width = max(extent) - min(extent) + 1
+
+        darkest = min(ink, key=luminance)
+        lighter, darker = (max(luminance(darkest), luminance(background)),
+                           min(luminance(darkest), luminance(background)))
+        contrast = (lighter + 0.05) / (darker + 0.05)
+        assert contrast >= 4.5, (
+            f"byline ink {darkest} on {background} is only {contrast:.2f}:1 -- "
+            "it is being painted muted, not at full contrast"
+        )
+
+        widest = max(longest_run_by_row)
+        assert widest < 0.85 * text_width, (
+            f"an unbroken {widest}px run across a {text_width}px line: the "
+            "byline is underlined"
+        )
+    finally:
+        dlg.deleteLater()
+
+
 def test_whats_new_on_demand_with_unknown_version_omits_it_and_still_opens(
         qapp, monkeypatch, tmp_path):
     """When the running version can't be determined, the on-demand dialog must
