@@ -211,6 +211,14 @@ def no_pip_message(pip_install_name: str) -> str:
 
     Names the *pip install* name rather than the import name, because that is
     what the user has to type -- `cloudvolume` is installed as `cloud-volume`.
+
+    For the same reason the non-uv branch spells its commands
+    `"{sys.executable}" -m ...` rather than bare `python`/`pip`. This branch
+    only fires when no pip is reachable, which means PATH has none for *this*
+    interpreter; a bare token would therefore resolve to a different
+    interpreter, and the user would add pip to, and install the package into,
+    an environment that is not the one the notice just named. Quoted because
+    an interpreter path can contain spaces.
     """
 
     if uv_created_environment():
@@ -231,7 +239,7 @@ def no_pip_message(pip_install_name: str) -> str:
             "later syncs\n\n"
             f"    uv pip install {pip_install_name}\n"
             "        installs it into this environment only, without "
-            "recording it\n\n"
+            "recording it, so the next `uv sync` removes it again\n\n"
             "Then restart PyReconstruct."
         )
 
@@ -239,9 +247,11 @@ def no_pip_message(pip_install_name: str) -> str:
         f"{pip_install_name} could not be installed: pip is not available in "
         "this Python environment, so there was no pip command to run.\n\n"
         f"The environment is:\n\n    {sys.executable}\n\n"
-        "Add pip to it from a terminal and then install the package:\n\n"
-        f"    python -m ensurepip --upgrade\n"
-        f"    pip install {pip_install_name}\n\n"
+        "Add pip to it from a terminal and then install the package. Both "
+        "lines name that interpreter on purpose -- a bare `python` or `pip` "
+        "would be whichever one your PATH finds, which is not this one:\n\n"
+        f'    "{sys.executable}" -m ensurepip --upgrade\n'
+        f'    "{sys.executable}" -m pip install {pip_install_name}\n\n'
         "If something else manages this environment, use its own install "
         f"command instead -- for a uv environment, `uv pip install "
         f"{pip_install_name}`; for conda, `conda install "

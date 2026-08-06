@@ -14,7 +14,7 @@ not to exist, and sends a uv user to look for a problem in their network or
 their permissions. The correct answer for them is ``uv add X`` or ``uv pip
 install X``.
 
-Two things are pinned here.
+Three things are pinned here.
 
 The first is the discrimination. Only a *missing pip* gets the new message. A
 network timeout and a package that is not on the index both leave pip reachable
@@ -31,6 +31,16 @@ environment's ``pyvenv.cfg`` and neither ``venv`` nor ``virtualenv`` writes that
 key, so it is read directly rather than inferred from a directory called
 ``.venv``. A uv environment is not always named that (UV_PROJECT_ENVIRONMENT
 renames it) and a directory with that name was not necessarily made by uv.
+
+The third is that every command the notice prints can be copied verbatim and
+will do what it says. Two ways that can fail, and both are asserted against.
+The non-uv branch names an interpreter and must then spell its commands
+``"<that interpreter>" -m ...``: bare ``python``/``pip`` resolve off PATH, and
+this branch fires *because* PATH has no pip for the named interpreter, so a
+bare token is guaranteed to point somewhere else. And the uv branch offers two
+routes that differ in durability, so it has to say so -- a ``uv pip install``
+is unrecorded and the next ``uv sync`` removes it again, which is measurable on
+this project and which the README's own instructions will eventually trigger.
 """
 
 import sys
@@ -192,6 +202,17 @@ def test_uv_environment_without_pip_is_told_to_use_uv(monkeypatch, tmp_path, not
     assert "created by uv" in message
     assert "Then restart PyReconstruct." in message
 
+    ## The two routes are not equivalent and the difference is not obvious, so
+    ## the notice has to state it rather than leave it to be discovered. `uv
+    ## add` records the package in pyproject.toml and uv.lock; `uv pip install`
+    ## does not, and an unrecorded package is *removed* by the next `uv sync`
+    ## -- measured on this project, where `uv sync --frozen --no-default-groups
+    ## --extra test` after a `uv pip install roifile` prints `Uninstalled 1
+    ## package - roifile`. Saying only "without recording it" leaves the reader
+    ## to infer that consequence, and the README tells them to run `uv sync`.
+    assert "survives later syncs" in message
+    assert "the next `uv sync` removes it again" in message
+
     ## The old advice, in either of its forms, must be gone: it is the thing
     ## being fixed. "Something went wrong" said nothing at all, and "try pip
     ## installing it in a terminal" named a command that does not exist here.
@@ -219,13 +240,29 @@ def test_no_pip_outside_a_uv_environment_gets_the_pip_route(
     message = notes[0]
 
     assert "pip is not available" in message
-    assert "python -m ensurepip --upgrade" in message
-    assert "pip install svgwrite" in message
     assert "uv pip install svgwrite" in message
 
     ## Names which interpreter has no pip. Without it the user cannot tell
     ## which of several environments the advice applies to.
     assert sys.executable in message
+
+    ## And the commands must target *that* interpreter, not a bare token. This
+    ## branch fires only when `pip_is_reachable()` is False, which requires
+    ## `shutil.which("pip")` to be None -- so by construction PATH does not
+    ## lead back to the interpreter just named. `python -m ensurepip` typed
+    ## into a fresh terminal would add pip to, and `pip install` would install
+    ## the package into, whichever environment PATH happens to resolve: the
+    ## right-looking-command-wrong-target failure this whole notice exists to
+    ## remove, one branch over. Quoted so a path with spaces survives.
+    assert f'"{sys.executable}" -m ensurepip --upgrade' in message
+    assert f'"{sys.executable}" -m pip install svgwrite' in message
+
+    ## The bare forms must be gone. Anchored to the newline-plus-indent the
+    ## command block uses, so these cannot be satisfied by the prose that
+    ## explains why bare tokens are wrong, nor by the `uv pip install`
+    ## alternative offered at the end.
+    assert "\n    python -m ensurepip" not in message
+    assert "\n    pip install svgwrite" not in message
 
     assert "Something went wrong" not in message
     assert "try pip installing" not in message
