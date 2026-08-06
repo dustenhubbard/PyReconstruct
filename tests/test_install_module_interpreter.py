@@ -24,6 +24,10 @@ process was a second copy of the application, which ``capture_output=True``
 waits on until it exits and which then exits ``0``. That turns a conditional
 crash into an unconditional hang plus a bogus "successfully installed". So a
 frozen bundle does not run pip at all: it says why, and says what would work.
+``PyReconstruct.modules.constants.frozen`` already records the same fact --
+``script_launch_prefix``'s docstring says the frozen exe has no Python CLI --
+and the frozen branch is detected with that module's canonical ``is_frozen``,
+which the ``PYRECON_FORCE_FROZEN=1`` environment variable below drives.
 
 Three properties are pinned here, one per failure mode:
 
@@ -296,7 +300,7 @@ def test_a_frozen_bundle_does_not_shell_out_at_all(monkeypatch, captured):
     hang and a false success. A frozen bundle runs no pip command.
     """
 
-    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setenv("PYRECON_FORCE_FROZEN", "1")
     _never_call_subprocess(monkeypatch)
 
     assert mod_imports.install_module("svgwrite") is False
@@ -317,7 +321,7 @@ def test_a_frozen_bundle_is_not_offered_the_install_prompt(monkeypatch, captured
     an offer that cannot be honoured is worse than a plain explanation.
     """
 
-    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setenv("PYRECON_FORCE_FROZEN", "1")
     _never_call_subprocess(monkeypatch)
     _unimportable(monkeypatch, "svgwrite")
 
@@ -333,10 +337,11 @@ def test_a_frozen_bundle_is_not_offered_the_install_prompt(monkeypatch, captured
 def test_a_source_install_is_still_offered_the_prompt(monkeypatch, captured):
     """The other side of the frozen guard: nothing changes off a bundle.
 
-    Without this, deleting the ``running_frozen()`` condition and always
-    refusing would still pass every test above.
+    Without this, deleting the ``is_frozen()`` condition and always refusing
+    would still pass every test above.
     """
 
+    monkeypatch.delenv("PYRECON_FORCE_FROZEN", raising=False)
     monkeypatch.delattr(sys, "frozen", raising=False)
     _recording_pip(monkeypatch, returncode=0)
     _unimportable(monkeypatch, "svgwrite")

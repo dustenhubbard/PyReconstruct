@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Tuple, Union
 
+from PyReconstruct.modules.constants.frozen import is_frozen
 from PyReconstruct.modules.gui.utils import notifyConfirm, notify as note
 
 
@@ -52,16 +53,6 @@ def native_library_message(unloadable: Dict[str, OSError]) -> str:
             lines.append(f"{remedy}\n")
 
     return "\n".join(lines).rstrip()
-
-
-def running_frozen() -> bool:
-    """True when this is a PyInstaller bundle rather than a source install.
-
-    PyInstaller sets ``sys.frozen``. Read through ``getattr`` because the
-    attribute simply does not exist outside a bundle.
-    """
-
-    return bool(getattr(sys, "frozen", False))
 
 
 def frozen_install_message(modules: List[str]) -> str:
@@ -149,7 +140,7 @@ def modules_available(modules: Union[str, List[str]], notify: bool=True) -> bool
             ## an install that cannot work. A frozen bundle cannot have packages
             ## added to it by any route (see `install_module`), so the yes/no
             ## prompt would be a dead end whichever way it is answered.
-            if running_frozen():
+            if is_frozen():
 
                 note(frozen_install_message(unavailable))
 
@@ -217,7 +208,13 @@ def install_module(module: Union[str, Tuple[str, str]]) -> bool:
     ## genuinely successful install lands somewhere this process cannot import
     ## from, and `module_path`'s import then raises into `customExcepthook` --
     ## invisibly, since the spec builds with `console=False`.
-    if running_frozen():
+    ##
+    ## `constants.frozen.script_launch_prefix` already records the same fact
+    ## ("the frozen exe has no Python CLI") and works around it for scripts with
+    ## a `__run_script__` sentinel that `run.py` intercepts. There is no such
+    ## workaround available here: that sentinel runs a *bundled* script through
+    ## `runpy`, and the bundle contains no pip to run.
+    if is_frozen():
 
         note(frozen_install_message([module]))
 
