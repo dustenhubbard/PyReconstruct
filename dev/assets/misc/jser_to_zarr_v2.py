@@ -25,8 +25,8 @@ line numbers drift and these two files drift independently:
    in ``PyReconstruct/modules/backend/view/trace_layer.py`` declares
    ``(self, pixmap_dim, window, traces: list[Trace], tform: Transform = None)``
    and its body reads ``trace.name`` off every element. That signature dates to
-   ``32e3a751`` (2023-11-08, the pip reorganization), so the drift is at least
-   that old and the script has not run since. Fill the ``# user-entered info``
+   ``a391ebc5`` (2023-05-05, "Modify autoseg UI structure"), so the drift is at
+   least that old and the script has not run since. Fill the ``# user-entered info``
    block in with a real series and the ``labels_zarr[z] = ...`` statement below
    raises, inside ``generateLabelsArray``::
 
