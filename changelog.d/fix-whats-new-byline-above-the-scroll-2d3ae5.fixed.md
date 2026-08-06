@@ -13,3 +13,9 @@
   rather than the muted one. Who maintains this build is what a lab needs in
   order to report an issue to the right person, so it is set to be read rather
   than skimmed past.
+
+  The line is also a link to pyreconstruct.org now. It keeps the plain italic
+  look rather than taking the usual blue-and-underlined one -- the "Full release
+  notes on GitHub" link sits directly beneath it, and two link-styled rows in a
+  row would cost the byline its quiet-aside character. A pointing-hand cursor
+  and a tooltip are what mark it as clickable.

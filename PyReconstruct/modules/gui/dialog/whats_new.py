@@ -12,16 +12,18 @@ installed, so showing them there meant the same notes appeared twice around
 every update.
 """
 
+from html import escape
+
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextBrowser,
 )
-from PySide6.QtGui import QTextCursor
+from PySide6.QtGui import QTextCursor, QPalette
 from PySide6.QtCore import Qt, QSettings
 
 from PyReconstruct.modules.backend.updater.install_info import current_version_str
 from PyReconstruct.modules.gui.main.first_launch import (
     whats_new_due, whats_new_content, github_release_url, WHATSNEW_KEY,
-    ON_DEMAND_CAP,
+    ON_DEMAND_CAP, HOMEPAGE_URL,
 )
 
 ORG, APP = "KHLab", "PyReconstruct"
@@ -115,29 +117,72 @@ class WhatsNewDialog(QDialog):
         self._notes = make_notes_browser(content["body"], min_height=260)
         lay.addWidget(self._notes)
 
-        # The provenance line itself: italic, at the ordinary text colour. The
-        # italic is the aside register the markdown `_..._` gave it inside the
-        # notes, and it is kept. What is deliberately *not* kept is the muting:
-        # this label first landed dimmed by `setEnabled(False)`, the way the
-        # release date above it is, and the disabled palette paints it at about
-        # 1.6:1 against the dialog background (measured on the rendered widget,
-        # offscreen/Fusion: #bebebe on #efefef). At that contrast it reads as
-        # switched-off rather than as a quiet aside, and this is the one line a
-        # lab needs in order to report an issue to the right person. So it is an
-        # ordinary *enabled* label in the normal text colour -- italic for the
-        # register, full contrast for the legibility.
+        # The provenance line itself: italic, at the ordinary text colour, and a
+        # jump link to the project home page. The italic is the aside register
+        # the markdown `_..._` gave it inside the notes, and it is kept. What is
+        # deliberately *not* kept is the muting: this label first landed dimmed
+        # by `setEnabled(False)`, the way the release date above it is, and the
+        # disabled palette paints it at about 1.6:1 against the dialog
+        # background (measured on the rendered widget, offscreen/Fusion:
+        # #bebebe on #efefef). At that contrast it reads as switched-off rather
+        # than as a quiet aside, and this is the one line a lab needs in order
+        # to report an issue to the right person. So it is an ordinary *enabled*
+        # label in the normal text colour -- italic for the register, full
+        # contrast for the legibility.
         #
-        # It comes from the builder as its own field and is the same on every
-        # framing (update, welcome, on-demand, generic fallback); rendering it
-        # here, once, is the only place it appears, so it can never double up
-        # with the notes above it. Some framings carry no byline, and then no
-        # widget is added at all.
+        # It is clickable but NOT link-styled: no blue, no underline. The
+        # "Full release notes on GitHub" label directly below it is a real link
+        # and looks like one; styling this line the same way would stack two
+        # link-coloured rows and cost the byline the quiet-aside character the
+        # italic is there to give it.
+        #
+        # Two details of the markup are load-bearing, both measured rather than
+        # assumed (see the styling tests, which read the rendered pixels):
+        #
+        #  * the override rides on an inner <span>, not on the <a> itself.
+        #    Qt's rich-text subset applies a `style` attribute on the anchor as
+        #    a whole character format, which drops the slant inherited from the
+        #    widget font; on a nested span it merges, and the line renders
+        #    pixel-identical to the plain italic label it replaces.
+        #  * the colour is read from the live palette instead of being written
+        #    as a literal, and the label is polished first. `text-decoration:
+        #    none` kills the underline, but without a colour the anchor takes
+        #    QPalette::Link and renders blue. A hardcoded #000000 would fix that
+        #    in the default theme and paint the line black-on-charcoal under the
+        #    qdarkstyle theme (Help > Theme) -- 1.32:1, measured. The palette
+        #    tracks the theme, but only once the widget has been polished
+        #    against the active stylesheet: sampled straight after construction
+        #    it still reads #000000 under qdark, which reintroduces exactly that
+        #    bug. Hence `ensurePolished()` before the read. Setting
+        #    QPalette::Link on the label instead does not work at all -- the
+        #    stylesheet re-resolves the role at polish and discards it.
+        #
+        #    The colour is sampled once, at construction; the dialog is built
+        #    fresh each time it opens, so a theme switch is picked up on the
+        #    next open rather than live on a dialog already on screen.
+        #
+        # The byline comes from the builder as its own field and is the same on
+        # every framing (update, welcome, on-demand, generic fallback);
+        # rendering it here, once, is the only place it appears, so it can never
+        # double up with the notes above it. Some framings carry no byline, and
+        # then no widget is added at all.
         byline = content.get("byline")
         if byline:
-            self._byline = QLabel(byline)
+            self._byline = QLabel()
             bf = self._byline.font()
             bf.setItalic(True)
             self._byline.setFont(bf)
+            self._byline.ensurePolished()   # so the palette reflects the theme
+            ink = self._byline.palette().color(QPalette.ColorRole.WindowText).name()
+            self._byline.setTextFormat(Qt.RichText)
+            self._byline.setText(
+                f'<a href="{HOMEPAGE_URL}">'
+                f'<span style="color:{ink}; text-decoration:none;">'
+                f'{escape(byline)}</span></a>'
+            )
+            self._byline.setOpenExternalLinks(True)
+            self._byline.setToolTip(HOMEPAGE_URL)   # the only hint that it is a link
+            self._byline.setCursor(Qt.PointingHandCursor)
             self._byline.setWordWrap(True)
             lay.addWidget(self._byline)
         else:
