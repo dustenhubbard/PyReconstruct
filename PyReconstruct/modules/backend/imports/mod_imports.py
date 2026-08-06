@@ -1,4 +1,5 @@
 import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, List, Tuple, Union
 
@@ -51,6 +52,41 @@ def native_library_message(unloadable: Dict[str, OSError]) -> str:
             lines.append(f"{remedy}\n")
 
     return "\n".join(lines).rstrip()
+
+
+def running_frozen() -> bool:
+    """True when this is a PyInstaller bundle rather than a source install.
+
+    PyInstaller sets ``sys.frozen``. Read through ``getattr`` because the
+    attribute simply does not exist outside a bundle.
+    """
+
+    return bool(getattr(sys, "frozen", False))
+
+
+def frozen_install_message(modules: List[str]) -> str:
+    """Compose the notice shown when packages are missing from a frozen build.
+
+    Deliberately not a yes/no install prompt, for the same reason
+    ``native_library_message`` is not: the install on offer cannot succeed, and
+    offering it sends the user down a path with no end. See ``install_module``
+    for what a frozen bundle actually does with a pip command.
+    """
+
+    unavail_str = ", ".join(modules)
+
+    return (
+        f"This feature requires additional Python packages ({unavail_str}) "
+        "that this copy of PyReconstruct does not include.\n\n"
+        "PyReconstruct is running as a self-contained application bundle. It "
+        "carries its own private Python, and packages cannot be added to it -- "
+        "not from inside the app, and not with a `pip install` in a terminal, "
+        "which would install into a different Python that this app cannot see."
+        "\n\n"
+        "To use this feature, run PyReconstruct from source and install the "
+        "package into that environment. The project README has the from-source "
+        "setup."
+    )
 
 
 def module_path(module: str) -> Path:
@@ -109,6 +145,16 @@ def modules_available(modules: Union[str, List[str]], notify: bool=True) -> bool
 
         if unavailable:
 
+            ## Same principle as the native-library notice above: do not offer
+            ## an install that cannot work. A frozen bundle cannot have packages
+            ## added to it by any route (see `install_module`), so the yes/no
+            ## prompt would be a dead end whichever way it is answered.
+            if running_frozen():
+
+                note(frozen_install_message(unavailable))
+
+                return False
+
             unavail_str = ", ".join(unavailable)
 
             response = notifyConfirm(
@@ -156,11 +202,34 @@ def install_module(module: Union[str, Tuple[str, str]]) -> bool:
         
         pip_install_name = module
 
+    ## A frozen bundle cannot install into itself, and must not try. Guarded
+    ## here as well as at the prompt in `modules_available` because this
+    ## function is exported and can be called on its own.
+    ##
+    ## `sys.executable` in a PyInstaller build is the app's own launcher, not a
+    ## Python interpreter, and the bootloader does not interpret Python's
+    ## command-line options: it hands `-m pip install <name>` to the app as
+    ## `sys.argv`. Measured against a one-folder build -- the child process was
+    ## a second copy of the app, which `capture_output=True` then waits on until
+    ## it exits, and which exits 0, so the success branch below would report an
+    ## install that never happened. The bare `pip` this used to run is no better
+    ## in a bundle: it resolves off PATH to a *different* interpreter, so a
+    ## genuinely successful install lands somewhere this process cannot import
+    ## from, and `module_path`'s import then raises into `customExcepthook` --
+    ## invisibly, since the spec builds with `console=False`.
+    if running_frozen():
+
+        note(frozen_install_message([module]))
+
+        return False
+
+    ## `sys.executable -m pip`, never a bare `pip`: the install has to target
+    ## the same interpreter that is about to do the import. The argument list
+    ## with `shell=False` also keeps the package name out of a shell.
     output = subprocess.run(
-        f"pip install {pip_install_name}",
+        [sys.executable, "-m", "pip", "install", pip_install_name],
         capture_output=True,
         text=True,
-        shell=True
     )
 
     if output.returncode == 0:
@@ -168,6 +237,27 @@ def install_module(module: Union[str, Tuple[str, str]]) -> bool:
         try:
 
             installed_to = module_path(module)
+
+        except ImportError as e:
+
+            ## pip reported success and the module still will not import, so it
+            ## did not land where this process can see it -- a `--user` install
+            ## that missed the environment, a `pip` shadowed by another
+            ## interpreter, a package whose import name differs from its
+            ## distribution name. Uncaught this reaches customExcepthook, which
+            ## a `console=False` build shows the user nothing of. Report it with
+            ## the command that would install into *this* interpreter, and count
+            ## the install as failed: the feature is still unusable.
+            note(
+                f"{module} reported a successful install, but the running copy "
+                f"of PyReconstruct still cannot import it:\n\n{e}\n\n"
+                "The package was most likely installed into a different Python "
+                "environment. Installing it by hand, in a terminal, with this "
+                "exact command will target the right one:\n\n"
+                f"    {sys.executable} -m pip install {pip_install_name}"
+            )
+
+            return False
 
         except OSError as e:
 
