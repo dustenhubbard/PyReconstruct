@@ -16,6 +16,17 @@ animation. They are parented to ``anchor.window()`` and positioned in that
 widget's coordinates instead, and they carry ``WA_TransparentForMouseEvents`` so
 that a widget briefly underneath one stays clickable.
 
+**The window clips too, so the arc is scheduled around its own descent.** The
+window is a parent like any other, and a button worth celebrating is usually
+near one of its edges -- the copy button this was written for sits 11px above
+the bottom of a bottom-anchored button row, which no amount of resizing the
+dialog changes. A particle still opaque when it crosses that edge does not fade
+out, it disappears. So the fall is short, and the fade is finished by the time a
+particle comes back down through the height it was thrown from: below its own
+start it is already invisible, whatever clearance the anchor happens to have.
+See ``burst_confetti`` for how the fade names a point on the arc rather than a
+time.
+
 **Opacity is a custom property painted by hand, not ``windowOpacity``.**
 ``QWidget.windowOpacity`` applies to top-level windows only; setting it on a
 child widget is accepted and does nothing, so an animation driving it would run
@@ -60,6 +71,10 @@ CONFETTI_COLORS = (
 PARTICLE_COUNT = 12          # "a small animation": enough to read as a burst, not a shower
 PARTICLE_SIZE_RANGE = (4, 8)  # pixels, square bounding box
 DURATION_RANGE = (600, 900)   # milliseconds, per particle
+
+# Where the arc turns over, as a position along the animation rather than a
+# time -- see `burst_confetti`, which places the fade against the same axis.
+ARC_APEX = 0.35
 
 
 class ConfettiParticle(QWidget):
@@ -108,9 +123,10 @@ def burst_confetti(anchor: QWidget, count: int = PARTICLE_COUNT, rng=None) -> li
     ``random.Random`` when a caller wants the same burst twice; the default is
     the module-level generator.
 
-    Returns an empty list rather than raising if there is nothing to draw on --
-    a widget with no window, which is what an un-parented widget looks like
-    before it is shown.
+    The ``host is None`` guard below is belt and braces and is not expected to
+    fire: ``QWidget.window()`` returns the widget itself when it has no parent
+    window, so an un-parented anchor bursts onto itself rather than returning
+    an empty list.
     """
     if rng is None:
         rng = random
@@ -135,24 +151,43 @@ def burst_confetti(anchor: QWidget, count: int = PARTICLE_COUNT, rng=None) -> li
         # Out and up to an apex, then out further and down past the start: the
         # arc a handful of thrown confetti makes. Sideways spread is signed, so
         # the burst goes both ways; vertical is not, because gravity is not.
+        # The fall is deliberately shorter than the rise, because down is the
+        # direction with an edge in it -- see the module docstring.
         spread = rng.randint(18, 55) * rng.choice((-1, 1))
         rise = rng.randint(22, 45)
-        fall = rng.randint(30, 60)
+        fall = rng.randint(8, 20)
         duration = rng.randint(*DURATION_RANGE)
 
         move = QPropertyAnimation(particle, b"pos")
         move.setDuration(duration)
         move.setStartValue(start)
-        move.setKeyValueAt(0.35, QPoint(start.x() + spread // 2, start.y() - rise))
+        move.setKeyValueAt(ARC_APEX, QPoint(start.x() + spread // 2, start.y() - rise))
         move.setEndValue(QPoint(start.x() + spread, start.y() + fall))
         move.setEasingCurve(QEasingCurve.OutQuad)
 
-        # Held at full opacity for the first half, so the burst is legible
-        # before it starts leaving; all of the fade happens on the way down.
+        # Where the descent crosses back through the height it was thrown from,
+        # expressed the way `move`'s keyframes are: the arc runs from the apex
+        # to the end point in a straight line, so it is back level with `start`
+        # after `rise / (rise + fall)` of that leg.
+        #
+        # A keyframe position is not a time. `QVariantAnimation` looks its
+        # keyframes up by the *eased* progress, not by the raw clock -- measured
+        # on PySide6 6.5.2: under `OutQuad`, a keyframe at 0.5 is reached at
+        # `t/duration == 0.29`. Giving the fade the same duration and the same
+        # curve puts both animations on one progress axis, so this fade keyframe
+        # lands exactly on that point of the arc and stays there if the curve is
+        # ever changed. Fading on the raw clock instead is what put the whole of
+        # the old fade below the window's bottom edge, where none of it was seen.
+        back_to_start = ARC_APEX + (1.0 - ARC_APEX) * rise / (rise + fall)
+
+        # Full opacity up to the apex, so the burst is legible while it rises,
+        # then out to nothing by the time it is level with where it started.
         fade = QPropertyAnimation(particle, b"opacity")
         fade.setDuration(duration)
+        fade.setEasingCurve(QEasingCurve.OutQuad)
         fade.setStartValue(1.0)
-        fade.setKeyValueAt(0.5, 1.0)
+        fade.setKeyValueAt(ARC_APEX, 1.0)
+        fade.setKeyValueAt(back_to_start, 0.0)
         fade.setEndValue(0.0)
 
         group = QParallelAnimationGroup(particle)   # parented: see the module docstring

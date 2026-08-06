@@ -7,17 +7,27 @@ is visual.
 CHECKED HERE: that a burst happens on a copy that worked and does not happen on
 one that did not; that the particles are real child widgets, countable while
 they fly; that every one of them is gone once the animation ends; that repeating
-the click neither crashes nor accumulates widgets; and that the "Copied ✓" label
-this change shares a handler with still behaves exactly as it did.
+the click neither crashes nor accumulates widgets; that a particle passing over
+the button does not swallow a click meant for it; that the "Copied ✓" label this
+change shares a handler with still behaves exactly as it did; and that the burst
+is actually *seen* -- that no particle leaves the window that clips it, and that
+none is still opaque once it is below the height it was thrown from.
+
+That last pair is geometry, not taste, and it is here because the burst failed
+it once: parented to the window rather than the button, but thrown far enough
+down that all 12 particles crossed the window's bottom edge at close to full
+opacity, so the fade the module is built around happened where nothing could see
+it. A test that only counts widgets cannot tell that apart from a working
+animation.
 
 NOT CHECKED HERE, and not by anything else: what it looks like. Colour, the
-shape of the arc, the easing curve, whether 12 dots over ~700ms reads as "small"
-or as "too much" -- none of that is asserted, because none of it has a correct
+easing curve, how far the arc should throw, whether 12 dots reads as "small" or
+as "too much" -- none of that is asserted, because none of it has a correct
 value the suite could hold it to. It is a judgement about feel, and it is made
 by looking at it. The tests below would pass on a burst that was the wrong
-colour, went the wrong way, or lasted five seconds; they exist to stop the
-mechanical failures around it (a leak, a crash, a burst on a failed copy, a
-broken label), not to say the animation is good.
+colour or that went sideways instead of up; they exist to stop the mechanical
+failures around it (a leak, a crash, a burst on a failed copy, a broken label, a
+burst drawn where it cannot be seen), not to say the animation is good.
 
 The particle lifetime tests drive the event loop with `qtbot.wait`. That is not
 a sleep for timing's sake: a `QPropertyAnimation` advances on the event loop and
@@ -26,9 +36,11 @@ and nothing is ever collected. The waits allow generously more than
 `DURATION_RANGE`'s ceiling.
 """
 
+import random
+
 import pytest
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QParallelAnimationGroup, Qt
 
 from PyReconstruct.modules.gui.utils import errors
 from PyReconstruct.modules.gui.utils.confetti import (
@@ -61,6 +73,32 @@ def _particles(dialog):
     deletion is still present. That distinction is the point of the waits.
     """
     return dialog.findChildren(ConfettiParticle)
+
+
+def _sweep(particle, step_ms=5):
+    """Step one particle's own animation by hand, yielding `(pos, opacity)`.
+
+    Driven rather than waited on. The geometry below is a function of the
+    animation's progress, not of the clock, and sampling it off the event loop
+    would make the assertions depend on how promptly the loop happened to tick.
+
+    Two Qt details make this work. A `QPropertyAnimation` writes its target only
+    while it is running, so the group is started and immediately paused rather
+    than left stopped -- a stopped animation ignores `setCurrentTime` and the
+    sweep would read the same frame every time. And the sweep stops one step
+    short of the duration, because reaching the end of a live animation emits
+    `finished`, which here means `deleteLater` on the widget being measured.
+    """
+    group = particle.findChild(QParallelAnimationGroup)
+    assert group is not None, "every particle owns its animation group"
+    group.start()
+    group.pause()
+    try:
+        for elapsed in range(0, group.duration(), step_ms):
+            group.setCurrentTime(elapsed)
+            yield particle.pos(), particle.getOpacity()
+    finally:
+        group.stop()
 
 
 class _NoClipboard:
@@ -100,6 +138,95 @@ def test_the_particles_belong_to_the_window_not_to_the_button(qtbot):
     assert particles
     assert all(p.parent() is dialog for p in particles)
     assert not dialog._copy_btn.findChildren(ConfettiParticle)
+
+
+def test_the_burst_stays_inside_the_window_it_is_drawn_on(qtbot):
+    """Parenting to the window solves only half of the clipping problem.
+
+    The window clips exactly as the button would, and the copy button sits about
+    11px above the bottom of a bottom-anchored button row, so a fall of any real
+    size takes the particle under the window's edge and Qt cuts it off there.
+    The burst was measured doing precisely that: every one of the 12 particles
+    below the bottom edge of a 720x480 dialog by t=500ms, which reads as the
+    burst blinking out along a line rather than finishing.
+
+    Several sizes, because resizing the dialog is not a fix and must not look
+    like one -- the button row is anchored to the bottom at every size, so the
+    clearance under it is the same 11px in all three cases below.
+    """
+    for width, height in ((720, 480), (500, 320), (1000, 800)):
+        dialog = _dialog(qtbot)
+        dialog.resize(width, height)
+        qtbot.wait(20)
+        window = dialog.rect()
+
+        for seed in range(3):
+            for particle in burst_confetti(dialog._copy_btn, rng=random.Random(seed)):
+                for _pos, _opacity in _sweep(particle):
+                    assert window.contains(particle.geometry()), (
+                        f"at {width}x{height}, seed {seed}: a particle reached "
+                        f"{particle.geometry()}, outside {window}"
+                    )
+
+
+def test_a_particle_has_faded_out_before_it_falls_below_where_it_started(qtbot):
+    """The fade has to finish on the part of the arc that is still on screen.
+
+    This is the size-independent half, and the one that holds for an anchor this
+    module knows nothing about: whatever clearance a caller's window leaves under
+    its button, the particle was inside that window at the moment it was thrown,
+    so any point at or above the height it started from is safe and anything
+    below it may not be. The fade therefore has to reach zero at that crossing
+    rather than at the end of the animation.
+
+    The original schedule (a keyframe at 0.5 against the raw clock, with all of
+    the fade deliberately on the way down) put the entire fade *after* the
+    crossing, and particles were measured leaving the dialog at opacity 1.0 --
+    an abrupt disappearance at an edge, not a fade.
+    """
+    dialog = _dialog(qtbot)
+
+    worst = 0.0
+    for seed in range(8):
+        for particle in burst_confetti(dialog._copy_btn, rng=random.Random(seed)):
+            start_y = particle.pos().y()
+            for pos, opacity in _sweep(particle):
+                if pos.y() > start_y:
+                    worst = max(worst, opacity)
+
+    assert worst < 0.2, (
+        f"a particle was still at opacity {worst:.3f} below the height it was "
+        f"thrown from, where the window may already have clipped it"
+    )
+
+
+def test_a_particle_does_not_swallow_a_click_meant_for_the_button(qtbot):
+    """`WA_TransparentForMouseEvents` is load-bearing, and nothing else sees it.
+
+    The burst passes back over the button that started it, so a particle that
+    accepted mouse events would make the copy button briefly dead under the
+    pointer. `qtbot.mouseClick` cannot catch that: it posts the event straight at
+    the widget it is handed and never hit-tests, so the repeated-click test above
+    would pass just as happily against particles that swallow every click. This
+    asks Qt's own hit-test instead, with a particle parked over the button.
+    """
+    dialog = _dialog(qtbot)
+    button = dialog._copy_btn
+    centre = button.mapTo(dialog, button.rect().center())
+
+    particle = ConfettiParticle("#e6194b", 8, dialog)
+    particle.move(centre.x() - 4, centre.y() - 4)
+    particle.show()
+    particle.raise_()
+    qtbot.wait(20)
+
+    assert dialog.childAt(centre) is button
+
+    # The control, so that the assertion above is known to be testing the
+    # attribute rather than the stacking order: the same particle in the same
+    # place does take the hit the moment the attribute is cleared.
+    particle.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+    assert dialog.childAt(centre) is particle
 
 
 def test_no_burst_when_there_is_no_clipboard(qtbot, monkeypatch):
@@ -190,8 +317,6 @@ def test_a_seeded_burst_is_reproducible(qtbot):
     debuggable at all: without it, a burst that goes wrong on one machine cannot
     be reproduced on another.
     """
-    import random
-
     dialog = _dialog(qtbot)
     first = burst_confetti(dialog._copy_btn, count=4, rng=random.Random(7))
     second = burst_confetti(dialog._copy_btn, count=4, rng=random.Random(7))
