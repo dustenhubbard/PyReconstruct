@@ -30,11 +30,38 @@ one into the other stacked a duplicate on every flag. So:
 * **traces created from now on** get an **opaque random** id, because identity
   must survive an edit and a content hash does not.
 
-A derived id is a **birth certificate, not a content address**. It is computed
-once, when a trace first acquires an id, and never recomputed. Editing a trace
-does not re-derive; if it did, "the same trace, edited" would be
-indistinguishable from "a different trace", which is the one property a merge
-cannot lose.
+A derived id is *meant* to be a **birth certificate, not a content address**:
+the same trace, edited, should keep the name it was born with, because if it
+does not then "the same trace, edited" is indistinguishable from "a different
+trace", which is the one property a merge cannot lose.
+
+WHAT ACTUALLY HAPPENS WHILE NO ID IS PERSISTED, AND WHY
+------------------------------------------------------
+**A re-derived id MOVES when the row's content moves, and that is inherent to
+this slice rather than a defect in it.** Measured on
+`dev/assets/checker/files/class_series.jser`, section 40, contour `d03sp12`:
+edit one trace's geometry, `Section.save(update_series_data=False)`,
+`Series.loadSection` again, and that trace's id goes `7amtgBJpcOV` ->
+`bxheJxBqeYH` while its untouched neighbour keeps `pfw3sYRSS9B` and the
+superseded id stays spoken for in the issuer's taken-set. A plain reload with no
+edit is stable -- `TraceIDIssuer.deriveForSection` answers unchanged content
+from its own record rather than re-hashing it -- so what moves an id is a change
+of content, not a reload.
+
+The two properties wanted here are not simultaneously reachable without
+persistence. "Two processes agree on every id with no save between them" forces
+the id to be a pure function of the row's stored content; a pure function of
+content necessarily takes a different value when the content changes. Nothing in
+this module writes a byte, so between two loads an id has nowhere to live except
+the content it is derived from, and the birth-certificate half arrives only when
+ids are **persisted and read back** instead of re-derived -- the approved
+keyed-row format, not this slice. Keying the record on position
+(`(section, contour, index)`) would survive an in-place edit but would
+mass-reassign every id after an insert or delete earlier in the contour, which
+is worse; content is the better of the two available keys.
+
+Until then: an id survives a reload, a scroll and a save of unchanged content,
+and does not survive an edit of the row it names.
 
 THE FROZEN DERIVATION -- `tid-v1`
 ---------------------------------
@@ -224,8 +251,17 @@ def deriveTraceID(section_number: int, contour_name: str, row: list,
 
     For traces that already exist when a series first acquires ids: the result
     is the same in every process that reads the same file, with no save
-    required. Never called again after that first derivation -- an edit does not
-    move a trace's id. See the module docstring for the frozen inputs.
+    required. See the module docstring for the frozen inputs.
+
+    **A re-derivation moves a trace's id when the trace's content has moved.**
+    The id is a pure function of the row, so an edit, a save and a reload derive
+    a new one and leave the superseded id spoken for in `taken`. Unchanged
+    content is not re-hashed at all -- `TraceIDIssuer.deriveForSection` answers a
+    repeated derivation from its own record -- so a reload of an untouched
+    section is stable, and only a content change moves an id. Stability ACROSS an
+    edit is not achievable by deriving: it needs the id to be persisted and read
+    back, which is the keyed-row format and not this slice. The module docstring
+    records why the two properties cannot both hold here.
 
         Params:
             section_number (int): the section the trace sits on
@@ -398,6 +434,19 @@ class TraceIDIssuer():
         The superseded ids stay in `_taken` -- an id once handed out is spoken
         for, per the module's collision policy -- so the record's growth is
         bounded by the distinct row contents seen, not by the load count.
+
+        WHAT THE RECORD COSTS
+        ---------------------
+        The key retains each row's full canonical JSON for the life of the
+        `Series`, which is close to a second in-memory copy of the series' whole
+        uncompressed row payload: measured on the 276-section, 125,218-row
+        corpus, 125,218 keys retaining 49,736,142 characters (47.4 MiB, 53.3 MiB
+        counting `str` overhead) against a 50.6 MB `.jser`. Bounded by distinct
+        contents rather than by load count is not the same as bounded: an
+        EDITING session grows it, because every edited version of a row that
+        reaches the section file and is then reloaded adds a permanent key
+        holding that version's JSON, and nothing evicts. The record becomes
+        droppable once an id is persisted and can simply be read back.
 
             Params:
                 section_number (int): the section these contours sit on
