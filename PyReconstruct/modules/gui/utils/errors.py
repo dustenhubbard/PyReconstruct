@@ -1,6 +1,7 @@
 import os
 import sys
 import html
+import traceback
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFontDatabase, QTextCursor
@@ -83,24 +84,52 @@ class ErrorReportDialog(QDialog):
         self._copy_btn.setText("Copied ✓")
 
 
+# True while a report dialog is running its own modal event loop. See
+# show_error_report for why a report must never open from inside one.
+_showing_report = False
+
+
 def show_error_report(summary_html: str, report: str, parent=None, title="Error"):
     """Show ``report`` in a copyable dialog, never letting the display itself fail.
 
     Shared by the global exception hook, the handled save-error path, and the
     Help-menu diagnostics action. Falls back to a plain message box if the rich
     dialog cannot be constructed.
+
+    One dialog at a time, and that guard is load bearing rather than tidy.
+    ``QDialog.exec`` runs its own event loop, which goes on delivering events to
+    the rest of the app -- paint events among them, because the dialog appearing
+    over a window exposes it. A widget whose ``paintEvent`` raises therefore
+    reaches the exception hook again from *inside* this call, and without the
+    guard opens a second dialog on top of the first, whose loop delivers the next
+    paint event, and so on with nothing bounding it. That is the shape a user hit
+    on 1.21.0: a field left with no section layer, an unstoppable stack of error
+    windows, and PyReconstruct killed from Task Manager.
+
+    A report suppressed here is not lost. ``customExcepthook`` writes every
+    occurrence to the log file before it gets this far, and ``Help > View log
+    file`` reads it back.
     """
+    global _showing_report
+
+    if _showing_report:
+        return
+
     active_window = QApplication.activeWindow()
     if parent is None:
         parent = active_window
 
+    _showing_report = True
     try:
-        dialog = ErrorReportDialog(summary_html, report, parent)
-        dialog.setWindowTitle(title)
-        dialog.exec()
-    except Exception:
-        # the error handler itself must never fail -- fall back to a plain box
-        QMessageBox.critical(parent, title, f"{report}\n\n{gh_issues}", QMessageBox.Ok)
+        try:
+            dialog = ErrorReportDialog(summary_html, report, parent)
+            dialog.setWindowTitle(title)
+            dialog.exec()
+        except Exception:
+            # the error handler itself must never fail -- fall back to a plain box
+            QMessageBox.critical(parent, title, f"{report}\n\n{gh_issues}", QMessageBox.Ok)
+    finally:
+        _showing_report = False
 
     if active_window:
         active_window.activateWindow()
@@ -206,14 +235,49 @@ def show_diagnostic_report(parent=None):
     show_error_report(_standard_summary(lead), report, parent, title="Diagnostic report")
 
 
+# Faults already reported in this session, by _error_signature. See
+# customExcepthook for what this is for.
+_reported_signatures = set()
+
+
+def _error_signature(exctype, tb):
+    """Identify a fault by its type and the frame that raised it.
+
+    Two occurrences of the same bug at the same line share a signature; two
+    different bugs do not. Returns None when there is no usable traceback, which
+    the caller reads as "cannot be recognised again, so always report it".
+    """
+    try:
+        frame = traceback.extract_tb(tb)[-1]
+        return (getattr(exctype, "__name__", str(exctype)), frame.filename, frame.lineno)
+    except Exception:
+        return None
+
+
 def customExcepthook(exctype, value, tb):
-    """Global exception hook: show an error window with a copyable report."""
+    """Global exception hook: show an error window with a copyable report.
+
+    A given fault opens one window per session. The hook used to open one per
+    occurrence, which is fine for a fault the user can stop provoking and a trap
+    for one they cannot: an exception raised from a ``paintEvent`` recurs on
+    every repaint, and closing its error window exposes the widget underneath,
+    which repaints, which raises, which opens the next window. Reported on 1.21.0
+    as an unstoppable stream of error windows that left Task Manager as the only
+    way out.
+
+    Deduplicating rather than rate-limiting is deliberate. A delay between
+    windows would still leave the user closing them forever; what they need is
+    for the app to say this once and then let them save their work and quit.
+    Every occurrence is still written to the log file below, so nothing about the
+    repetition is lost -- ``Help > View log file`` shows it.
+    """
     sys.__excepthook__(exctype, value, tb)  # keep console output for terminal users
 
     report = build_error_report(exctype, value, tb)
 
     # Also record it in the log file, so it survives after the dialog is closed
-    # and can be pulled up via Help > View log file (best-effort).
+    # and can be pulled up via Help > View log file (best-effort). Every
+    # occurrence is logged, including the ones whose window is suppressed below.
     try:
         from PyReconstruct.modules.backend.func.logging_setup import log_file_path
         with open(log_file_path(), "a", encoding="utf-8", errors="replace") as f:
@@ -221,11 +285,21 @@ def customExcepthook(exctype, value, tb):
     except Exception:
         pass
 
+    signature = _error_signature(exctype, tb)
+    if signature is not None:
+        if signature in _reported_signatures:
+            return
+        _reported_signatures.add(signature)
+
     # Line breaks are kept, the way show_save_error keeps them: an exception
     # whose message is several lines (the malformed-option errors from
     # Series.getOption spell out the expected shape and the fix on their own
     # lines) otherwise arrives as one run-on paragraph, because the summary is
     # rich text and a bare newline is whitespace there.
     message = html.escape(str(value)).replace("\n", "<br>")
-    lead = f"<b>An error occurred:</b><br><br>{message}"
+    lead = (
+        f"<b>An error occurred:</b><br><br>{message}<br><br>"
+        "If this error happens again it will be written to the log file "
+        "(<b>Help &gt; View log file</b>) instead of opening another window."
+    )
     show_error_report(_standard_summary(lead), report)
