@@ -13,6 +13,9 @@ Both halves of that need closing, and they are different guards:
   * the serialized form, where closing a window lets the same fault report
     again from the top.
 
+They also have to compose without eating each other: a report the nesting guard
+refuses was never shown, so it has not spent the one window its fault is owed.
+
 The tests never enter a real modal loop -- ``exec`` is replaced by a stand-in
 that raises the way a paint event delivered inside it would.
 """
@@ -49,6 +52,18 @@ def _raise_through_hook(message="'NoneType' object has no attribute 'getTrace'")
         errors.customExcepthook(*sys.exc_info())
 
 
+def _raise_a_different_fault():
+    """Send a second, unrelated fault through the hook.
+
+    One ``raise`` statement on purpose: every call shares a signature, so the
+    dedup guard cannot be what distinguishes the occurrences in the test below.
+    """
+    try:
+        raise ValueError("a different problem entirely")
+    except ValueError:
+        errors.customExcepthook(*sys.exc_info())
+
+
 def _count_dialogs(monkeypatch, on_exec=None):
     """Record every report dialog opened; optionally run `on_exec` inside one."""
     opened = []
@@ -76,6 +91,27 @@ def test_a_paint_error_inside_the_dialog_does_not_open_another(monkeypatch):
     assert len(opened) == 1
 
 
+def test_a_report_asked_for_inside_the_dialog_does_not_open_another(monkeypatch):
+    """The nested form arriving by the door that skips the hook.
+
+    ``show_diagnostic_report`` calls ``show_error_report`` directly, so no
+    signature is ever taken for it and deduplication cannot bound it at all --
+    the reentrancy guard is the only thing that can. Written this way on
+    purpose: the paint-error test above re-enters through the hook, where dedup
+    would stop the second report even with the reentrancy guard gone, so it
+    cannot tell the reader which guard is holding.
+    """
+    def ask_for_a_diagnostic_report(depth):
+        if depth < 6:          # a cap, so a regression fails rather than hangs
+            errors.show_diagnostic_report()
+
+    opened = _count_dialogs(monkeypatch, on_exec=ask_for_a_diagnostic_report)
+
+    _raise_through_hook()
+
+    assert len(opened) == 1
+
+
 def test_the_same_fault_reports_once_per_session(monkeypatch):
     """The serialized form: the user closes the window and it happens again."""
     opened = _count_dialogs(monkeypatch)
@@ -95,6 +131,30 @@ def test_a_different_fault_still_reports(monkeypatch):
         raise ValueError("a different problem entirely")
     except ValueError:
         errors.customExcepthook(*sys.exc_info())
+
+    assert len(opened) == 2
+
+
+def test_a_fault_refused_inside_a_dialog_still_reports_afterwards(monkeypatch):
+    """A fault whose window was refused has not had its turn yet.
+
+    A second, unrelated fault arriving while the first one's window is up is
+    refused, correctly -- it must not open a window inside another one. But the
+    user has been shown nothing about it, so its one window is still owed: the
+    next time it happens with nothing up, it has to open one. Marking it
+    reported on the way past would spend that window on a dialog that never
+    appeared and silence the fault for the rest of the session.
+    """
+    def raise_the_other_fault_inside(depth):
+        if depth < 2:          # a cap, so a regression fails rather than hangs
+            _raise_a_different_fault()
+
+    opened = _count_dialogs(monkeypatch, on_exec=raise_the_other_fault_inside)
+
+    _raise_through_hook()
+    assert len(opened) == 1        # refused mid-dialog, as it must be
+
+    _raise_a_different_fault()     # the same fault again, with nothing up
 
     assert len(opened) == 2
 

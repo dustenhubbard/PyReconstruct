@@ -89,12 +89,14 @@ class ErrorReportDialog(QDialog):
 _showing_report = False
 
 
-def show_error_report(summary_html: str, report: str, parent=None, title="Error"):
+def show_error_report(summary_html: str, report: str, parent=None, title="Error") -> bool:
     """Show ``report`` in a copyable dialog, never letting the display itself fail.
 
     Shared by the global exception hook, the handled save-error path, and the
     Help-menu diagnostics action. Falls back to a plain message box if the rich
-    dialog cannot be constructed.
+    dialog cannot be constructed. Returns whether anything was actually put in
+    front of the user, so a caller that keeps a record of what it has reported
+    does not write one down for a report that never appeared.
 
     One dialog at a time, and that guard is load bearing rather than tidy.
     ``QDialog.exec`` runs its own event loop, which goes on delivering events to
@@ -104,16 +106,22 @@ def show_error_report(summary_html: str, report: str, parent=None, title="Error"
     guard opens a second dialog on top of the first, whose loop delivers the next
     paint event, and so on with nothing bounding it. That is the shape a user hit
     on 1.21.0: a field left with no section layer, an unstoppable stack of error
-    windows, and PyReconstruct killed from Task Manager.
+    windows, and PyReconstruct killed from Task Manager. The hook is not the only
+    door: ``show_diagnostic_report`` and ``show_save_error`` arrive here without
+    passing through ``customExcepthook``, so its deduplication cannot bound them
+    and this guard is the only thing that does.
 
-    A report suppressed here is not lost. ``customExcepthook`` writes every
-    occurrence to the log file before it gets this far, and ``Help > View log
-    file`` reads it back.
+    A report suppressed here is not lost *when it came from the hook*:
+    ``customExcepthook`` writes every occurrence to the log file before it gets
+    this far, and ``Help > View log file`` reads it back. The other two callers
+    do no logging of their own, so a report suppressed for them leaves no record
+    -- reachable only from inside an open report window, which is application
+    modal.
     """
     global _showing_report
 
     if _showing_report:
-        return
+        return False
 
     active_window = QApplication.activeWindow()
     if parent is None:
@@ -133,6 +141,8 @@ def show_error_report(summary_html: str, report: str, parent=None, title="Error"
 
     if active_window:
         active_window.activateWindow()
+
+    return True
 
 
 def show_save_error(message: str, report: str, parent=None):
@@ -243,9 +253,17 @@ _reported_signatures = set()
 def _error_signature(exctype, tb):
     """Identify a fault by its type and the frame that raised it.
 
-    Two occurrences of the same bug at the same line share a signature; two
-    different bugs do not. Returns None when there is no usable traceback, which
-    the caller reads as "cannot be recognised again, so always report it".
+    Two occurrences of the same bug at the same line share a signature. The
+    message is deliberately left out of the key, so what the key distinguishes
+    is a raise site and not a problem: distinct problems raised from one shared
+    ``raise`` statement -- the malformed-option errors from ``Series.getOption``
+    are such a site -- collapse into a single report. Including the message
+    would separate them, at the cost of defeating deduplication entirely for any
+    fault whose message embeds a value that varies between occurrences (a
+    coordinate, a filename, a section number), which is exactly the storm case.
+
+    Returns None when there is no usable traceback, which the caller reads as
+    "cannot be recognised again, so always report it".
     """
     try:
         frame = traceback.extract_tb(tb)[-1]
@@ -270,6 +288,15 @@ def customExcepthook(exctype, value, tb):
     for the app to say this once and then let them save their work and quit.
     Every occurrence is still written to the log file below, so nothing about the
     repetition is lost -- ``Help > View log file`` shows it.
+
+    A fault is only marked reported once a window has actually opened for it. A
+    report can be suppressed here without being shown, because
+    ``show_error_report`` refuses to open one from inside another's modal loop,
+    and a fault whose window never appeared has not had its turn: marking it
+    reported would spend the one window it is owed on nothing, and the user
+    would never see it, in this session or any later moment of it. The startup
+    timers ``MainWindow`` schedules make that ordinary rather than exotic -- they
+    fire inside a report window's loop if one is up in the first few seconds.
     """
     sys.__excepthook__(exctype, value, tb)  # keep console output for terminal users
 
@@ -286,10 +313,8 @@ def customExcepthook(exctype, value, tb):
         pass
 
     signature = _error_signature(exctype, tb)
-    if signature is not None:
-        if signature in _reported_signatures:
-            return
-        _reported_signatures.add(signature)
+    if signature is not None and signature in _reported_signatures:
+        return
 
     # Line breaks are kept, the way show_save_error keeps them: an exception
     # whose message is several lines (the malformed-option errors from
@@ -302,4 +327,6 @@ def customExcepthook(exctype, value, tb):
         "If this error happens again it will be written to the log file "
         "(<b>Help &gt; View log file</b>) instead of opening another window."
     )
-    show_error_report(_standard_summary(lead), report)
+    # Only spend this fault's one window once one has actually opened.
+    if show_error_report(_standard_summary(lead), report) and signature is not None:
+        _reported_signatures.add(signature)
