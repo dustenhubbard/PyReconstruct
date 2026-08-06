@@ -304,6 +304,13 @@ class TraceIDIssuer():
         self._taken = set(taken)
         self._bits_source = bits_source or (lambda: secrets.randbits(TRACE_ID_BITS))
         self._collisions = []
+        ## Every id this issuer has DERIVED, keyed on the derivation's own
+        ## inputs: (section number, contour name, the row's canonical JSON),
+        ## valued with the ids in within-contour occurrence order (a list,
+        ## because two byte-identical rows in one contour are two traces and
+        ## hold two ids). See `deriveForSection` for why re-derivation must
+        ## answer from this record rather than from `_taken`.
+        self._derivations = {}
 
     @property
     def taken(self) -> frozenset:
@@ -369,6 +376,29 @@ class TraceIDIssuer():
         one file agree. The `taken` set is the SERIES', not the section's, so a
         derived id cannot collide with one already issued on another section.
 
+        RE-DERIVATION IS ANSWERED FROM THE ISSUER'S OWN RECORD, NOT RE-HASHED
+        ---------------------------------------------------------------------
+        `Series.loadSection` constructs a fresh `Section` object on every call
+        -- there is no cache -- so one section's rows reach this method again
+        and again within a single session. Deriving them naively each time
+        would be a disaster in slow motion: the first load registers every
+        salt-0 id in `_taken`, so the second load of the *byte-identical*
+        content finds each id spoken for, salt-bumps past it, and hands every
+        trace on the section a DIFFERENT id -- a birth certificate reissued by
+        a scroll -- while `_taken` grows by a section's worth of orphans per
+        load. So every id this issuer derives is recorded against the
+        derivation's own inputs, and a repeated request for the same inputs
+        returns the same answer without consulting `_taken` at all. The frozen
+        `tid-v1` recipe is untouched: fresh content still hashes exactly as
+        the module docstring specifies, and two independent processes agree
+        because their first derivations run identically. Content that CHANGED
+        between loads (an edited row, after a save rewrote the section file)
+        misses the record and derives fresh, which is correct: with nothing
+        persisted yet, a changed row is indistinguishable from a new trace.
+        The superseded ids stay in `_taken` -- an id once handed out is spoken
+        for, per the module's collision policy -- so the record's growth is
+        bounded by the distinct row contents seen, not by the load count.
+
             Params:
                 section_number (int): the section these contours sit on
                 contours (dict): {contour name: [stored 8-field row, ...]}, the
@@ -377,9 +407,29 @@ class TraceIDIssuer():
                 (dict): {(contour name, index within contour): id}
         """
         out = {}
+        ## Within-call occurrence count per derivation key, so the k-th
+        ## byte-identical row of a contour maps to the k-th recorded id.
+        occurrence = {}
         for cname in sorted(contours, key=str):
             for i, row in enumerate(contours[cname]):
-                trace_id = deriveTraceID(section_number, cname, row, self._taken)
-                self._taken.add(trace_id)
+                ## The same canonical serialization the derivation itself uses
+                ## (and the same refusal: a row carrying a type json cannot
+                ## encode raises TypeError here, exactly as deriveTraceID
+                ## would).
+                key = (section_number, cname, json.dumps(
+                    row, sort_keys=True, separators=(",", ":"),
+                    ensure_ascii=True,
+                ))
+                k = occurrence.get(key, 0)
+                occurrence[key] = k + 1
+                recorded = self._derivations.setdefault(key, [])
+                if k < len(recorded):
+                    trace_id = recorded[k]
+                else:
+                    trace_id = deriveTraceID(
+                        section_number, cname, row, self._taken
+                    )
+                    self._taken.add(trace_id)
+                    recorded.append(trace_id)
                 out[(cname, i)] = trace_id
         return out
