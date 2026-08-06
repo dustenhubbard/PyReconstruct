@@ -313,3 +313,89 @@ def test_export_as_png_writes_a_real_png(exportable_series, tmp_path, monkeypatc
     assert not Path(tmp_svgs[0]).exists(), (
         f"export_png left its intermediate SVG behind at {tmp_svgs[0]}"
     )
+
+
+# --------------------------------------------------------------------------
+# 3. The export's content and ordering, against the object model.
+# --------------------------------------------------------------------------
+def test_export_svg_content_and_order_match_the_object_model(
+        exportable_series, tmp_path):
+    """Every visible trace, in ``Section.contours``' own order, geometry exact.
+
+    ``export_svg`` reads traces from the section's columnar store; this test
+    holds it to the object model's answer, path by path and in document order,
+    so a flip (or a future re-flip) that changes what is exported or the order
+    it is exported in fails here rather than in a viewer.
+
+    The section is prepared so the orderings a wrong enumerator would produce
+    are DISTINGUISHABLE:
+
+    * a trace whose contour name sorts FIRST is added LAST, so insertion order
+      and sorted order disagree maximally -- reading the store's sorted
+      ``contourNames()`` (or ``sorted(section.contours)``) fails the order
+      assertion;
+    * a hidden trace is added, so dropping the hidden filter fails the
+      membership assertion;
+    * the ``d`` attribute of every path is recomputed from the object model's
+      own ``Trace.asPixels``, so geometry read from the wrong place, rounded
+      differently, or pixel-mapped differently fails the content assertion.
+    """
+    section = exportable_series.loadSection(min(exportable_series.sections.keys()))
+
+    template = next(iter(next(iter(section.contours.values()))))
+
+    probe = template.copy()
+    probe.name = "aaa_sorts_first_added_last"
+    section.addTrace(probe, log_event=False)
+
+    hidden_probe = template.copy()
+    hidden_probe.name = "aaa_hidden_probe"
+    hidden_probe.setHidden(True)
+    section.addTrace(hidden_probe, log_event=False)
+
+    # The probes really did land at the END of the object model's iteration
+    # order while sorting FIRST; without this the order assertion below could
+    # pass under a sorted enumerator.
+    assert list(section.contours)[-2:] == [
+        "aaa_sorts_first_added_last", "aaa_hidden_probe"
+    ]
+    assert sorted(section.contours)[:2] == [
+        "aaa_hidden_probe", "aaa_sorts_first_added_last"
+    ]
+
+    # The object model's own answer: (name, path data) for every visible
+    # trace, contours in `section.contours` order, traces in list order.
+    height, _ = section.img_dims
+    mag = section.mag
+    expected = []
+    for contour in section.contours.values():
+        for trace in contour:
+            if trace.hidden:
+                continue
+            d = "M " + " L ".join(
+                f"{x},{y}" for x, y in trace.asPixels(mag, height)
+            )
+            if trace.closed:
+                d += " Z"
+            expected.append((trace.name, d))
+    assert expected, "fixture section has no visible traces; test proves nothing"
+
+    out = tmp_path / "order.svg"
+    section.exportAsSVG(str(out))
+
+    # ElementTree iterates in document order, which is SVG paint order.
+    root = ET.parse(out).getroot()
+    exported = [
+        (p.get("id"), p.get("d"))
+        for p in root.iter(f"{{{SVG_NS}}}path")
+        if p.get("id") != "scale_bar"
+    ]
+
+    assert [name for name, _ in exported] == [name for name, _ in expected], (
+        "the SVG's paths are not the object model's visible traces in the "
+        "object model's order"
+    )
+    assert exported == expected, (
+        "a path's geometry differs from the object model's own asPixels answer"
+    )
+    assert "aaa_hidden_probe" not in {name for name, _ in exported}
