@@ -738,11 +738,17 @@ def test_whats_new_dialog_is_modeless_and_renders_its_content(qapp):
     ({"on_demand": True}, "Recent releases"),              # the Help-menu re-open
     ({"last_seen": "1.20.1", "version": "9.9.9"}, None),   # the generic fallback
 ])
-def test_dialog_renders_the_byline_once_below_the_notes(qapp, kwargs, orienter):
-    """The real dialog puts the byline in its notes browser, exactly once, on
-    every framing -- including the generic fallback (a running version with no
-    bundled section). Asserted on the rendered QTextBrowser, not just the dict."""
+def test_dialog_renders_the_byline_once_as_its_own_widget(qapp, kwargs, orienter):
+    """The real dialog renders the byline exactly once, on every framing --
+    including the generic fallback (a running version with no bundled section)
+    -- as its own label *outside* the notes browser.
+
+    It used to be appended to the notes markdown, which put it inside the
+    scrollable area: on a release with more than a screenful of notes a reader
+    had to scroll to the bottom to see it. Asserted on the constructed widgets,
+    not just the dict."""
     from PyReconstruct.modules.gui.dialog.whats_new import WhatsNewDialog
+    from PySide6.QtWidgets import QLabel
 
     version = kwargs.pop("version", "1.20.3")
     content = F.whats_new_content(version, text=WN, **kwargs)
@@ -750,13 +756,55 @@ def test_dialog_renders_the_byline_once_below_the_notes(qapp, kwargs, orienter):
         assert content["orienter"] == orienter
     dlg = WhatsNewDialog(None, version, content=content)
     try:
-        rendered = dlg._notes.toPlainText()
-        assert BYLINE in rendered                       # rendered, not just in the dict
-        assert rendered.count(BYLINE) == 1              # exactly once, never twice
-        # set off from the notes: it trails the body rather than leading it
-        if content["body"]:
-            first_body_line = content["body"].splitlines()[0].lstrip("#").strip()
-            assert rendered.index(first_body_line) < rendered.index(BYLINE)
+        # not in the scroll any more: the browser carries the notes and nothing else
+        assert BYLINE not in dlg._notes.toPlainText()
+        # its own label, verbatim, exactly once across the whole dialog
+        assert dlg._byline is not None
+        assert dlg._byline.text() == BYLINE
+        labels = [lab for lab in dlg.findChildren(QLabel) if BYLINE in lab.text()]
+        assert labels == [dlg._byline]
+    finally:
+        dlg.deleteLater()
+
+
+def test_dialog_byline_sits_between_the_notes_and_the_github_link(qapp):
+    """Vertical order: notes (scrollable) -> byline -> "Full release notes" link.
+
+    This is the regression probe for the fix. Reverting it -- appending
+    ``_{byline}_`` back onto ``content["body"]`` before building the browser --
+    leaves ``dlg._byline`` unbuilt and the byline back inside
+    ``dlg._notes.toPlainText()``, so both halves of this assertion fail.
+    """
+    from PyReconstruct.modules.gui.dialog.whats_new import WhatsNewDialog
+    from PySide6.QtWidgets import QLabel
+
+    content = F.whats_new_content("1.20.3", last_seen="1.20.1", text=WN)
+    dlg = WhatsNewDialog(None, "1.20.3", content=content,
+                         url="https://example.test/releases")
+    try:
+        lay = dlg.layout()
+        link = next(lab for lab in dlg.findChildren(QLabel)
+                    if "Full release notes on GitHub" in lab.text())
+        assert lay.indexOf(dlg._notes) < lay.indexOf(dlg._byline) < lay.indexOf(link)
+        # and each on its own row, not sharing one
+        assert len({lay.indexOf(w) for w in (dlg._notes, dlg._byline, link)}) == 3
+        # the byline is not inside the scrollable area
+        assert BYLINE not in dlg._notes.toPlainText()
+    finally:
+        dlg.deleteLater()
+
+
+def test_dialog_omits_the_byline_widget_when_the_content_has_none(qapp):
+    """No byline field -> no label at all, rather than an empty muted line."""
+    from PyReconstruct.modules.gui.dialog.whats_new import WhatsNewDialog
+    from PySide6.QtWidgets import QLabel
+
+    content = {"version": "1.20.3", "date": None, "orienter": "Recent releases",
+               "body": "- A thing.", "truncated": False}
+    dlg = WhatsNewDialog(None, "1.20.3", content=content, url="https://example.test")
+    try:
+        assert dlg._byline is None
+        assert not any(BYLINE in lab.text() for lab in dlg.findChildren(QLabel))
     finally:
         dlg.deleteLater()
 

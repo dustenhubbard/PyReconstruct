@@ -105,19 +105,38 @@ class WhatsNewDialog(QDialog):
         orienter.setFont(of)
         lay.addWidget(orienter)
 
-        # The maintainer provenance line rides at the very bottom of the notes,
-        # set off from them by a rule and rendered in a quieter (italic) register
-        # so it reads as an aside about who maintains this build, not as one more
-        # release bullet. It comes from the builder as its own field and is the
+        # The notes browser renders the release notes and nothing else. The
+        # maintainer provenance line used to be appended to the end of this
+        # markdown, below a rule, which put it inside the scroll: on a release
+        # with more than a screenful of notes -- the normal case -- a reader had
+        # to scroll to the bottom to find out who maintains this build, and most
+        # never did. It is now its own widget below the browser (see below), so
+        # it is on screen from the moment the dialog opens.
+        self._notes = make_notes_browser(content["body"], min_height=260)
+        lay.addWidget(self._notes)
+
+        # The provenance line itself: quiet and italic, the same register the
+        # markdown `_..._` gave it, so it still reads as an aside about who
+        # maintains this build rather than as one more release bullet. Italic
+        # from the font (as the orienter above does) and muted by
+        # `setEnabled(False)` (as the release date does) -- this dialog has no
+        # shared muted-label helper and those are its two existing idioms for
+        # secondary text. It comes from the builder as its own field and is the
         # same on every framing (update, welcome, on-demand, generic fallback);
-        # appending it here, once, is the only place it is rendered, so it can
-        # never double up with the notes body above it.
-        notes_md = content["body"]
+        # rendering it here, once, is the only place it appears, so it can never
+        # double up with the notes above it. Some framings carry no byline, and
+        # then no widget is added at all.
         byline = content.get("byline")
         if byline:
-            notes_md = f"{notes_md}\n\n---\n\n_{byline}_" if notes_md else f"_{byline}_"
-        self._notes = make_notes_browser(notes_md, min_height=260)
-        lay.addWidget(self._notes)
+            self._byline = QLabel(byline)
+            bf = self._byline.font()
+            bf.setItalic(True)
+            self._byline.setFont(bf)
+            self._byline.setEnabled(False)  # muted, secondary to the notes
+            self._byline.setWordWrap(True)
+            lay.addWidget(self._byline)
+        else:
+            self._byline = None
 
         link = QLabel(f'<a href="{url}">Full release notes on GitHub ↗</a>')
         link.setTextFormat(Qt.RichText)
