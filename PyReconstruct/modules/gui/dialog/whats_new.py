@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextBrowser,
 )
 from PySide6.QtGui import QTextCursor
-from PySide6.QtCore import Qt, QSettings
+from PySide6.QtCore import Qt, QSettings, QEvent
 
 from PyReconstruct.modules.backend.updater.install_info import current_version_str
 from PyReconstruct.modules.gui.main.first_launch import (
@@ -46,6 +46,43 @@ def _space_after_headings(browser, extra=10):
             cursor.setPosition(block.position())
             cursor.setBlockFormat(fmt)
         block = block.next()
+
+
+class LinkLabel(QLabel):
+    """A rich-text label whose link colour survives a live theme change.
+
+    QLabel builds its ``QTextDocument`` when the text is set, and resolves the
+    anchor colour (``QPalette::Link``) into it at that moment. Plain text keeps
+    following the palette at paint time; the anchor does not. So switching theme
+    through Help > Theme with this dialog already open leaves every linked word
+    in the *previous* theme's blue -- measured at 1.85:1 against the dark
+    background, where the same dialog built fresh under that theme renders it at
+    3.16:1.
+
+    Re-setting the text rebuilds the document against the current palette. It
+    has to go through an empty string on the way: ``QLabel::setText`` returns
+    early when the new text equals the old, so assigning the same markup back is
+    a no-op -- measured, it leaves the stale colour exactly where it was.
+
+    ``PaletteChange`` is the event to catch, and it is the only one needed. It
+    arrives on both halves of the app's theme switch: the ``qdark`` branch,
+    which only calls ``QApplication.setStyleSheet()``, and the ``default``
+    branch, which calls ``setPalette()`` as well.
+    """
+
+    def __init__(self, markup, parent=None):
+        super().__init__(parent)
+        self._markup = markup
+        self.setTextFormat(Qt.RichText)
+        self.setText(markup)
+
+    def changeEvent(self, event):
+        # getattr: change events can arrive from inside QLabel.__init__, before
+        # _markup is assigned.
+        if event.type() == QEvent.Type.PaletteChange and getattr(self, "_markup", None):
+            super().setText("")
+            super().setText(self._markup)
+        super().changeEvent(event)
 
 
 def make_notes_browser(markdown_text, min_height=180):
@@ -159,16 +196,14 @@ class WhatsNewDialog(QDialog):
         # then no widget is added at all.
         byline = content.get("byline")
         if byline:
-            self._byline = QLabel()
-            bf = self._byline.font()
-            bf.setItalic(True)
-            self._byline.setFont(bf)
             before, name, after = escape(byline).partition(LINKED_NAME)
-            self._byline.setTextFormat(Qt.RichText)
-            self._byline.setText(
+            self._byline = LinkLabel(
                 f'{before}<a href="{HOMEPAGE_URL}">{name}</a>{after}' if name
                 else before
             )
+            bf = self._byline.font()
+            bf.setItalic(True)
+            self._byline.setFont(bf)
             self._byline.setOpenExternalLinks(True)
             self._byline.setWordWrap(True)
             lay.addWidget(self._byline)
@@ -178,8 +213,10 @@ class WhatsNewDialog(QDialog):
         else:
             self._byline = None
 
-        link = QLabel(f'<a href="{url}">Full release notes on GitHub ↗</a>')
-        link.setTextFormat(Qt.RichText)
+        # Same LinkLabel as the byline: this label has always had the same
+        # stale-anchor-colour behaviour on a live theme switch, and fixing one
+        # anchor in the dialog while leaving the other stale would show.
+        link = LinkLabel(f'<a href="{url}">Full release notes on GitHub ↗</a>')
         link.setOpenExternalLinks(True)
         lay.addWidget(link)
 

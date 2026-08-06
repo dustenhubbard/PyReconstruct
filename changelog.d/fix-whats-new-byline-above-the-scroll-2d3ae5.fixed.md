@@ -19,3 +19,9 @@
   sentence stays plain italic text and is not clickable. A blank line now
   separates the byline from the "Full release notes on GitHub" link below it, so
   the two no longer read as one block of small text.
+
+  Both links in the dialog also recolour properly when the theme is switched
+  from Help ▸ Theme while the dialog is open. Qt fixes a link's colour when the
+  text is set rather than when it is drawn, so they used to keep the old theme's
+  blue until the dialog was closed and reopened -- barely visible against the
+  dark background.

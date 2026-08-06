@@ -899,7 +899,7 @@ def measure_byline_pixels(dlg):
     def is_link_coloured(colour):
         return colour[2] - colour[0] > 40
 
-    link_xs, plain_xs, plain_ink = [], [], []
+    link_xs, plain_xs, plain_ink, link_ink = [], [], [], []
     for y in range(y0, y1 + 1):
         for x in range(x0, x1 + 1):
             colour = rgb(x, y)
@@ -907,6 +907,7 @@ def measure_byline_pixels(dlg):
                 continue
             if is_link_coloured(colour):
                 link_xs.append(x)
+                link_ink.append(colour)
             else:
                 plain_xs.append(x)
                 plain_ink.append(colour)
@@ -931,10 +932,14 @@ def measure_byline_pixels(dlg):
         a, b = luminance(colour), luminance(background)
         return (max(a, b) + 0.05) / (min(a, b) + 0.05)
 
+    from collections import Counter
+
     boldest = max(plain_ink, key=separation)
     result = dict(background=background, plain_ink=boldest,
                   plain_contrast=separation(boldest), link_span=None,
-                  link_width=0, link_longest_run=0)
+                  link_width=0, link_longest_run=0,
+                  link_ink=Counter(link_ink).most_common(1)[0][0] if link_ink
+                  else None)
 
     # the plain text runs either side of the link; measure the longer side
     if link_xs:
@@ -1063,6 +1068,72 @@ def test_dialog_byline_stays_legible_under_the_dark_theme(qapp):
         if dlg is not None:
             dlg.deleteLater()
         app.setStyleSheet(previous)   # never leak the theme into other tests
+
+
+def test_dialog_byline_link_colour_follows_a_live_theme_switch(qapp):
+    """Switching theme with the dialog open must recolour the link, not strand it.
+
+    QLabel resolves ``QPalette::Link`` into its ``QTextDocument`` when the text
+    is set, so an anchor keeps the colour of whatever theme was active at
+    construction while the plain text around it follows the palette. Left alone,
+    switching to the dark theme with this dialog open renders the linked name in
+    the light theme's blue at 1.85:1 against the dark background.
+
+    The reference is a dialog *built fresh* under the target theme rather than a
+    fixed number: that is the colour the switched dialog is supposed to end up
+    with, and comparing against it cannot drift if qdarkstyle changes its link
+    colour. Both directions are exercised, because the app's theme switch takes
+    two different code paths -- the dark branch only sets a stylesheet, the
+    light branch also sets a palette.
+    """
+    from PySide6.QtWidgets import QApplication
+    from PyReconstruct.modules.gui.dialog.whats_new import WhatsNewDialog
+    import qdarkstyle
+
+    app = QApplication.instance()
+    previous = app.styleSheet()
+    content = F.whats_new_content("1.20.3", last_seen="1.20.1", text=WN)
+
+    def build():
+        return WhatsNewDialog(None, "1.20.3", content=content,
+                              url="https://example.test/releases")
+
+    def go_dark():
+        app.setStyleSheet(qdarkstyle.load_stylesheet_pyside6())
+
+    def go_light():
+        app.setStyleSheet("")
+        app.setPalette(app.style().standardPalette())
+
+    switched = fresh_dark = fresh_light = None
+    try:
+        go_light()
+        switched = build()
+        light_ink = measure_byline_pixels(switched)["link_ink"]
+
+        # ...now switch underneath it
+        go_dark()
+        after_dark = measure_byline_pixels(switched)
+        fresh_dark = build()
+        assert after_dark["link_ink"] == measure_byline_pixels(fresh_dark)["link_ink"], (
+            f"after switching to the dark theme the open dialog's link is "
+            f"{after_dark['link_ink']}, but a dialog built fresh under it "
+            "renders a different colour -- the anchor colour is stale"
+        )
+        assert after_dark["link_ink"] != light_ink
+
+        # ...and back, which is the branch that also sets a palette
+        go_light()
+        after_light = measure_byline_pixels(switched)
+        fresh_light = build()
+        assert after_light["link_ink"] == measure_byline_pixels(fresh_light)["link_ink"]
+        assert after_light["link_ink"] == light_ink
+    finally:
+        for dlg in (switched, fresh_dark, fresh_light):
+            if dlg is not None:
+                dlg.deleteLater()
+        app.setStyleSheet(previous)
+        app.setPalette(app.style().standardPalette())
 
 
 def test_dialog_byline_is_a_link_to_the_home_page(qapp):
