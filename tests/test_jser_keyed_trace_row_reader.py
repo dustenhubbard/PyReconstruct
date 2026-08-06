@@ -838,3 +838,48 @@ def test_updateJSON_reports_indices_after_its_own_screening(tmp_path):
         f"{_tid(12)} is reported at index {by_id[_tid(12)][1]}; the defective "
         "row ahead of it was removed, so it is at 0 now"
     )
+
+
+def test_an_adopted_row_does_not_also_burn_a_derived_id(tmp_path):
+    """A row is identified once, by exactly one of the two mechanisms.
+
+    `deriveForSection` is told to skip every row `adoptForSection` accepted. Not
+    an optimization: without it every adopted row ALSO derives an id, which is
+    registered in the issuer's `taken` set and recorded in its derivation map
+    even though no trace holds it. The consequences are cumulative rather than
+    immediately visible, which is why this is pinned rather than left to review
+    -- the adopted id still wins, so nothing looks wrong:
+
+    * `taken` grows to twice the trace count, and every later derivation on the
+      series salt-bumps past values no trace holds;
+    * the derivation record retains the full canonical JSON of each row it
+      answered for, which `deriveForSection` measures at ~47 MiB on the
+      125,218-row corpus. Deriving for rows that did not need it doubles the
+      most expensive structure in the issuer.
+
+    So: one identity per trace, and `taken` says exactly that.
+    """
+    nextID = _idFactory()
+
+    def rewrite(snum, cname, rows):
+        return [_keyRow(row, nextID()) for row in rows]
+
+    fp, planted = _buildJser(tmp_path, rewrite)
+    series = _openSeries(fp)
+    try:
+        ids = _storeIDs(series)
+        assert ids, "no traces loaded"
+        assert set(ids.values()) == set(planted.values()), (
+            "the ids held by the traces are not the ids the file named"
+        )
+
+        taken = series.trace_id_issuer.taken
+        assert set(ids.values()) <= taken, "an id in use is not registered"
+        assert len(taken) == len(ids), (
+            f"the issuer has {len(taken)} ids spoken for against {len(ids)} "
+            f"traces, so {len(taken) - len(ids)} identities were minted for "
+            "rows that already had one and are held by nothing. Every adopted "
+            "row derived a second id it did not need."
+        )
+    finally:
+        series.close()
