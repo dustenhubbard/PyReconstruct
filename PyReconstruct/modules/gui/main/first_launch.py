@@ -49,10 +49,13 @@ ON_DEMAND_CAP = 1
 # as an aside below the notes rather than as one more release bullet.
 MAINTAINER_BYLINE = "An independent build of PyReconstruct, maintained by Dusten Hubbard."
 
-# Where the byline points. The provenance line is a jump link to the project
-# home page, so a lab that wants to know whose build this is can get there from
-# the dialog rather than searching for it.
+# Where the byline points, and which word carries the link. The project name
+# inside the provenance line is a link to the home page, so a lab that wants to
+# know whose build this is can get there from the dialog rather than searching
+# for it. The name appears in MAINTAINER_BYLINE exactly once; only that first
+# occurrence is linked.
 HOMEPAGE_URL = "https://pyreconstruct.org"
+LINKED_NAME = "PyReconstruct"
 
 
 # --- username ----------------------------------------------------------------

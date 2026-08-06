@@ -14,8 +14,8 @@
   order to report an issue to the right person, so it is set to be read rather
   than skimmed past.
 
-  The line is also a link to pyreconstruct.org now. It keeps the plain italic
-  look rather than taking the usual blue-and-underlined one -- the "Full release
-  notes on GitHub" link sits directly beneath it, and two link-styled rows in a
-  row would cost the byline its quiet-aside character. A pointing-hand cursor
-  and a tooltip are what mark it as clickable.
+  The project name in that line links to pyreconstruct.org. Just the name is the
+  link, styled the ordinary way -- blue and underlined -- while the rest of the
+  sentence stays plain italic text and is not clickable. A blank line now
+  separates the byline from the "Full release notes on GitHub" link below it, so
+  the two no longer read as one block of small text.

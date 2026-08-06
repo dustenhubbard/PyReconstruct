@@ -17,13 +17,13 @@ from html import escape
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextBrowser,
 )
-from PySide6.QtGui import QTextCursor, QPalette
+from PySide6.QtGui import QTextCursor
 from PySide6.QtCore import Qt, QSettings
 
 from PyReconstruct.modules.backend.updater.install_info import current_version_str
 from PyReconstruct.modules.gui.main.first_launch import (
     whats_new_due, whats_new_content, github_release_url, WHATSNEW_KEY,
-    ON_DEMAND_CAP, HOMEPAGE_URL,
+    ON_DEMAND_CAP, HOMEPAGE_URL, LINKED_NAME,
 )
 
 ORG, APP = "KHLab", "PyReconstruct"
@@ -130,36 +130,27 @@ class WhatsNewDialog(QDialog):
         # label in the normal text colour -- italic for the register, full
         # contrast for the legibility.
         #
-        # It is clickable but NOT link-styled: no blue, no underline. The
-        # "Full release notes on GitHub" label directly below it is a real link
-        # and looks like one; styling this line the same way would stack two
-        # link-coloured rows and cost the byline the quiet-aside character the
-        # italic is there to give it.
+        # Exactly one word of it is a link: the project name, pointing at the
+        # home page. That word takes the ordinary link styling -- blue and
+        # underlined -- and the rest of the sentence stays plain italic text.
+        # Only the word is a click target; the surrounding words are not.
         #
-        # Two details of the markup are load-bearing, both measured rather than
-        # assumed (see the styling tests, which read the rendered pixels):
+        # The whole line was briefly the anchor, styled to look like ordinary
+        # text so as not to stack two link-coloured rows. Linking just the name
+        # gets the same restraint without the deception: one obvious, ordinary
+        # link instead of a whole sentence that was secretly clickable, so it
+        # needs neither a colour override nor the pointing-hand cursor and
+        # tooltip that were standing in for the missing affordance. It is also
+        # theme-proof for free -- QPalette::Link is whatever the active theme
+        # says it is, resolved at paint, rather than a colour this code samples
+        # at construction and gets wrong under the dark theme.
         #
-        #  * the override rides on an inner <span>, not on the <a> itself.
-        #    Qt's rich-text subset applies a `style` attribute on the anchor as
-        #    a whole character format, which drops the slant inherited from the
-        #    widget font; on a nested span it merges, and the line renders
-        #    pixel-identical to the plain italic label it replaces.
-        #  * the colour is read from the live palette instead of being written
-        #    as a literal, and the label is polished first. `text-decoration:
-        #    none` kills the underline, but without a colour the anchor takes
-        #    QPalette::Link and renders blue. A hardcoded #000000 would fix that
-        #    in the default theme and paint the line black-on-charcoal under the
-        #    qdarkstyle theme (Help > Theme) -- 1.32:1, measured. The palette
-        #    tracks the theme, but only once the widget has been polished
-        #    against the active stylesheet: sampled straight after construction
-        #    it still reads #000000 under qdark, which reintroduces exactly that
-        #    bug. Hence `ensurePolished()` before the read. Setting
-        #    QPalette::Link on the label instead does not work at all -- the
-        #    stylesheet re-resolves the role at polish and discards it.
-        #
-        #    The colour is sampled once, at construction; the dialog is built
-        #    fresh each time it opens, so a theme switch is picked up on the
-        #    next open rather than live on a dialog already on screen.
+        # `escape()` runs before the split, so the anchor is spliced into
+        # already-escaped text and the sentence can never inject markup. The
+        # split is `partition`, which takes the FIRST occurrence: this byline
+        # contains the name exactly once, and if it ever contained none the
+        # partition yields empty match/tail and the line renders as plain text
+        # with no anchor at all rather than raising.
         #
         # The byline comes from the builder as its own field and is the same on
         # every framing (update, welcome, on-demand, generic fallback);
@@ -172,19 +163,18 @@ class WhatsNewDialog(QDialog):
             bf = self._byline.font()
             bf.setItalic(True)
             self._byline.setFont(bf)
-            self._byline.ensurePolished()   # so the palette reflects the theme
-            ink = self._byline.palette().color(QPalette.ColorRole.WindowText).name()
+            before, name, after = escape(byline).partition(LINKED_NAME)
             self._byline.setTextFormat(Qt.RichText)
             self._byline.setText(
-                f'<a href="{HOMEPAGE_URL}">'
-                f'<span style="color:{ink}; text-decoration:none;">'
-                f'{escape(byline)}</span></a>'
+                f'{before}<a href="{HOMEPAGE_URL}">{name}</a>{after}' if name
+                else before
             )
             self._byline.setOpenExternalLinks(True)
-            self._byline.setToolTip(HOMEPAGE_URL)   # the only hint that it is a link
-            self._byline.setCursor(Qt.PointingHandCursor)
             self._byline.setWordWrap(True)
             lay.addWidget(self._byline)
+            # A blank line between the byline and the "Full release notes"
+            # link below it, so the two do not read as one block of small text.
+            lay.addSpacing(self._byline.fontMetrics().height())
         else:
             self._byline = None
 

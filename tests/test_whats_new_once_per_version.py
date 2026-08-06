@@ -272,10 +272,14 @@ def test_startup_shows_the_notes_once_per_version_in_the_real_window(
     assert F.MAINTAINER_BYLINE not in rendered
     # the byline label carries link markup, so compare what it *renders*
     from PySide6.QtGui import QTextDocumentFragment
+    def shows_byline(lab):
+        return F.MAINTAINER_BYLINE in (
+            QTextDocumentFragment.fromHtml(lab.text()).toPlainText()
+        )
+
     shown = QTextDocumentFragment.fromHtml(dialog._byline.text()).toPlainText()
     assert shown == F.MAINTAINER_BYLINE
-    bylines = [lab for lab in dialog.findChildren(QLabel)
-               if F.MAINTAINER_BYLINE in lab.text()]
+    bylines = [lab for lab in dialog.findChildren(QLabel) if shows_byline(lab)]
     assert bylines == [dialog._byline]
     lay = dialog.layout()
     link = next(lab for lab in dialog.findChildren(QLabel)
