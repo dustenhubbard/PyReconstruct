@@ -511,10 +511,17 @@ def test_a_failed_multi_line_join_records_one_entry_per_file_line():
       own -- which is what makes the count come out at one per file line rather
       than one per failed attempt.
 
-    Both are invisible on a join that never accumulated, which is every other
-    case in this module. Asserted on a two-line split and a three-line one so
-    the entry count tracks the lines lost rather than merely being greater than
-    one.
+    Both are invisible on a join that never accumulated -- but "nothing in this
+    module accumulates" is not why they went unpinned, because one case does.
+    ``test_a_fragment_that_is_itself_six_fields_is_not_read_as_a_row`` below
+    reaches an accumulated join: a stamped head followed by a stamp-less
+    six-field fragment, eaten by the join before the concatenation still fails
+    to parse. Its ``skipped_rows`` really does move under both readings -- it
+    simply never asserts on ``skipped_rows`` at all, only on ``all_logs``,
+    which is identical either way. So the gap was the missing assertion, not
+    the missing accumulation. Asserted here on a two-line split and a
+    three-line one so the entry count tracks the lines lost rather than merely
+    being greater than one.
     """
     assert ROW_START.match(MULTILINE_HEAD), "the head is a row start; the anchor passes it"
     assert len(MULTILINE_HEAD.split(",")) < 6, "and is short, so the join runs"
