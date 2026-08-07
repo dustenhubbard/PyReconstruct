@@ -866,8 +866,39 @@ def measure_byline_pixels(dlg):
     the x-height rows of ordinary text fill most of a line too.
 
     All x values in the result are relative to the label's own left edge.
+
+    The label is rendered with *grayscale* antialiasing for the measurement, and
+    that line is load-bearing rather than tidying. Qt's FreeType backend
+    antialiases text with RGB **subpixel** rendering on Linux, which fringes the
+    edge of every glyph with colour: the plain black sentence comes back carrying
+    pixels like (18, 68, 146) and (148, 220, 238), whose blue channel leads their
+    red by far more than the margin above uses to recognise link ink. Split by
+    colour, most of the line then reads as link -- ``link_span`` (1, 432) rather
+    than the project name's (147, 234) -- and the underline check compares the
+    name's real 86px rule against a 432px span that is mostly plain text. That is
+    exactly how this failed on CI while passing every macOS run, at 87px of
+    433px: CoreText hands back grayscale coverage, so there are no fringes to
+    misread and the bug cannot appear there. Reproduced in an ubuntu:24.04
+    container with the workflow's own apt line, at 86px of 432px.
+
+    The rendering itself is correct on Linux -- grabbed and inspected, the name
+    and only the name is blue and underlined -- so this is a measurement that
+    does not survive the platform, not a link that does not draw.
+    ``NoSubpixelAntialias`` changes only how glyph edges are filtered: metrics,
+    layout, the palette roles the two halves of the line paint from, and the
+    underline (a filled rectangle, never a glyph) are identical either way, and
+    the macOS figures are unchanged to the pixel by setting it. It is set
+    unconditionally rather than under a platform check, so both platforms measure
+    the same rendering and macOS cannot quietly stop covering the Linux path.
     """
-    from PySide6.QtGui import QColor, QImage
+    from PySide6.QtGui import QColor, QFont, QImage
+
+    font = dlg._byline.font()
+    font.setStyleStrategy(
+        QFont.StyleStrategy(font.styleStrategy().value
+                            | QFont.StyleStrategy.NoSubpixelAntialias.value)
+    )
+    dlg._byline.setFont(font)
 
     dlg.resize(640, 620)
     dlg.layout().activate()
