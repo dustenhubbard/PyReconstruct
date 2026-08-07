@@ -1,4 +1,4 @@
-"""A columnar store for one section's traces, behind the Qt-free core seam.
+r"""A columnar store for one section's traces, behind the Qt-free core seam.
 
 Phase 1 of the columnar-sections work. This module is a **parallel
 representation with no consumers**: nothing in the application reads it, no call
@@ -207,8 +207,8 @@ to, because no object-model method is being changed:
   copy-traces-to-sections shape: a new annotation that happens to start as a
   copy of an old one.
 
-**Neither has a caller outside this module, and that is not a footnote.** The
-primitives were built and never connected:
+**Neither has a production caller outside this module, and that is not a
+footnote.** The primitives were built and never connected:
 `git grep -n "copyRow(\|duplicateRow(" -- 'PyReconstruct/*.py'` finds every hit
 in this file. `Section.editTraceAttributes` does `removeTrace` /
 `Trace.copy()` / mutate / `addTrace`, and `addTrace` reaches
