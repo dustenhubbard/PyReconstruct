@@ -409,8 +409,16 @@ class LogSet():
         The residue is one genuinely irreducible case, and the guard fails
         safe on it: a pasted name whose own text contains a line that looks
         like a whole row is indistinguishable, byte for byte, from two real
-        rows. There the guard truncates the name rather than inventing an
-        editor from somebody else's timestamp.
+        rows. There the guard reads both lines as rows, which truncates the
+        name, rather than inventing an editor from somebody else's timestamp.
+
+        Be exact about what "safe" does and does not cover, because it is the
+        word a future reader will remember. The embedded line is still read as
+        a row, so whatever it names in the user field -- text the paster
+        chose -- is admitted: getEditorsFromHistory unions every row's user,
+        so that name IS an editor of the series. What is prevented is the
+        other failure, reading a TIMESTAMP as if it were a person, not the
+        admission of a plausible name somebody typed into a dialog.
 
         Log.__str__ no longer emits a multi-line row at all, so nothing
         written from here on can reach any of this. The guard is for what is
