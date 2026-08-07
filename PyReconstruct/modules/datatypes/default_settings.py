@@ -1,4 +1,5 @@
 import getpass
+import math
 
 # MFO = modifiable from options dialog
 
@@ -233,6 +234,51 @@ default_settings = {
     "show_scale_bar_text": True,
     "show_scale_bar_ticks": True,
 }
+
+# The range of real-world lengths a micron-pinned scale bar can be pinned to:
+# a picometre to a metre, against specimen sections measured in tens of microns.
+# These are not an opinion about what a sensible bar is -- the pinned mode
+# already handles an unhelpful length by stepping it a decade at a time -- they
+# are the window outside which that decade arithmetic stops being arithmetic.
+MIN_PINNED_UM = 1e-6
+MAX_PINNED_UM = 1e6
+
+
+def validPinnedLength(value) -> bool:
+    """True if `value` is a length a scale bar can actually be pinned to.
+
+    `value > 0` is not a sufficient test, and the gap is not academic.
+    `float("inf") > 0` is True; `float("1e400")` parses to inf without raising;
+    `1e-320` is a positive, finite denormal. All three pass a bare positivity
+    check, and all three then raise out of `scale_bar.pinnedLength` --
+    `math.log10(0.0)` for the infinities, `math.ceil(inf)` for the denormal --
+    from inside `ScaleBar.__init__`, which runs inside `MousePalette.__init__`.
+    `scale_bar_length_um` is a *global*-scope option, so a stored value that
+    crashes the palette crashes every launch after it, before there is any UI
+    left to change it back.
+
+    Applied in three places: the options dialog will not store a length that
+    fails it, `MousePalette.getPinnedLength` will not pin a bar to one it reads
+    back, and `pinnedLength` treats one as nothing to draw. The first keeps such
+    a value out of the store; the other two mean a store already holding one --
+    hand-edited, or written by a build without this check -- degrades to the
+    screen-fraction bar rather than taking the application down with it.
+
+    It lives here, beside the key it governs, because the dialog and the palette
+    both need it and `PyReconstruct.modules.gui.palette` cannot be imported from
+    `PyReconstruct.modules.gui.dialog` at module scope without a cycle.
+
+        Params:
+            value: the candidate length, from the dialog or the settings store
+        Returns:
+            bool: True if the pinned-mode arithmetic can use it
+    """
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(value) and MIN_PINNED_UM <= value <= MAX_PINNED_UM
+
 
 default_series_settings = {
     # "autoversion": False,

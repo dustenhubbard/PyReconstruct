@@ -40,10 +40,16 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QPainter, QPixmap
 
 from PyReconstruct.modules.backend.settings_store import DictSettingsStore
-from PyReconstruct.modules.datatypes.default_settings import default_settings
+from PyReconstruct.modules.datatypes.default_settings import (
+    MAX_PINNED_UM,
+    MIN_PINNED_UM,
+    default_settings,
+    validPinnedLength,
+)
 from PyReconstruct.modules.datatypes.series import Series
 from PyReconstruct.modules.gui.dialog.all_options import AllOptionsDialog
 from PyReconstruct.modules.gui.palette import scale_bar as sb_mod
+from PyReconstruct.modules.gui.palette.mouse_palette import MousePalette
 from PyReconstruct.modules.gui.palette.scale_bar import (
     MIN_PINNED_PIXELS,
     NICE_LENGTHS,
@@ -93,6 +99,17 @@ class _StubManager:
     def __init__(self, **kwargs):
         self.series = _StubSeries(**kwargs)
         self.mainwindow = None
+
+
+class _StubPalette:
+    """Enough of a MousePalette for `getPinnedLength`, which reads two options
+    and touches nothing else. Borrowing the real method rather than restating it
+    keeps these tests pointed at the shipping code."""
+
+    getPinnedLength = MousePalette.getPinnedLength
+
+    def __init__(self, series):
+        self.series = series
 
 
 _REAL_RECT = QPainter.drawRect
@@ -544,6 +561,128 @@ def test_reset_defaults_moves_the_mode_and_the_length(qapp, tmp_path):
         dlg.deleteLater()
     # Reset Defaults only repopulates the dialog; nothing is stored until OK
     assert series.getOption("scale_bar_mode") == "micron_pinned"
+
+
+# ------------------------------------------- lengths the arithmetic cannot use
+#
+# `> 0` was not a strong enough guard, and the hole was not cosmetic. `inf > 0`
+# is True, `float("1e400")` parses to inf without raising, and `1e-320` is a
+# positive finite denormal, so all three cleared the dialog's check and were
+# written to `scale_bar_length_um` -- a *global*-scope option, the same for every
+# series and persisted across restarts. Read back, each one raised out of
+# `pinnedLength` (`math.log10(0.0)` for the infinities, `math.ceil(inf)` for the
+# denormal) inside `ScaleBar.__init__`, which runs inside `MousePalette.__init__`
+# -- so the application died during startup, every startup, and the only way back
+# was to hand-edit the settings plist. `nan` and `-inf` were already rejected by
+# the old guard, and non-numeric text by the float parser; those are the controls.
+
+BAD_LENGTHS = ["inf", "1e400", "1e-320", "nan", "-inf"]
+
+
+@pytest.mark.parametrize("typed", BAD_LENGTHS)
+def test_a_length_the_arithmetic_cannot_use_is_never_stored(qapp, tmp_path, typed):
+    """The point of first contact: the value must not reach the store at all."""
+    series = _series(tmp_path)
+    series.setOption("scale_bar_mode", "micron_pinned")
+    series.setOption("scale_bar_length_um", 7.0)
+    dlg = AllOptionsDialog(None, series)
+    try:
+        w = _widget(dlg)
+        w.inputs[3].widget.setText(typed)
+        assert w.accept(close=False)
+        w.set()
+    finally:
+        dlg.deleteLater()
+    assert series.getOption("scale_bar_length_um") == 7.0
+    assert series.getOption("scale_bar_mode") == "micron_pinned", (
+        "the mode is the user's other choice on the same OK and must still land"
+    )
+
+
+@pytest.mark.parametrize("typed", BAD_LENGTHS)
+def test_and_the_next_launch_still_builds_a_bar(qapp, tmp_path, typed):
+    """The crash itself: type the value, then rebuild the bar the way a fresh
+    launch does. Before the guard was widened this raised out of
+    `ScaleBar.__init__` for inf, 1e400 and 1e-320."""
+    series = _series(tmp_path)
+    series.setOption("scale_bar_mode", "micron_pinned")
+    dlg = AllOptionsDialog(None, series)
+    try:
+        w = _widget(dlg)
+        w.inputs[3].widget.setText(typed)
+        assert w.accept(close=False)
+        w.set()
+    finally:
+        dlg.deleteLater()
+
+    stored = series.getOption("scale_bar_length_um")
+    bar = ScaleBar(None, _StubManager(), ROOM, 50, 1,
+                   micron_length=stored, max_pixel_length=ROOM)
+    try:
+        bar.setScale(0.01)
+        assert bar.width() > 0
+    finally:
+        bar.deleteLater()
+
+
+@pytest.mark.parametrize("stored", [float("inf"), float("nan"), 1e-320, 1e300, -1.0])
+def test_a_store_already_holding_one_degrades_instead_of_crashing(
+    app, tmp_path, stored
+):
+    """Defence in depth for the users whose settings are already poisoned, and
+    for a hand-edited plist. Nothing keeps a bad value out of the store except
+    the dialog, so the two readers have to survive one: the palette declines to
+    pin the bar, which is the historic screen-fraction sizing, and the bar's own
+    arithmetic reports nothing to draw rather than raising."""
+    series = _series(tmp_path)
+    series.setOption("scale_bar_mode", "micron_pinned")
+    series.setOption("scale_bar_length_um", stored)
+
+    assert _StubPalette(series).getPinnedLength() is None
+    assert pinnedLength(stored, 0.01, ROOM) == (0.0, 0)
+
+    bar = ScaleBar(None, _StubManager(), ROOM, 50, 1,
+                   micron_length=stored, max_pixel_length=ROOM)
+    try:
+        bar.setScale(0.01)
+    finally:
+        bar.deleteLater()
+
+
+@pytest.mark.parametrize("micron_length", [0.002, 1.0, 5.0, 50.0, 500.0, 2.5])
+def test_the_lengths_a_microscopist_actually_types_are_untouched(
+    qapp, tmp_path, micron_length
+):
+    """The guard is a floor and a ceiling twelve decades apart; nothing anyone
+    would type at a specimen goes near either. Stored, pinned, and drawn."""
+    assert validPinnedLength(micron_length)
+
+    series = _series(tmp_path)
+    series.setOption("scale_bar_mode", "micron_pinned")
+    dlg = AllOptionsDialog(None, series)
+    try:
+        w = _widget(dlg)
+        w.inputs[3].widget.setText(str(micron_length))
+        assert w.accept(close=False)
+        w.set()
+    finally:
+        dlg.deleteLater()
+    assert series.getOption("scale_bar_length_um") == micron_length
+    assert _StubPalette(series).getPinnedLength() == micron_length
+
+    real_len, pix_len = pinnedLength(micron_length, micron_length / 200, ROOM)
+    assert (real_len, pix_len) == (micron_length, 200)
+
+
+def test_the_bounds_are_stated_once_so_moving_them_is_visible():
+    """The three call sites all defer to this predicate, so this is the only
+    place the floor and the ceiling are written down."""
+    assert validPinnedLength(MIN_PINNED_UM) and validPinnedLength(MAX_PINNED_UM)
+    assert not validPinnedLength(MIN_PINNED_UM / 10)
+    assert not validPinnedLength(MAX_PINNED_UM * 10)
+    assert not validPinnedLength(0)
+    assert not validPinnedLength(None)
+    assert not validPinnedLength("abc"), "a corrupted store need not hold a number"
 
 
 # ------------------------------------------------- the palette, for real

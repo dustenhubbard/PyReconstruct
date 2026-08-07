@@ -2,6 +2,7 @@ import math
 
 from PySide6.QtGui import QPainter, QColor, QFontMetrics, QFont
 
+from PyReconstruct.modules.datatypes.default_settings import validPinnedLength
 from PyReconstruct.modules.gui.utils import drawOutlinedText
 
 from .buttons import MoveableButton
@@ -115,7 +116,9 @@ def pinnedLength(micron_length, scale, max_pix, min_pix=MIN_PINNED_PIXELS):
                           in screen pixels.  (0.0, 0) when there is nothing to
                           draw, matching `niceLength`.
     """
-    if not (micron_length > 0 and scale > 0 and max_pix > 0):
+    # validPinnedLength rather than `micron_length > 0`: inf passes the latter
+    # and then reaches math.log10(0.0) below.  See that function.
+    if not (validPinnedLength(micron_length) and scale > 0 and max_pix > 0):
         return 0.0, 0
 
     def pixels(exponent):

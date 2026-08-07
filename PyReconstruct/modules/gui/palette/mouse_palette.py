@@ -84,6 +84,7 @@ from .outlined_label import OutlinedLabel
 from .help import palette_help
 
 from PyReconstruct.modules.datatypes import Series, Trace
+from PyReconstruct.modules.datatypes.default_settings import validPinnedLength
 from PyReconstruct.modules.constants import (
     locations as loc
 )
@@ -929,7 +930,11 @@ class MousePalette():
         if self.series.getOption("scale_bar_mode") != "micron_pinned":
             return None
         length = self.series.getOption("scale_bar_length_um")
-        return length if length and length > 0 else None
+        # validPinnedLength, not `length > 0`: a stored inf passes the latter and
+        # then raises out of ScaleBar.__init__, i.e. out of this constructor, on
+        # every launch.  Falling back to the screen-fraction bar leaves the user
+        # a running application and a control they can fix the value in.
+        return length if validPinnedLength(length) else None
 
     def createSB(self):
         """Create the scale bar."""

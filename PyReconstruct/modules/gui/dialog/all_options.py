@@ -27,6 +27,7 @@ from PyReconstruct.modules.backend.updater.updater import (
 from PyReconstruct.modules.backend.func.utils import (
     zarr_worker_count, MAX_ZARR_WORKERS,
 )
+from PyReconstruct.modules.datatypes.default_settings import validPinnedLength
 
 
 def cpuSliderReadout(percent : int) -> str:
@@ -364,8 +365,12 @@ class AllOptionsDialog(QDialog):
             )
             self.series.setOption("scale_bar_width", response[2])
             # an empty or nonsensical box keeps the stored length rather than
-            # pinning the bar to nothing
-            if response[3] is not None and response[3] > 0:
+            # pinning the bar to nothing.  "Nonsensical" has to mean more than
+            # `<= 0`: `inf > 0` is True and `1e400` parses to inf, and this key
+            # is global, so storing one would crash the palette on every launch
+            # from here on.  validPinnedLength is the predicate the palette and
+            # the bar itself apply to the same value.
+            if validPinnedLength(response[3]):
                 self.series.setOption("scale_bar_length_um", float(response[3]))
 
         self.addOptionWidget("scale_bar", structure, setOption)
