@@ -217,7 +217,19 @@ default_settings = {
     "recently_opened_series": [],
 
     # scale bar settings
+    #
+    # Two sizing models, chosen by scale_bar_mode:
+    #   "screen_fraction"  the historic one, and the default so that a stored
+    #                      scale_bar_width keeps meaning what it always meant.
+    #                      The bar is a share of the field and the µm figure
+    #                      under it moves as you zoom.
+    #   "micron_pinned"    the bar is scale_bar_length_um long in real-world
+    #                      units and its pixel width moves as you zoom, so the
+    #                      figure under it stays put.
+    # Each mode reads its own quantity, so switching between them is lossless.
+    "scale_bar_mode": "screen_fraction",  # "screen_fraction" | "micron_pinned"  # MFO
     "scale_bar_width": 25,  # displayed as this percentage of the screen (min should be 20)
+    "scale_bar_length_um": 5.0,  # microns; used in "micron_pinned" mode  # MFO
     "show_scale_bar_text": True,
     "show_scale_bar_ticks": True,
 }
