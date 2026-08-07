@@ -46,10 +46,26 @@ class ColorButton(QPushButton):
 
         The colour is still only committed on an accepted dialog: dismissing it
         leaves the swatch as it was, which is what Cancel has always meant here.
+
+        The order below is load-bearing and is the reason this is not
+        ``QColorDialog(initial, self)`` followed by ``setOption``. On macOS a
+        ``QColorDialog`` constructed while the native path is still allowed
+        routes its initial colour into the platform helper; turning
+        ``DontUseNativeDialog`` on *afterwards* switches to the Qt widget
+        implementation, which was never seeded and sits at its own default.
+        Measured on cocoa, PySide6 6.5.2 -- constructing with ``(0, 249, 0)``
+        and then flipping the option leaves ``currentColor()`` at
+        ``(255, 255, 255)``, and the same holds for every seed tried, so the
+        trace's colour is simply gone. A user who opened the picker on a green
+        trace, saw the colour was fine and pressed OK got a white trace and a
+        blank swatch -- the reported bug again, by another route, and worse,
+        because this one *writes* the wrong colour rather than dropping the
+        right one. So: turn the option off first, then seed.
         """
         initial = QColor(*self.color) if self.color else QColor(Qt.white)
-        dlg = QColorDialog(initial, self)
+        dlg = QColorDialog(self)
         dlg.setOption(QColorDialog.ColorDialogOption.DontUseNativeDialog, True)
+        dlg.setCurrentColor(initial)
         try:
             confirmed = dlg.exec() == QDialog.DialogCode.Accepted
             color = dlg.selectedColor()
