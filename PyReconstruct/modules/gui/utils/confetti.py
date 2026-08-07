@@ -16,16 +16,21 @@ animation. They are parented to ``anchor.window()`` and positioned in that
 widget's coordinates instead, and they carry ``WA_TransparentForMouseEvents`` so
 that a widget briefly underneath one stays clickable.
 
-**The window clips too, so the arc is scheduled around its own descent.** The
+**The window clips too, so the arc is fitted to it and faded inside it.** The
 window is a parent like any other, and a button worth celebrating is usually
 near one of its edges -- the copy button this was written for sits 11px above
 the bottom of a bottom-anchored button row, which no amount of resizing the
 dialog changes. A particle still opaque when it crosses that edge does not fade
-out, it disappears. So the fall is short, and the fade is finished by the time a
-particle comes back down through the height it was thrown from: below its own
-start it is already invisible, whatever clearance the anchor happens to have.
-See ``burst_confetti`` for how the fade names a point on the arc rather than a
-time.
+out, it disappears. Two things keep that from happening, and they are answers to
+different questions. Every keyframe of the arc is clamped to the host's own
+rectangle, so no particle is ever asked to travel further than there is room
+for -- the random ranges give the throw its *shape*, and the host gives it its
+size. And the fade is finished by the time a particle comes back down through
+the height it was thrown from, so below its own start it is already invisible
+whatever clearance the anchor happens to have. The clamp is what stops a
+particle being cut off; the fade is what makes the last thing seen a fade rather
+than a stop. See ``burst_confetti`` for how the fade names a point on the arc
+rather than a time.
 
 **Opacity is a custom property painted by hand, not ``windowOpacity``.**
 ``QWidget.windowOpacity`` applies to top-level windows only; setting it on a
@@ -75,6 +80,11 @@ DURATION_RANGE = (600, 900)   # milliseconds, per particle
 # Where the arc turns over, as a position along the animation rather than a
 # time -- see `burst_confetti`, which places the fade against the same axis.
 ARC_APEX = 0.35
+
+
+def _clamp(value: int, low: int, high: int) -> int:
+    """``value`` brought inside ``[low, high]``, with ``low`` winning if empty."""
+    return max(low, min(value, high))
 
 
 class ConfettiParticle(QWidget):
@@ -146,7 +156,16 @@ def burst_confetti(anchor: QWidget, count: int = PARTICLE_COUNT, rng=None) -> li
         size = rng.randint(*PARTICLE_SIZE_RANGE)
         particle = ConfettiParticle(rng.choice(CONFETTI_COLORS), size, host)
 
-        start = QPoint(origin.x() - size // 2, origin.y() - size // 2)
+        # The furthest top-left a particle of this size can sit and still be
+        # wholly inside the host, which is what every distance below is measured
+        # against.
+        limit_x = max(0, host.width() - size)
+        limit_y = max(0, host.height() - size)
+
+        start = QPoint(
+            _clamp(origin.x() - size // 2, 0, limit_x),
+            _clamp(origin.y() - size // 2, 0, limit_y),
+        )
 
         # Out and up to an apex, then out further and down past the start: the
         # arc a handful of thrown confetti makes. Sideways spread is signed, so
@@ -157,6 +176,26 @@ def burst_confetti(anchor: QWidget, count: int = PARTICLE_COUNT, rng=None) -> li
         rise = rng.randint(22, 45)
         fall = rng.randint(8, 20)
         duration = rng.randint(*DURATION_RANGE)
+
+        # ...and then cut to what the host actually has room for, which is not
+        # the same thing. The ranges above are a *shape* -- they say the fall is
+        # short relative to the rise -- and a shape cannot know the clearance
+        # under somebody's button. Choosing constants small enough for one
+        # measured dialog is how this went wrong before: 8-20px of fall plus
+        # half a particle came to exactly the 24px under the copy button on
+        # macOS, clearing the bottom edge by zero pixels, and a platform whose
+        # push buttons are 22px tall rather than 25 puts the same button's
+        # centre one pixel lower and the same particle one pixel outside.
+        # Deriving the distances from `host` instead makes the containment a
+        # property of the arithmetic rather than of the metrics.
+        #
+        # `move` interpolates each component linearly between adjacent
+        # keyframes and `OutQuad` does not overshoot, so the whole path lies
+        # within the bounding box of the three keyframes: clamping them is
+        # clamping the arc.
+        spread = _clamp(spread, -start.x(), limit_x - start.x())
+        rise = min(rise, start.y())
+        fall = min(fall, limit_y - start.y())
 
         move = QPropertyAnimation(particle, b"pos")
         move.setDuration(duration)
@@ -178,7 +217,15 @@ def burst_confetti(anchor: QWidget, count: int = PARTICLE_COUNT, rng=None) -> li
         # lands exactly on that point of the arc and stays there if the curve is
         # ever changed. Fading on the raw clock instead is what put the whole of
         # the old fade below the window's bottom edge, where none of it was seen.
-        back_to_start = ARC_APEX + (1.0 - ARC_APEX) * rise / (rise + fall)
+        #
+        # Computed from the *clamped* rise and fall, so the crossing it names is
+        # the one the arc actually makes. `rise + fall == 0` is the degenerate
+        # host with no room in either direction: nothing descends below `start`,
+        # so there is no crossing to fade by and the fade runs to the end.
+        travel = rise + fall
+        back_to_start = (
+            1.0 if travel == 0 else ARC_APEX + (1.0 - ARC_APEX) * rise / travel
+        )
 
         # Full opacity up to the apex, so the burst is legible while it rises,
         # then out to nothing by the time it is level with where it started.

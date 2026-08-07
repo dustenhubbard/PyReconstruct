@@ -41,6 +41,7 @@ import random
 import pytest
 
 from PySide6.QtCore import QParallelAnimationGroup, Qt
+from PySide6.QtWidgets import QWidget
 
 from PyReconstruct.modules.gui.utils import errors
 from PyReconstruct.modules.gui.utils.confetti import (
@@ -167,6 +168,80 @@ def test_the_burst_stays_inside_the_window_it_is_drawn_on(qtbot):
                         f"at {width}x{height}, seed {seed}: a particle reached "
                         f"{particle.geometry()}, outside {window}"
                     )
+
+
+def test_the_burst_fits_a_window_with_less_clearance_than_it_wants_to_use(qtbot):
+    """The test above passes or fails on the host platform's button metrics.
+
+    That is not a hypothetical, it is what happened. Its three dialog sizes all
+    leave the same clearance under the copy button, and how much that is depends
+    on how tall the platform's style draws a push button: 25px on macOS, 22px on
+    Linux. A button one row shorter sits lower in a bottom-anchored row, which
+    puts the burst's origin one row lower too. The fall used to be drawn from a
+    fixed 8-20px range, which came to exactly the macOS clearance and one pixel
+    more than the Linux one -- so the same seed passed on one platform and failed
+    on the other, by a single pixel, for the whole of this feature's development.
+
+    This asks the question the size loop cannot: the anchor is walked into every
+    corner and edge of a small host, far tighter than any real dialog, so
+    containment can only come from the arc being clamped to the host and not from
+    the ranges happening to fit. The last row of placements is flush against the
+    bottom, where the correct arc has no downward travel at all.
+    """
+    from PySide6.QtWidgets import QPushButton
+
+    host = QWidget()
+    qtbot.addWidget(host)
+    host.resize(160, 120)
+    anchor = QPushButton("go", host)
+    anchor.resize(24, 16)
+    host.show()
+    qtbot.wait(20)
+    window = host.rect()
+
+    # Every corner, every edge midpoint, and the centre -- the extremes flush
+    # against the host's edges rather than merely near them.
+    placements = [
+        (x, y)
+        for y in (0, 52, 104)
+        for x in (0, 68, 136)
+    ]
+    for x, y in placements:
+        anchor.move(x, y)
+        qtbot.wait(5)
+        for seed in range(4):
+            for particle in burst_confetti(anchor, rng=random.Random(seed)):
+                for _pos, _opacity in _sweep(particle):
+                    assert window.contains(particle.geometry()), (
+                        f"anchor at ({x}, {y}), seed {seed}: a particle reached "
+                        f"{particle.geometry()}, outside {window}"
+                    )
+
+
+def test_a_host_too_small_for_a_particle_still_bursts_without_dividing_by_zero(qtbot):
+    """The bottom of the clamp, which is a real arithmetic edge and not a mood.
+
+    Clamping the rise and the fall to the room the host has means both can come
+    out zero, and the fade's crossing point is `rise / (rise + fall)` -- so the
+    degenerate host is a ZeroDivisionError unless it is named. `burst_confetti`
+    is exported and takes any widget, so "a host smaller than a particle" is
+    reachable rather than theoretical. Nothing moves and nothing is thrown out
+    of bounds; the particles simply fade where they are.
+    """
+    host = QWidget()
+    qtbot.addWidget(host)
+    host.resize(3, 3)
+    host.show()
+    qtbot.wait(20)
+
+    particles = burst_confetti(host, rng=random.Random(0))
+
+    assert len(particles) == PARTICLE_COUNT
+    for particle in particles:
+        for pos, _opacity in _sweep(particle):
+            assert pos.x() == 0 and pos.y() == 0, (
+                f"a particle moved to {pos} on a host with no room to move in"
+            )
 
 
 def test_a_particle_has_faded_out_before_it_falls_below_where_it_started(qtbot):
